@@ -190,11 +190,8 @@ def send_hdf5libs_dset_test(ifilename):
     records = h5_file.get_all_record_ids()
 
     records_size=len(records)
-
-    #all_geo_ids = h5_file.get_all_geo_ids()
-    #all_datasets = h5_file.get_dataset_paths()
-
     nrecords_to_process= 1
+
     for rid in records[:nrecords_to_process]:
         #get record header datasets
         record_header_dataset = h5_file.get_record_header_dataset_path(rid)
@@ -217,8 +214,6 @@ def send_hdf5libs_dset_test(ifilename):
                 ts[iframe] = wf.get_timestamp()
                 adcs[iframe] = [ wf.get_channel(k) for k in range(256) ]
                 #print(f"iframe={iframe} adcs value={adcs[iframe]}")
-                #ts_id=str(ts[iframe])
-                #msgs=str(adcs[iframe])
                 attrs_items=[item for item in h5py_file.attrs.items()]
                 # frame by frame
                 message_data={'attrs' : attrs_items, 'record_header_dataset': record_header_dataset, 'iframe' : iframe, \
@@ -229,42 +224,6 @@ def send_hdf5libs_dset_test(ifilename):
                 time.sleep(1)
                 mesg=socket_sync.recv()
                 socket_sync.send(b'')
-
-#333333
-#    print(f'Will process {len(records_to_process)} of {len(records)} records.')
-#    #need to get the SystemType automatically.
-#    record_header_dataset = h5_file.get_record_header_dataset_path(records[0])
-#    trh0 = h5_file.get_trh(records[0])
-#    wib_geo_ids = h5_file.get_geo_ids(records[0],daqdataformats.GeoID.SystemType.kTPC)
-#    frag = h5_file.get_frag(records[0],wib_geo_ids[0])
-#    frag_hdr=frag.get_header()
-#    wf = detdataformats.wib.WIBFrame(frag.get_data())
-#    n_frames = (frag.get_size()-frag_hdr.sizeof())//detdataformats.wib.WIBFrame.sizeof()
-#    ts = np.zeros(n_frames,dtype='uint64')
-#
-#    print(f'===>record_type : {record_type}, records : {records} ')
-#    print("wf==>",type(wf),wf.sizeof())
-#    print(f'record_header_dataset: {record_header_dataset}, n_frames : {n_frames} wib_geo_ids: {wib_geo_ids}, frag_hdr : {frag_hdr}, trh0 : {trh0}')
-#
-#    #flags = 0
-#    adcs = np.zeros((n_frames,256),dtype='uint16')
-#    t0 = time.time()
-#    for iframe in range(n_frames):
-#        wf = detdataformats.wib.WIBFrame(frag.get_data(iframe*detdataformats.wib.WIBFrame.sizeof()))
-#        ts[iframe] = wf.get_timestamp()
-#        adcs[iframe] = [ wf.get_channel(k) for k in range(256) ]
-#        print(f"adcs {adcs[iframe]}")
-#        ts_id=str(ts[iframe])
-#        msgs=str(adcs[iframe])
-#        attrs_items=[item for item in h5py_file.attrs.items()]
-#        # frame by frame
-#        message_data={'attrs' : attrs_items, 'record_header_dataset': record_header_dataset, 'iframe' : iframe, 'adcs' : adcs[iframe]}
-#        topic="data"
-#        socket.send_string(topic, zmq.SNDMORE)
-#        socket.send_pyobj(message_data)
-#        time.sleep(1)
-#        mesg=socket_sync.recv()
-#        socket_sync.send(b'')
 
 # all TR at once
 #    attrs_items=[item for item in h5py_file.attrs.items()]
