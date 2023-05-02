@@ -24,7 +24,7 @@ python3 datafilter-nodash.py output.hdf5
   * Run datafilter in another terminal
 
   ```
-  python3 datafilter test_output.hdf5
+  python3 datafilter.py test_output.hdf5
 
   ```
  * You can view the plots from a browser pointing to http://yourip:8080, where
