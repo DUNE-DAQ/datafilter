@@ -25,6 +25,7 @@ import zmq
 import socket
 import h5py
 import json
+from rich import print
 
 #with h5py.File("testwriter.hdf5", "w") as f:
 #       dset = f.create_dataset("mytestdataset",dtype="i")
@@ -95,6 +96,11 @@ def update(n):
     # receive the message attributes
     message_data = recv_from_dataflow()
     print(f"message_data {message_data['iframe']} {message_data['adcs']} {len(message_data['adcs'])}") 
+    iframe = message_data['iframe']
+    ofilename = message_data['ofilename']
+    ts=message_data['ts']
+    print(f'ts {ts}')
+    t1 = datetime.datetime.fromtimestamp(int(ts)/1e9).strftime('%Y-%m-%d %H:%M:%S')
 
     if isAttr==1:
         print(message_data)
@@ -117,7 +123,7 @@ def update(n):
           #print("----->",data1)
 
         # update trigger records
-        #hdf5libs.data_writer2(ofile_name, run_number, file_index, app_name, files,hw_map_file_name)
+        #hdf5libs.data_writer2(ofilename, run_number, file_index, app_name, files,hw_map_file_name)
 
     #f.close()
     define_color="#330C73"
@@ -136,9 +142,7 @@ def update(n):
 #        'marker_color' : 'define_color'
 #    }, 1, 1)
 #    trace1 = go.Scatter(y=message_data['adcs'], mode='markers')
-    #msd=message_data['adcs']
-    #print(f"message_data[adcs] {msd[0]} {len(msd[0])}")
-    trace1 = go.Histogram(x=message_data['adcs'], name='ADCs accepted',nbinsx=256)
+    trace1 = go.Histogram(x=message_data['adcs'], name='ADCs accepted frame '+str(iframe)+", ts: " + str(ts) + " time: "+t1 ,nbinsx=256)
 #    trace2 = go.Histogram(x=message_data['adcs'], name='ADCs accepted', nbinsx=256)
 #    fig.append_trace(trace1,1,1)
     fig.append_trace(trace1,1,1)
@@ -156,15 +160,17 @@ def update(n):
         bargap=0.2, # gap between bars of adjacent location coordinates
         bargroupgap=0.1 # gap between bars of the same location coordinates
     )
-
+    fig.update_layout(showlegend=True)
+    fig.update_layout(legend=dict(
+            yanchor="top",
+                y=0.999,
+                    xanchor="left",
+                        x=0.01
+                        
+    ))
     return fig
 
-
-#while True:
-#   d = recv_from_dataflow('data')
-#   ts=d['timestamp']
-#   secs = ts / 1e9
-#   #print(d['iframe'], "  ",secs," ",  datetime.datetime.fromtimestamp(secs).strftime('%Y-%m-%d %H:%M:%S'))
-#   print(d['iframe'], "  ",ts," ",d['data'])
 if __name__ == '__main__':
-    app.run_server(debug=True, host='10.0.0.14', port='8080')
+    ip=get_ip_address()
+    time.sleep(1)
+    app.run_server(debug=True, host=ip, port='8080')

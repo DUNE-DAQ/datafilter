@@ -167,7 +167,7 @@ def send_h5py_dset_test2(ifilename):
     print(f'Finished sending data. CTRL-C in the datafilter terminal if it is not exist by itself.')
     sys.exit(0)
 
-def send_hdf5libs_dset_test(ifilename):
+def send_hdf5libs_dset_test(ifilename, ofilename):
     context = zmq.Context()
     socket=create_socket()
     socket_sync = context.socket(zmq.REP)
@@ -217,7 +217,7 @@ def send_hdf5libs_dset_test(ifilename):
                 attrs_items=[item for item in h5py_file.attrs.items()]
                 # frame by frame
                 message_data={'attrs' : attrs_items, 'record_header_dataset': record_header_dataset, 'iframe' : iframe, \
-                        'adcs' : adcs[iframe], 'ts' : ts[iframe]}
+                        'adcs' : adcs[iframe], 'ts' : ts[iframe], 'ofilename' : ofilename}
                 topic="data"
                 socket.send_string(topic, zmq.SNDMORE)
                 socket.send_pyobj(message_data)
@@ -253,7 +253,9 @@ def main(ifilename,test):
     if test == 2 : 
        send_h5py_dset_test2(ifilename)
     if test == 3:
-       send_hdf5libs_dset_test(ifilename)
+       ofilename = "test_output.hdf5"
+       print(f'output hdf5 file is {ofilename}')
+       send_hdf5libs_dset_test(ifilename,ofilename)
     else:
        send_h5py_dset_test1(ifilename)
 

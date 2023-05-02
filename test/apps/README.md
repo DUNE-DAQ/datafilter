@@ -27,3 +27,5 @@ python3 datafilter-nodash.py output.hdf5
   python3 datafilter test_output.hdf5
 
   ```
+ * You can view the plots from a browser pointing to http://yourip:8080, where
+   yourip is the IP of your datafilter host.
