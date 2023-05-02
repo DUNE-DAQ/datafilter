@@ -217,7 +217,7 @@ def send_hdf5libs_dset_test(ifilename, ofilename):
                 attrs_items=[item for item in h5py_file.attrs.items()]
                 # frame by frame
                 message_data={'attrs' : attrs_items, 'record_header_dataset': record_header_dataset, 'iframe' : iframe, \
-                        'adcs' : adcs[iframe], 'ts' : ts[iframe], 'ofilename' : ofilename}
+                        'n_frames' : n_frames, 'adcs' : adcs[iframe], 'ts' : ts[iframe], 'ofilename' : ofilename}
                 topic="data"
                 socket.send_string(topic, zmq.SNDMORE)
                 socket.send_pyobj(message_data)
@@ -227,7 +227,7 @@ def send_hdf5libs_dset_test(ifilename, ofilename):
 
 # all TR at once
 #    attrs_items=[item for item in h5py_file.attrs.items()]
-#    message_data={'attrs' : attrs_items, 'record_header_dataset': record_header_dataset, 'n_frames' : n_frames, 'adcs' : adcs[iframe]}
+#    message_data={'attrs' : attrs_items, 'record_header_dataset': record_header_dataset, 'n_frames' : n_frames, 'adcs' : adcs}
 #    topic="data"
 #    socket.send_string(topic, zmq.SNDMORE)
 #    socket.send_pyobj(message_data)
