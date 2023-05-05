@@ -143,7 +143,7 @@ def update(n):
 #        'marker_color' : 'define_color'
 #    }, 1, 1)
 #    trace1 = go.Scatter(y=message_data['adcs'], mode='markers')
-    trace1 = go.Histogram(x=message_data['adcs'], name='ADCs accepted frame '+str(iframe)+" of "+str(n_frames)+ ", ts: " + str(ts) + " time: "+t1 ,nbinsx=256)
+    trace1 = go.Histogram(x=message_data['adcs'], name='ADCs accepted frame '+str(iframe+1)+" of "+str(n_frames)+ ", ts: " + str(ts) + " time: "+t1 ,nbinsx=256)
 #    trace2 = go.Histogram(x=message_data['adcs'], name='ADCs accepted', nbinsx=256)
 #    fig.append_trace(trace1,1,1)
     fig.append_trace(trace1,1,1)
