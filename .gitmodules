@@ -1,0 +1,6 @@
+[submodule "src/exts/nlohmann_json"]
+	path = src/exts/nlohmann_json
+	url = https://github.com/nlohmann/json
+[submodule "src/exts/pybind11"]
+	path = src/exts/pybind11
+	url = https://github.com/pybind/pybind11.git
