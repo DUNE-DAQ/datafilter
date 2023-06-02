@@ -168,21 +168,6 @@ main(int argc, char** argv)
   for (auto& i: dummy_data ) {
       i=1;
   }
-//         for (auto i : dummy_data) {
-//            std::cout<<"\n dummy_data\t" <<i;
-            //std::cout<<"\n buffer \t" <<((char *) buffer)[i];
-//        }
-
-//std::vector<char*> v(10, "hi!");    //  You cannot put standard library containers e.g. char[] into std::vector!
-//for (auto& i : v)
-//{
-//    //std::cout << i << std::endl;
-//    i = "New";
-//}
-//for (auto i : v)
-//{
-//    std::cout << i << std::endl;
-//}
   //auto trh_ptr=0;
   //for (int trig_num = 1; trig_num <= trigger_count; ++trig_num) {
     for (auto const& rid : records) {
