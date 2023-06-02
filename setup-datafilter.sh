@@ -14,9 +14,9 @@ git clone https://github.com/DUNE-DAQ/detchannelmaps.git -b dunedaq-v2.11.1
 git clone https://github.com/DUNE-DAQ/detdataformats.git -b dunedaq-v2.11.1
 git clone https://github.com/DUNE-DAQ/datafilter.git  -b test
 cd datafilter
-git https://github.com/pybind/pybind11_json.git
+git clone https://github.com/pybind/pybind11_json.git
 
-cd ..
+cd ../..
 source dbt-env.sh
 dbt-workarea-env
 #cd source/hdf5libs
