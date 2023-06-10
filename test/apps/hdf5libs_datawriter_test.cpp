@@ -39,6 +39,8 @@ main(int argc, char** argv)
   const std::string input_h5_filename = std::string(argv[1]);
   const std::string output_h5_filename = std::string(argv[2]);
 
+  auto cnt=0;
+
   //open h5 file
   HDF5RawDataFile h5_file(input_h5_filename);
   
@@ -64,7 +66,7 @@ main(int argc, char** argv)
   auto file_index = h5_file.get_attribute<unsigned int>("file_index");
   auto creation_timestamp = h5_file.get_attribute<std::string>("creation_timestamp");
   auto app_name = h5_file.get_attribute<std::string>("application_name");
-  auto all_trigger_record_numbers = h5_file.get_all_trigger_record_numbers();
+  //auto all_trigger_record_numbers = h5_file.get_all_trigger_record_numbers();
 
   ss << "\n Run number = " << run_number;
   ss << "\n File index: " << file_index;
@@ -157,11 +159,13 @@ main(int argc, char** argv)
                                                      app_name,                   // app_name
                                                      flp,                    // file_layout_confs
 						     ".writing",                 // optional: suffix to use for files being written
-                                                     HighFive::File::Overwrite); // optional: overwrite existing file
+//                                                     HighFive::File::ReadWrite);
+                                                     HighFive::File::Overwrite);
 
 
   // loop over desired number of triggers
   bool is_replace = 0;
+//  int fragment_size=3866704;
   int fragment_size=80;
   std::vector<char> dummy_data(fragment_size ,0);
 
@@ -258,7 +262,7 @@ main(int argc, char** argv)
       auto frag_paths =h5_file.get_fragment_dataset_paths(rid);
       //auto frag_path = frag_paths[trig_num];
       auto all_frag_paths = h5_file.get_all_fragment_dataset_paths();
-      for (auto const& path : all_frag_paths ) {
+      for (auto const& path : frag_paths ) {
 //      for (auto const& gid : h5_file.get_geo_ids(rid)) {
        // auto gid=h5_file.get_geo_ids(rid);
         //TLOG() <<"\n gid \t" <<gid;
@@ -269,23 +273,68 @@ main(int argc, char** argv)
 
           auto elem_id = frag_ptr->get_element_id();
 
+          std::vector<std::unique_ptr<Fragment>> frag_ptr1; 
+
+          std::vector<char> dummy_data1(fragment_size ,0);
+          for (auto& i: dummy_data1 ) {
+              i=1;
+          }
+          TLOG()<<"<====> path "<<path;
+   
+
+//          std::unique_ptr<Fragment> frag(new Fragment((void*) &dummy_data,fragment_size));
           std::istringstream isSS(path);
           std::vector<std::string> tokens;
           std::string token;
 
+          cnt=0;
           while (std::getline(isSS,token,'/')) {
-              if (!token.empty())
-                 tokens.push_back(token);
+              if (!token.empty()) {
+                  cnt++;
+                  if (token=="TriggerRecordHeader") {
+                      is_replace=2;
+                      TLOG()<<"token path trigger_record "<<path;
+                      break;
+                  }
+                  if (cnt==4) {
+                      if (token=="Link02") {
+                          is_replace=1;
+//                          // create our fragment
+//                          FragmentHeader fh;
+//                          fh.trigger_number = trig_num;
+//                          fh.trigger_timestamp = ts;
+//                          fh.window_begin = ts - 10;
+//                          fh.window_end = ts;
+//                          fh.run_number = run_number;
+//                          fh.fragment_type = int(fragment_type);
+//                          fh.sequence_number = seq_num;
+//                          //fh.element_id = GeoID(gtype_to_use, reg_num, ele_num);
+//                          fh.element_id = elem_id;
+//                          TLOG()<<"Modify Link02 "<<path;
+//                          auto frag_ptr2 = std::make_unique<Fragment>(dummy_data1.data(), dummy_data1.size());
+//                          frag_ptr2->set_header_fields(fh);
+//                          tr1.add_fragment(std::move(frag_ptr2));
+//                          h5_raw_data_file.write(tr1);
+//                          break;
+                      } else {
+                          TLOG()<<"<<==>>token "<<token<<" path "<<path;
+                          is_replace=0;
+//                          break;
+                      } 
+                        //tokens.push_back(token);
+                  }
+               }
           }
-        
-         
-          for ( auto i : tokens ) {
-             if ( i=="Link02") {
-                std::vector<std::unique_ptr<Fragment>> frag_ptr1; 
+
+          
+//          for ( auto i : tokens ) {
+             if (is_replace==1) {
+//                std::vector<std::unique_ptr<Fragment>> frag_ptr1; 
                 //std::vector<std::pair<void*, size_t>> list_of_pieces(fragment_size,std::make_pair(void*,0));
                 //std::vector<std::pair<void*, size_t>> list_of_pieces;
                 //for (auto& list_of_piece : list_of_pieces)
                 //    TLOG()<<"\n list_of_piece \t"<<list_of_piece.first;
+
 
                 //void * buffer=&dummy_data;
                 
@@ -321,7 +370,9 @@ main(int argc, char** argv)
 //                //frag_ptr1->set_header_fields(frag_ptr->get_header());
 //               
 //                //int num_frames = fragment_size/sizeof(detdataformats::wib::WIBFrame);
-	            auto frag_ptr2 = std::make_unique<Fragment>(dummy_data.data(), dummy_data.size());
+//            if (is_replace==1) {
+
+                auto frag_ptr2 = std::make_unique<Fragment>(dummy_data1.data(), dummy_data1.size());
                 frag_ptr2->set_header_fields(fh);
                 //frag_ptr2->set_header_fields(frag_ptr->get_header());
 
@@ -337,13 +388,22 @@ main(int argc, char** argv)
                 //frag_ptr2->set_header_fields(frag->get_header());
                 tr1.add_fragment(std::move(frag_ptr2));
                 //tr.set_fragments(std::move(frag_ptr1));
-                is_replace = 1;
+//                is_replace = 1;
 
-                 h5_raw_data_file2.write(tr1);
+                 //if (cnt==12)
+                 TLOG()<<"Link02 found in path and will be replace by zero vector in " << path;
+                 //h5_raw_data_file.write(tr1);
                 //if (elem_id == 4) {
-                    TLOG()<<"Link02 found in path and will be replace by zero vector in " << path;
                 //}
-             } else {
+      } else {
+               
+                tr1.add_fragment(std::move(frag_ptr));
+//                 h5_raw_data_file.write(tr1);
+//                  break;
+      }
+
+
+//             if (is_replace==0) {
                 //do something here   
                 // this is another way to set the fragment header
 //                frag->set_type(frag_ptr->get_fragment_type());
@@ -356,32 +416,38 @@ main(int argc, char** argv)
 //                //frag->set_type(daqdataformats::FragmentType::kTriggerPrimitives);
 //                //frag->set_header_fields(frag_ptr->get_header());
 //                tr.add_fragment(std::move(frag));
-             }
+//                  TLOG()<<"other" <<path;
+                  //if (i != "Trigger")
+                  //h5_raw_data_file.write(tr);
+                  //break;
+//             }
 
-             if (i=="Trigger") {
+             //if (i=="Trigger") {
                  //TLOG()<<"\n Trigger found to be replaced\t"<<path;
-             }
+             //}
 
              //dummy_data.clear();
-          }
+//          }
                                   
           //TLOG() <<"\n =============>gid"<<gid<<"frag_hdr "<<frag_hdr<<"<==>elem_id \t"<<elem_id;
-       //   TLOG() <<"\n ==>> gid"<<gid<<"trig_num "<<trig_num<<"frag_path " <<frag_path<<" elem_id"<<elem_id;
 //      } // end loop over elements
     }   // end loop over regions
 
+
     // write trigger record to file
     //if (trig_num%10!=0) {
-//     if (is_replace) {
+//     if (is_replace==1) {
 //    
 //         //tr1.add_fragment(std::move(frag_ptr2));
 ////         std::cout<<"\n ===>write tr1 \t";
-//         h5_raw_data_file2.write(tr1);
+         h5_raw_data_file.write(tr1);
+//     }
 //      } else {
-//          h5_raw_data_file.write(tr);
+//     if (is_replace==0)
+//        h5_raw_data_file2.write(tr);
 ////       std::cout<<"\n ===>write tr \t";
 ////      }
-//    }
+   // }
 
   } // end loop over triggers
 
