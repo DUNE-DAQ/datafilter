@@ -114,32 +114,32 @@ int main(int argc, char** argv)
     TLOG() << ss.str();
     ss.str("");
   
-  //  //get datasets
-  //	for(auto const& rid : h5_file.get_all_record_ids()){
-  //		ss << "Processing record (" << rid.first << "," << rid.second << "):";
-  //
-  //		auto record_header_dataset = h5_file.get_record_header_dataset_path(rid);
-  //		if(h5_file.is_trigger_record_type()){
-  //			auto trh_ptr = h5_file.get_trh_ptr(rid);
-  //			ss << "\n\t" << trh_ptr->get_header();
-  //		} else if(h5_file.is_timeslice_type()){
-  //			auto tsh_ptr = h5_file.get_tsh_ptr(rid);
-  //			ss << "\n\t" << *tsh_ptr;
-  //		}
-  //
-  //		for(auto const& gid : h5_file.get_geo_ids(rid)){
-  //			//ss << "\n\t" << gid << ": ";
-  //			auto frag_ptr = h5_file.get_frag_ptr(rid,gid);
-  //			ss << "\n\t" << frag_ptr->get_header();
-  //		}
-  //
-  //		//could also do loop like this...
-  //		//for(auto const& frag_dataset : h5_raw_data_file.get_fragment_dataset_paths(rid))
-  //		//  auto frag_ptr = h5_raw_data_file.get_frag_ptr(frag_dataset)
-  //
-  //		TLOG() << ss.str(); ss.str("");
-  //	}
-  //
+    //  //get datasets
+    //	for(auto const& rid : h5_file.get_all_record_ids()){
+    //		ss << "Processing record (" << rid.first << "," << rid.second << "):";
+    //
+    //		auto record_header_dataset = h5_file.get_record_header_dataset_path(rid);
+    //		if(h5_file.is_trigger_record_type()){
+    //			auto trh_ptr = h5_file.get_trh_ptr(rid);
+    //			ss << "\n\t" << trh_ptr->get_header();
+    //		} else if(h5_file.is_timeslice_type()){
+    //			auto tsh_ptr = h5_file.get_tsh_ptr(rid);
+    //			ss << "\n\t" << *tsh_ptr;
+    //		}
+    //
+    //		for(auto const& gid : h5_file.get_geo_ids(rid)){
+    //			//ss << "\n\t" << gid << ": ";
+    //			auto frag_ptr = h5_file.get_frag_ptr(rid,gid);
+    //			ss << "\n\t" << frag_ptr->get_header();
+    //		}
+    //
+    //		//could also do loop like this...
+    //		//for(auto const& frag_dataset : h5_raw_data_file.get_fragment_dataset_paths(rid))
+    //		//  auto frag_ptr = h5_raw_data_file.get_frag_ptr(frag_dataset)
+    //
+    //		TLOG() << ss.str(); ss.str("");
+    //	}
+    //
   
     // create output file for writing
     HDF5RawDataFile h5_raw_data_file = HDF5RawDataFile(output_h5_filename,
@@ -150,108 +150,42 @@ int main(int argc, char** argv)
   						     ".writing",                 // optional: suffix to use for files being written
                                                        HighFive::File::Overwrite); // optional: overwrite existing file
                                                                                    //
-    // loop over desired number of triggers
-    //int fragment_size=80;
-    //std::vector<char> dummy_data(fragment_size ,0);
-  
-  //  for (auto& i: dummy_data ) {
-  //      i=1;
-  //  }
-    //auto trh_ptr=0;
-    //for (int trig_num = 1; trig_num <= trigger_count; ++trig_num) {
-      for (auto const& rid : records) {
-          //TLOG() << "rid" <<rid.first;
-      // get a timestamp for this trigger
-      //uint64_t ts = std::chrono::duration_cast<std::chrono::milliseconds>( // NOLINT(build/unsigned)
-      //                system_clock::now().time_since_epoch())
-      //                .count();
+    for (auto const& rid : records) {
   		auto record_header_dataset = h5_file.get_record_header_dataset_path(rid);
-          auto tr = h5_file.get_trigger_record(rid);
-  //		if(h5_file.is_trigger_record_type()){
-  			auto trh_ptr = h5_file.get_trh_ptr(rid);
-  //            auto trh = trh_ptr->get_header();
-  			ss << "\n trh_ptr \t" << trh_ptr->get_header();
-              ss << "\n record_header_dataset \t"<<record_header_dataset;
-  //		} else if(h5_file.is_timeslice_type()){
-  //			auto tsh_ptr = h5_file.get_tsh_ptr(rid);
-  //			ss << "\n\t" << *tsh_ptr;
-  //		}
-            // get a timestamp for this trigger
-            uint64_t ts = std::chrono::duration_cast<std::chrono::milliseconds>( // NOLINT(build/unsigned)
-                            system_clock::now().time_since_epoch())
-                            .count();
+        auto tr = h5_file.get_trigger_record(rid);
+		auto trh_ptr = h5_file.get_trh_ptr(rid);
+     	ss << "\n trh_ptr \t" << trh_ptr->get_header();
+        ss << "\n record_header_dataset \t"<<record_header_dataset;
+        // get a timestamp for this trigger
+        uint64_t ts = std::chrono::duration_cast<std::chrono::milliseconds>( // NOLINT(build/unsigned)
+                      system_clock::now().time_since_epoch())
+                      .count();
   
-           auto trig_num = trh_ptr->get_trigger_number();
-           auto num_requested_components = trh_ptr->get_num_requested_components();
-           ss <<"\n num_requested_components \t"<<num_requested_components;
-           auto seq_num = trh_ptr->get_sequence_number();
-           auto max_seq_num = trh_ptr->get_max_sequence_number();
-           ss <<"\n seq_num \t"<<seq_num;
+        auto trig_num = trh_ptr->get_trigger_number();
+        auto num_requested_components = trh_ptr->get_num_requested_components();
+        ss <<"\n num_requested_components \t"<<num_requested_components;
+        auto seq_num = trh_ptr->get_sequence_number();
+        auto max_seq_num = trh_ptr->get_max_sequence_number();
+        ss <<"\n seq_num \t"<<seq_num;
   
-  		   //TLOG() << ss.str(); ss.str("");
+    	//TLOG() << ss.str(); ss.str("");
   
-          // create TriggerRecordHeader
-          TriggerRecordHeaderData trh_data;
-          trh_data.trigger_number = trig_num;
-          trh_data.trigger_timestamp = ts;
-          trh_data.num_requested_components = num_requested_components;
-          trh_data.run_number = run_number;
-          trh_data.sequence_number = seq_num;
-          trh_data.max_sequence_number = max_seq_num;
-       
-          TriggerRecordHeader trh1(&trh_data);
-          // create out TriggerRecord
-          TriggerRecord tr1(trh1);
+        // create TriggerRecordHeader
+        TriggerRecordHeaderData trh_data;
+        trh_data.trigger_number = trig_num;
+        trh_data.trigger_timestamp = ts;
+        trh_data.num_requested_components = num_requested_components;
+        trh_data.run_number = run_number;
+        trh_data.sequence_number = seq_num;
+        trh_data.max_sequence_number = max_seq_num;
+     
+        TriggerRecordHeader trh1(&trh_data);
+        // create out TriggerRecord
+        TriggerRecord tr1(trh1);
    
-      //TLOG() << "\tWriting trigger " << trig_num << " with time_stamp " << ts;
-      //TLOG() << "\tWriting trigger " << trig_num;
-      // loop over regions and elements
-  //    for (int reg_num = 0; reg_num < region_count; ++reg_num) {
-  //      for (int ele_num = 0; ele_num < element_count; ++ele_num) {
-  
-       //auto frag_path = h5_file.get_fragment_dataset_paths(rid);
-       //TLOG() <<"\n frag_path \t" <<frag_path;
-  //		for(auto const& frag_paths : h5_file.get_fragment_dataset_paths(rid))
-  //		  auto frag_path = h5_file.get_frag_ptr(frag_paths);
-  //          //TLOG() <<"\n ====>frag_path \t"<<frag_path;
-            
-  //    auto all_frag_paths = h5_file.get_all_fragment_dataset_paths();
-  //    ss << "\nAll fragment datasets found:";
-  //    for (auto const& path : all_frag_paths)
-  //    	ss << "\n path \t" << path;
-  //    TLOG() << ss.str();
-  //    ss.str("");
-  //
-  //     auto  frag_sid_list = h5_file.get_fragment_dataset_paths(rid);
-  //    for (auto const& source_id : frag_sid_list) {
-  //      auto frag_ptr = h5_file.get_frag_ptr(rid, source_id);
-  //      ss << "\n\t" << fragment_type_to_string(frag_ptr->get_fragment_type()) << " fragment with SourceID "
-  //         << frag_ptr->get_element_id().to_string() << " from subdetector "
-  //         << DetID::subdetector_to_string(static_cast<DetID::Subdetector>(frag_ptr->get_detector_id()))
-  //         << " has size = " << frag_ptr->get_size();
-  //      if (frag_ptr->get_element_id().subsystem == SourceID::Subsystem::kDetectorReadout) {
-  //        ss << "\n\t\t"
-  //           << "It may contain data from the following detector components:";
-  //        std::vector<uint64_t> geo_id_list = h5_file.get_geo_ids_for_source_id(rid, source_id);
-  //        for (auto const& geo_id : geo_id_list) {
-  //          HardwareMapService::GeoInfo geo_info = HardwareMapService::parse_geo_id(geo_id);
-  //          ss << "\n\t\t\t"
-  //             << "subdetector " << DetID::subdetector_to_string(static_cast<DetID::Subdetector>(geo_info.det_id))
-  //             << ", crate " << geo_info.det_crate << ", slot " << geo_info.det_slot << ", link " << geo_info.det_link;
-  //        }
-  //      }
-  //    }
-  //    TLOG() << ss.str();
-  //    ss.str("");
-  //      std::unique_ptr<Fragment> frag(new Fragment((void*) &dummy_data,fragment_size));
         auto frag_paths =h5_file.get_fragment_dataset_paths(rid);
-        //auto frag_path = frag_paths[trig_num];
         auto all_frag_paths = h5_file.get_all_fragment_dataset_paths();
         for (auto const& path : frag_paths ) {
-  //      for (auto const& gid : h5_file.get_geo_ids(rid)) {
-         // auto gid=h5_file.get_geo_ids(rid);
-          //TLOG() <<"\n gid \t" <<gid;
-  
             auto frag_ptr = h5_file.get_frag_ptr(path);
             auto fragment_size=frag_ptr->get_size();
             auto fragment_type = frag_ptr->get_fragment_type();
@@ -271,9 +205,7 @@ int main(int argc, char** argv)
             }
 
             //TLOG()<<"<====> path "<<path;
-     
   
-  //          std::unique_ptr<Fragment> frag(new Fragment((void*) &dummy_data,fragment_size));
             std::istringstream isSS(path);
             std::string token;
   
@@ -301,18 +233,12 @@ int main(int argc, char** argv)
             }
   
                if (is_replace==1) {
-  //                std::vector<std::unique_ptr<Fragment>> frag_ptr1; 
+                  //std::vector<std::unique_ptr<Fragment>> frag_ptr1; 
                   //std::vector<std::pair<void*, size_t>> list_of_pieces(fragment_size,std::make_pair(void*,0));
                   //std::vector<std::pair<void*, size_t>> list_of_pieces;
                   //for (auto& list_of_piece : list_of_pieces)
                   //    TLOG()<<"\n list_of_piece \t"<<list_of_piece.first;
-  
-  
-                  //void * buffer=&dummy_data;
-                  
-                  //for (int i;i<fragment_size;i++) 
-                  //    std::cout<<" \t buffer"<<*buffer;
-  
+ 
                   // create our fragment
                   FragmentHeader fh;
                   fh.trigger_number = trig_num;
@@ -321,39 +247,32 @@ int main(int argc, char** argv)
                   fh.window_end = ts;
                   fh.run_number = run_number;
                   fh.fragment_type = int(fragment_type);
-               	fh.sequence_number = seq_num;
+                  fh.sequence_number = seq_num;
                   //fh.element_id = GeoID(gtype_to_use, reg_num, ele_num);
                   fh.element_id = elem_id;
   
                   //std::unique_ptr<Fragment> frag(new Fragment(list_of_pieces));
                  
-  // this is another way to set the fragment header
-  //                frag->set_type(frag_ptr->get_fragment_type());
+                  // this is another way to set the fragment header
+                  //frag->set_type(frag_ptr->get_fragment_type());
                   //frag->set_detector_id(frag_ptr->get_detector_id());
-  //                frag->set_run_number(run_number);
-  //                frag->set_trigger_number(trig_num);
-  //                frag->set_window_begin(ts-10);
-  //                frag->set_window_end(ts);
-  //                frag->set_element_id(elem_id);
+                  //frag->set_run_number(run_number);
+                  //frag->set_trigger_number(trig_num);
+                  //frag->set_window_begin(ts-10);
+                  //frag->set_window_end(ts);
+                  //frag->set_element_id(elem_id);
                   //frag->set_type(daqdataformats::FragmentType::kTriggerPrimitives);
                   //frag->set_header_fields(frag_ptr->get_header());
-  //
+                  //
                   //frag_ptr1.push_back(std::move(frag));
-  //                //frag_ptr1->set_header_fields(frag_ptr->get_header());
-  //               
-  //                //int num_frames = fragment_size/sizeof(detdataformats::wib::WIBFrame);
+                  //  //frag_ptr1->set_header_fields(frag_ptr->get_header());
+                  // 
+                  //  //int num_frames = fragment_size/sizeof(detdataformats::wib::WIBFrame);
   
                   auto frag_ptr2 = std::make_unique<Fragment>(dummy_data1.data(), dummy_data1.size());
                   //frag_ptr2->set_header_fields(fh);
                   frag_ptr2->set_header_fields(frag_ptr->get_header());
-  
-                  //char * buffer new char[fragment_size];
-                  
-  //                void * buffer = frag_ptr2->get_data();
-  //                for (int i=0;i<10;i++) {
-  //                   std::cout<<"\n =====buffer \t"<<((char *) buffer)[i]; 
-  //                }
-  
+ 
                   //auto record_number = h5_file.get_file_layout().get_record_number_string(trig_num,seq_num);
                   //std::cout<<"\n =====record_number_string \t"<<record_number; 
                   //frag_ptr2->set_header_fields(frag->get_header());
@@ -361,55 +280,18 @@ int main(int argc, char** argv)
                       TLOG()<<"Link02 found in path and will be replaced by a vector with 1 in " << path;
                       tr1.add_fragment(std::move(frag_ptr2));
                   }
-                  //tr.set_fragments(std::move(frag_ptr1));
         } else {
                  
                   tr1.add_fragment(std::move(frag_ptr));
-  //                 h5_raw_data_file.write(tr1);
-  //                  break;
         }
   
-  
-  //             if (is_replace==0) {
-                  //do something here   
-                  // this is another way to set the fragment header
-  //                frag->set_type(frag_ptr->get_fragment_type());
-  //                //frag->set_detector_id(frag_ptr->get_detector_id());
-  //                frag->set_run_number(run_number);
-  //                frag->set_trigger_number(trig_num);
-  //                frag->set_window_begin(ts-10);
-  //                frag->set_window_end(ts);
-  //                frag->set_element_id(elem_id);
-  //                //frag->set_type(daqdataformats::FragmentType::kTriggerPrimitives);
-  //                //frag->set_header_fields(frag_ptr->get_header());
-  //                tr.add_fragment(std::move(frag));
-  //                  TLOG()<<"other" <<path;
-                    //if (i != "Trigger")
-                    //h5_raw_data_file.write(tr);
-                    //break;
-  //             }
-  
-               //if (i=="Trigger") {
-                   //TLOG()<<"\n Trigger found to be replaced\t"<<path;
-               //}
-  
-               //dummy_data.clear();
-  //          }
-                                    
-            //TLOG() <<"\n =============>gid"<<gid<<"frag_hdr "<<frag_hdr<<"<==>elem_id \t"<<elem_id;
-  //      } // end loop over elements
+        //dummy_data1.clear();
       }   // end loop over regions
   
   
       // write trigger record to file
       //if (trig_num%10!=0) {
-  //    if (write_fragment_type==0)
-           h5_raw_data_file.write(tr1);
-  //    if (write_fragment_type==1 && !is_replace)
-  //         h5_raw_data_file.write(tr1);
-   
-      // }
-  
+      h5_raw_data_file.write(tr1);
     } // end loop over triggers
   
     TLOG() << "Finished writing to file " << h5_raw_data_file.get_file_name();
