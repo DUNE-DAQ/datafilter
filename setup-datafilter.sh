@@ -19,6 +19,4 @@ git clone https://github.com/pybind/pybind11_json.git
 cd ../..
 source dbt-env.sh
 dbt-workarea-env
-#cd source/hdf5libs
-#git checkout dunedaq-v2.11.1
 dbt-build
