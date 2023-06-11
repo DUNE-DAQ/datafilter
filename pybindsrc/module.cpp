@@ -1,0 +1,32 @@
+/**
+ * @file module.cpp
+ *
+ * This is part of the DUNE DAQ Software Suite, copyright 2020.
+ * Licensing/copyright details are in the COPYING file that you should have
+ * received with this code.
+ */
+
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+
+namespace py = pybind11;
+
+namespace dunedaq {
+namespace datafilter {
+namespace python {
+
+
+extern void 
+register_hdf5_writer_libs(py::module&);
+
+PYBIND11_MODULE(_daq_datafilter_py, m)
+{
+
+  m.doc() = "c++ implementation of the dunedaq hdf5libs modules"; // optional module docstring
+
+  register_hdf5_writer_libs(m);
+}
+
+} // namespace python
+} // namespace datafilter
+} // namespace dunedaq
