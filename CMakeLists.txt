@@ -40,6 +40,6 @@ daq_add_python_bindings(*.cpp LINK_LIBRARIES ${PROJECT_NAME} hdf5libs::hdf5libs 
 # Applications
 #daq_add_application(HDF5LIBS_TestReader HDF5LIBS_TestReader.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 #daq_add_application(HDF5LIBS_TestWriter HDF5LIBS_TestWriter.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-daq_add_application(hdf5libs_datawriter_test hdf5libs_datawriter_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+daq_add_application(hdf5libs_datafilter_writer_test hdf5libs_datafilter_writer_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 
 daq_install()
