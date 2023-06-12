@@ -34,7 +34,7 @@ daq_add_library (*.cpp LINK_LIBRARIES stdc++fs ers::ers HighFive hdf5libs daqdat
 
 ##############################################################################
 # Python bindings
-daq_add_python_bindings(*.cpp LINK_LIBRARIES ${PROJECT_NAME} hdf5libs::hdf5libs daqdataformats::daqdataformats)
+daq_add_python_bindings(*.cpp LINK_LIBRARIES ${PROJECT_NAME} hdf5libs::hdf5libs daqdataformats::daqdataformats detdataformats::detdataformats detchannelmaps::detchannelmaps) 
 
 ##############################################################################
 # Applications
