@@ -4,15 +4,22 @@ source `realpath /cvmfs/dunedaq.opensciencegrid.org/spack-externals/spack-instal
 spack load python@3.8.3%gcc@8.2.0
 source /cvmfs/dunedaq.opensciencegrid.org/setup_dunedaq.sh
 
-#v2 
-setup_dbt dunedaq-v2.11.1  
-dbt-create -c dunedaq-v2.11.1-c7 $INSTALL_DIR/dune-v2-spack-test
+#v4 
+
+setup_dbt fddaq-v4.2.0
+dbt-create -c fddaq-v4.2.0 $INSTALL_DIR/dune-v4-spack
 cd $INSTALL_DIR/dune-v2-spack-test/sourcecode
 
-git clone https://github.com/DUNE-DAQ/hdf5libs.git -b dunedaq-v2.11.1
-git clone https://github.com/DUNE-DAQ/detchannelmaps.git -b dunedaq-v2.11.1
-git clone https://github.com/DUNE-DAQ/detdataformats.git -b dunedaq-v2.11.1
-git clone https://github.com/DUNE-DAQ/datafilter.git  -b test
+git clone https://github.com/DUNE-DAQ/hdf5libs.git
+git clone https://github.com/DUNE-DAQ/detchannelmaps.git
+git clone https://github.com/DUNE-DAQ/detdataformats.git
+git clone https://github.com/DUNE-DAQ/serialization.git
+git clone https://github.com/DUNE-DAQ/fddetdataformats.git -b fddaq-v4.2.0
+git clone https://github.com/DUNE-DAQ/iomanager.git 
+git clone https://github.com/DUNE-DAQ/ipm.git
+git clone https://github.com/DUNE-DAQ/utilities.git
+git clone https://github.com/DUNE-DAQ/datafilter.git  -b develop
+
 cd datafilter
 git clone https://github.com/pybind/pybind11_json.git
 

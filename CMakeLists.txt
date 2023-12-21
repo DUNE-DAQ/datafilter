@@ -6,14 +6,17 @@ find_package(daq-cmake REQUIRED)
 daq_setup_environment()
 
 include_directories(pybind11_json/include)
+include_directories(pybind11/include)
 
 find_package(logging REQUIRED)
 find_package(ers REQUIRED)
 find_package(HighFive REQUIRED)
 find_package(daqdataformats REQUIRED)
 find_package(detdataformats REQUIRED)
+find_package(fddetdataformats REQUIRED)
 find_package(detchannelmaps REQUIRED)
 find_package(hdf5libs REQUIRED)
+find_package(iomanager REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(cetlib REQUIRED)   # Uses the daq-buildtools/cmake/Findcetlib.cmake
 find_package(Boost COMPONENTS iostreams unit_test_framework REQUIRED)
@@ -25,7 +28,7 @@ daq_codegen( *.jsonnet TEMPLATES Structs.hpp.j2 Nljs.hpp.j2 )
 
 ##############################################################################
 # Main library
-daq_add_library (*.cpp LINK_LIBRARIES stdc++fs ers::ers HighFive hdf5libs daqdataformats::daqdataformats detdataformats::detdataformats detchannelmaps::detchannelmaps logging::logging nlohmann_json::nlohmann_json ${CETLIB} ${CETLIB_EXCEPT})
+daq_add_library (*.cpp LINK_LIBRARIES stdc++fs ers::ers HighFive hdf5libs daqdataformats::daqdataformats detdataformats::detdataformats fddetdataformats::fddetdataformats detchannelmaps::detchannelmaps iomanager::iomanager logging::logging nlohmann_json::nlohmann_json ${CETLIB} ${CETLIB_EXCEPT})
 
 ##############################################################################
 # Unit tests
@@ -34,12 +37,14 @@ daq_add_library (*.cpp LINK_LIBRARIES stdc++fs ers::ers HighFive hdf5libs daqdat
 
 ##############################################################################
 # Python bindings
-daq_add_python_bindings(*.cpp LINK_LIBRARIES ${PROJECT_NAME} hdf5libs::hdf5libs daqdataformats::daqdataformats)
+daq_add_python_bindings(*.cpp LINK_LIBRARIES ${PROJECT_NAME} hdf5libs::hdf5libs daqdataformats::daqdataformats fddetdataformats::fddetdataformats)
 
 ##############################################################################
 # Applications
-#daq_add_application(HDF5LIBS_TestReader HDF5LIBS_TestReader.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-#daq_add_application(HDF5LIBS_TestWriter HDF5LIBS_TestWriter.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-daq_add_application(hdf5libs_datafilter_writer_test hdf5libs_datafilter_writer_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+#daq_add_application(hdf5libs_datafilter_writer_test hdf5libs_datafilter_writer_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+#daq_add_application(dataflow_emu ../../apps/dataflow_emu.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+daq_add_application(dataflow_emu2 ../../apps/dataflow_emu2.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+daq_add_application(datafilter2 ../../apps/datafilter2.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+#daq_add_application(datafilter_config_test ../../apps/datafilter_config_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 
 daq_install()
