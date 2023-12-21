@@ -171,18 +171,18 @@ struct SubscriberTest
   std::vector<std::shared_ptr<SubscriberInfo>> subscribers;
   DatafilterConfig config;
 
-              // create TriggerRecordHeader
-//              TriggerRecordHeaderData trh_data;
-//              trh_data.trigger_number = trig_num;
-//              trh_data.trigger_timestamp = ts;
-//              trh_data.num_requested_components = num_requested_components;
-//              trh_data.run_number = run_number;
-//              trh_data.sequence_number = seq_num;
-//              trh_data.max_sequence_number = max_seq_num;
-//           
-//              TriggerRecordHeader trh1(&trh_data);
-//              // create out TriggerRecord
-//              TriggerRecord tr1(trh1);
+//  // create TriggerRecordHeader
+//  TriggerRecordHeaderData trh_data;
+//  trh_data.trigger_number = trig_num;
+//  trh_data.trigger_timestamp = ts;
+//  trh_data.num_requested_components = num_requested_components;
+//  trh_data.run_number = run_number;
+//  trh_data.sequence_number = seq_num;
+//  trh_data.max_sequence_number = max_seq_num;
+//
+//  TriggerRecordHeader trh1(&trh_data);
+//  // create out TriggerRecord
+//  TriggerRecord tr1(trh1);
  
   explicit SubscriberTest(DatafilterConfig c)
     : config(c)
@@ -481,7 +481,6 @@ struct SubscriberTest
 
   void receive(size_t run_number1)
   {
-//    auto start = std::chrono::steady_clock::now();
     TLOG_DEBUG(5) << "Setting up SubscriberInfo objects";
     for (size_t group = 0; group < config.num_groups; ++group) {
      // subscribers.push_back(std::make_shared<SubscriberInfo>(group));
@@ -492,7 +491,6 @@ struct SubscriberTest
 
     std::atomic<std::chrono::steady_clock::time_point> last_received = std::chrono::steady_clock::now();
     TLOG_DEBUG(5) << "Adding callbacks for each subscriber";
-//    auto after_info = std::chrono::steady_clock::now();
     std::for_each(std::execution::par_unseq,
                   std::begin(subscribers),
                   std::end(subscribers),
@@ -560,7 +558,6 @@ struct SubscriberTest
       auto receiver = dunedaq::get_iom_receiver<dunedaq::datafilter::Data>(info->get_connection_name(config));
       receiver->remove_callback();
     }
-//    auto after_cleanup = std::chrono::steady_clock::now();
 
     subscribers.clear();
     TLOG_DEBUG(5) << "receive() done";
