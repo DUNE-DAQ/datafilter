@@ -8,7 +8,7 @@ source /cvmfs/dunedaq.opensciencegrid.org/setup_dunedaq.sh
 
 setup_dbt fddaq-v4.2.0
 dbt-create -c fddaq-v4.2.0 $INSTALL_DIR/dune-v4-spack
-cd $INSTALL_DIR/dune-v2-spack-test/sourcecode
+cd $INSTALL_DIR/dune-v4-spack/sourcecode
 
 git clone https://github.com/DUNE-DAQ/hdf5libs.git
 git clone https://github.com/DUNE-DAQ/detchannelmaps.git
