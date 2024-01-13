@@ -24,7 +24,8 @@ find_package(Boost COMPONENTS iostreams unit_test_framework REQUIRED)
 #find_package(pybind11_json ${pybind11_json_REQUIRED_VERSION} REQUIRED)
 include_directories(src/exts/nlohmann_json/include)
 
-daq_codegen( *.jsonnet TEMPLATES Structs.hpp.j2 Nljs.hpp.j2 )
+daq_codegen( app.jsonnet DEP_PKGS iomanager TEMPLATES Structs.hpp.j2 Nljs.hpp.j2 )
+daq_codegen( appinfo.jsonnet DEP_PKGS opmonlib TEMPLATES opmonlib/InfoStructs.hpp.j2 opmonlib/InfoNljs.hpp.j2 )
 
 ##############################################################################
 # Main library

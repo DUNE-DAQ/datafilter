@@ -13,7 +13,9 @@ struct Data
   size_t detector_id;
   size_t error_bits;
   size_t fragment_type;
+  //daqdataformats::Fragment  fragment_type;
   std::string path_header;
+  int n_frames;
 
   size_t publisher_id;
   size_t group_id;
@@ -24,7 +26,7 @@ struct Data
 
   Data() = default;
   Data(size_t seq, size_t trigger, size_t timestamp, size_t run, 
-          size_t element, size_t detector, size_t error, size_t fragment, std::string path, 
+          size_t element, size_t detector, size_t error, size_t fragment, std::string path, int nframes, 
           size_t publisher, size_t group, size_t conn, size_t size)
     : seq_number(seq)
     , trigger_number(trigger)
@@ -35,6 +37,7 @@ struct Data
     , error_bits(error)
     , fragment_type(fragment)
     , path_header(path)
+    , n_frames(nframes)
     , publisher_id(publisher)
     , group_id(group)
     , conn_id(conn)
@@ -48,9 +51,23 @@ struct Data
   Data& operator=(Data&&) = default;
 
   DUNE_DAQ_SERIALIZE(Data, seq_number, trigger_number, trigger_timestamp,
-         run_number, element_id, detector_id, error_bits, fragment_type, path_header, 
+         run_number, element_id, detector_id, error_bits, fragment_type, path_header, n_frames, 
          publisher_id, group_id, conn_id, contents);
 };
+
+struct Handshake
+{
+  std::string msg_id;
+  Handshake() = default;
+  Handshake(std::string msg)
+      : msg_id(msg)
+  {
+  }
+
+  DUNE_DAQ_SERIALIZE(Handshake, msg_id);
+
+};
+
 
 struct QuotaReached
 {

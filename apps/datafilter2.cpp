@@ -26,19 +26,6 @@ using namespace dunedaq::detdataformats;
 namespace dunedaq {
 namespace iomanager {
 
-struct Handshake
-{
-  std::string msg_id;
-  Handshake() = default;
-  Handshake(std::string msg)
-      : msg_id(msg)
-  {
-  }
-
-  DUNE_DAQ_SERIALIZE(Handshake, msg_id);
-
-};
-
 struct DatafilterConfig
 {
 
@@ -56,6 +43,7 @@ struct DatafilterConfig
   size_t my_id = 0;
   size_t send_interval_ms = 100;
   int publish_interval = 1000;
+  bool next_tr=false;
 
   size_t seq_number;
   size_t trigger_number;
@@ -65,6 +53,7 @@ struct DatafilterConfig
   size_t detector_id;
   size_t error_bits;
   size_t fragment_type;
+  //dunedaq::daqdataformats::FragmentType fragment_type;
 
 
   std::string input_h5_filename = "/lcg/storage19/test-area/dune/trigger_records/swtest_run001039_0000_dataflow0_datawriter_0_20231103T121050.hdf5";
@@ -129,6 +118,19 @@ struct DatafilterConfig
         }
       }
 
+    //  for (size_t sub = 0; sub < num_apps; ++sub) {
+      for (size_t sub = 0; sub < 3; ++sub) {
+        auto port = 13000 + sub;
+        std::string conn_addr = "tcp://127.0.0.1:" + std::to_string(port);
+        TLOG() << "Adding control connection " << "TR_tracking"+std::to_string(sub) << " with address "
+                      << conn_addr;
+
+        connections.emplace_back(
+          //Connection{ ConnectionId{ "TR_tracking"+std::to_string(sub), "init_t" }, conn_addr, ConnectionType::kPubSub });
+          Connection{ ConnectionId{ "TR_tracking"+std::to_string(sub), "init_t" }, conn_addr, ConnectionType::kSendRecv });
+      }
+
+
     IOManager::get()->configure(
       queues, connections, use_connectivity_service, std::chrono::milliseconds(publish_interval));
   }
@@ -171,19 +173,9 @@ struct SubscriberTest
   std::vector<std::shared_ptr<SubscriberInfo>> subscribers;
   DatafilterConfig config;
 
-//  // create TriggerRecordHeader
-//  TriggerRecordHeaderData trh_data;
-//  trh_data.trigger_number = trig_num;
-//  trh_data.trigger_timestamp = ts;
-//  trh_data.num_requested_components = num_requested_components;
-//  trh_data.run_number = run_number;
-//  trh_data.sequence_number = seq_num;
-//  trh_data.max_sequence_number = max_seq_num;
-//
-//  TriggerRecordHeader trh1(&trh_data);
-//  // create out TriggerRecord
-//  TriggerRecord tr1(trh1);
- 
+  // create TriggerRecordHeader
+  TriggerRecordHeaderData trh_data;
+
   explicit SubscriberTest(DatafilterConfig c)
     : config(c)
   {
@@ -195,292 +187,303 @@ struct SubscriberTest
     std::string path_header1;
 
   void init(size_t datafilter_run_number){
-    //auto start = std::chrono::steady_clock::now();
-    //auto sender = dunedaq::get_iom_sender<Handshake>(config.get_subscriber_init_name());
 
     TLOG_DEBUG(5) << "Getting init sender";
-//    auto start = std::chrono::steady_clock::now();
-    auto init_sender = dunedaq::get_iom_sender<Handshake>(config.get_subscriber_init_name());
-//    auto after_control = std::chrono::steady_clock::now();
-
-//    auto after_receives = std::chrono::steady_clock::now();
-    TLOG() <<"init_seder"<<init_sender;
-
+    auto init_receiver = dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>("TR_tracking0");
     std::atomic<std::chrono::steady_clock::time_point> last_received = std::chrono::steady_clock::now();
     while (
       std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - last_received.load())
         .count() < 500) {
       //Handshake q(config.my_id, -1, 0, run_number);
-      Handshake q(" ");
-      init_sender->send(std::move(q), Sender::s_block);
-      //auto msg=0, timeout=5;
-      //init_sender->send(msg,timeout);
+      TLOG()<<"datafilter2";
+      dunedaq::datafilter::Handshake recv;
+      recv=init_receiver->receive(std::chrono::milliseconds(100));
+      TLOG()<<"message received:  "<<recv.msg_id;
+      if (recv.msg_id=="start")
+            break;
       std::this_thread::sleep_for(100ms);
     }
 
+    auto init_sender = dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>("TR_tracking1");
+    std::atomic<std::chrono::steady_clock::time_point> last_received1 = std::chrono::steady_clock::now();
+    while (
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - last_received1.load())
+           .count() < 500) {
+         dunedaq::datafilter::Handshake q("gotit");
+         init_sender->send(std::move(q), Sender::s_block);
+         std::this_thread::sleep_for(100ms);
+      }
 
   }
-    int get_data()
-    {
-          //hdf5libs here
-          auto cnt=0;  // "/" counter 
-          bool is_replace = 0;
-        
-          //open h5 file
-          HDF5RawDataFile h5_file(config.input_h5_filename);
-          
-          std::ostringstream ss;
-          
-          ss << "\nFile name: " << h5_file.get_file_name();
-          ss << "\n\tRecorded size from class: " << h5_file.get_recorded_size();
-          
-          auto recorded_size = h5_file.get_attribute<size_t>("recorded_size");
-          ss << "\n\tRecorded size from attribute: " << recorded_size;
-          
-          auto record_type = h5_file.get_record_type();
-          ss << "\nRecord type = " << record_type;
-          
-          nlohmann::json flp_json;
-          auto flp = h5_file.get_file_layout().get_file_layout_params();
-        
-          hdf5filelayout::to_json(flp_json, flp);
-          ss << "\nFile Layout Parameters:\n" << flp_json;
-          
-          // get some attributs from h5_file
-          auto run_number = h5_file.get_attribute<unsigned int>("run_number");
-          auto file_index = h5_file.get_attribute<unsigned int>("file_index");
-          auto creation_timestamp = h5_file.get_attribute<std::string>("creation_timestamp");
-          auto app_name = h5_file.get_attribute<std::string>("application_name");
-          //auto all_trigger_record_numbers = h5_file.get_all_trigger_record_numbers();
-        
-          ss << "\n Run number = " << run_number;
-          ss << "\n File index: " << file_index;
-          ss << "\n Application name: " << app_name;
-          //ss << "\n all_trigger_record_numbers"<<all_trigger_record_numbers;
-        
-          //TLOG() << ss.str();
-          ss.str("");
-       
-          const int trigger_count = recorded_size;
-          auto records = h5_file.get_all_record_ids();
-          ss << "\nNumber of records: " << records.size();
-          if (records.empty()) {
-          	ss << "\n\nNO TRIGGER RECORDS FOUND";
-          	TLOG() << ss.str();
-          	return 0;
-          }
-          auto first_rec = *(records.begin());
-          auto last_rec = *(std::next(records.begin(), records.size() - 1));
-        
-          ss << "\n\tFirst record: " << first_rec.first << "," << first_rec.second;
-          ss << "\n\tLast record: " << last_rec.first << "," << last_rec.second;
-          
-          TLOG() << ss.str();
-          ss.str("");
-        
-          auto all_rh_paths = h5_file.get_record_header_dataset_paths();
-          ss << "\nAll record header datasets found:";
-          for (auto const& path : all_rh_paths)
-          	ss << "\n\t" << path;
-          TLOG() << ss.str();
-          ss.str("");
-        
-          if(h5_file.is_trigger_record_type()) {
-          	auto trh_ptr = h5_file.get_trh_ptr(first_rec);
-          	ss << "\nTrigger Record Headers:";
-          	ss << "\nFirst: " << trh_ptr->get_header();
-          	ss << "\nLast: " << h5_file.get_trh_ptr(all_rh_paths.back())->get_header();
-          } else if(h5_file.is_timeslice_type()) {
-          	auto tsh_ptr = h5_file.get_tsh_ptr(first_rec);
-          	ss << "\nTimeSlice Headers:";
-          	ss << "\nFirst: " << *tsh_ptr;
-          	ss << "\nLast: " << *(h5_file.get_tsh_ptr(all_rh_paths.back()));
-          }
-          TLOG() << ss.str();
-          ss.str("");
-                                                                                         //
-          for (auto const& rid : records) {
-        		auto record_header_dataset = h5_file.get_record_header_dataset_path(rid);
-              auto tr = h5_file.get_trigger_record(rid);
-      		auto trh_ptr = h5_file.get_trh_ptr(rid);
-
-            path_header1 = record_header_dataset;
-
-           	ss << "\n trh_ptr \t" << trh_ptr->get_header();
-              ss << "\n record_header_dataset \t"<<record_header_dataset;
-              // get a timestamp for this trigger
-              uint64_t ts = std::chrono::duration_cast<std::chrono::milliseconds>( // NOLINT(build/unsigned)
-                            system_clock::now().time_since_epoch())
-                            .count();
-        
-              auto trig_num = trh_ptr->get_trigger_number();
-              auto num_requested_components = trh_ptr->get_num_requested_components();
-              ss <<"\n num_requested_components \t"<<num_requested_components;
-              auto seq_num = trh_ptr->get_sequence_number();
-              auto max_seq_num = trh_ptr->get_max_sequence_number();
-              ss <<"\n seq_num \t"<<seq_num;
-              config.seq_number=seq_num;
-              config.trigger_number=trig_num;
-
-          	  //TLOG() << ss.str(); ss.str("");
-        
-        
-              //std::vector<uint64_t> data2 = frag_ptr->get_data();
-              std::vector<uint16_t > data2;
-
-              auto frag_paths =h5_file.get_fragment_dataset_paths(rid);
-              auto all_frag_paths = h5_file.get_all_fragment_dataset_paths();
-              for (auto const& path : frag_paths ) {
-                  auto frag_ptr = h5_file.get_frag_ptr(path);
-                  auto fragment_size=frag_ptr->get_size();
-                  auto fragment_type = frag_ptr->get_fragment_type();
-                  
-                  auto elem_id = frag_ptr->get_element_id();
-
-                  //config.element_id=elem_id;
-                  auto data = frag_ptr->get_data();
-
-                  //std::vector<uint64_t*>& data1 = *reinterpret_cast<std::vector<uint64_t*> *>(data);
-
-                  int nframes = (fragment_size-sizeof(daqdataformats::FragmentHeader))/sizeof(fddetdataformats::WIBEthFrame);
-              //    py::array_t<uint16_t> ret(256*nframes);
-              //    auto data2 = static_cast<uint16_t*>(ret.request().data2);
-              //    auto data2 = std::make_unique<uint16_t>();
-
-                  //std::cout<<"fragment_size"<<fragment_size<<" "<<nframes<<"\n";
-                  for (auto i=0;i<nframes;++i){
-                      auto fr = reinterpret_cast<fddetdataformats::WIBEthFrame*>(static_cast<char*>(data) + i * sizeof(fddetdataformats::WIBEthFrame));
-                      for (auto j=0;j<nsamples;++j){
-                          for (auto k=0;k<nchannels;++k){
-                               data3[(nsamples*nchannels)*i + nchannels*j + k]=fr->get_adc(k,j);
-                               //std::cout<<"=======================>"<<i<<" "<<j<<" "<<data3[nsamples*nchannels*i + nchannels*j+k]<<'\n';
-                          }
-                      }
-                  //for (auto &i: data) {
-                  //for (auto i=0;data1.size();i++)
-                     // std::cout<<"=======================>"<<"i"<<"  "<<data1[i]<<"\n";
-                    //std::cout<<"=======================>"<<i<<" "<<((uint64_t *)data)[i]<<'\n';
-                    //data1[i]=((uint64_t *)data)[i];
-                  //  std::cout<<"============="<<i<<'\n';
-                  }
-
-                  //for (auto i=0;data2.size();i++){
-                  //    std::cout<<"========>"<<data2[i]<<"\n";
-                  //} 
-//                  std::vector<std::unique_ptr<Fragment>> frag_ptr1; 
+//    int get_data()
+//    {
+//          //hdf5libs here
+//          auto cnt=0;  // "/" counter 
+//          bool is_replace = 0;
 //        
-//                  if ( config.write_fragment_type==0 )
-//                     std::vector<char> dummy_data1(fragment_size-80 ,0);
-//                  else
-//                      fragment_size=80;
-//                     std::vector<char> dummy_data1(fragment_size ,0);
+//          //open h5 file
+//          HDF5RawDataFile h5_file(config.input_h5_filename);
+//          
+//          std::ostringstream ss;
+//          
+//          ss << "\nFile name: " << h5_file.get_file_name();
+//          ss << "\n\tRecorded size from class: " << h5_file.get_recorded_size();
+//          
+//          auto recorded_size = h5_file.get_attribute<size_t>("recorded_size");
+//          ss << "\n\tRecorded size from attribute: " << recorded_size;
+//          
+//          auto record_type = h5_file.get_record_type();
+//          ss << "\nRecord type = " << record_type;
+//          
+//          nlohmann::json flp_json;
+//          auto flp = h5_file.get_file_layout().get_file_layout_params();
 //        
-//                  for (auto& i: dummy_data1 ) {
-//                      i=1;
-//                      
-//                  }
-//      
-//                  //TLOG()<<"<====> path "<<path;
+//          hdf5filelayout::to_json(flp_json, flp);
+//          ss << "\nFile Layout Parameters:\n" << flp_json;
+//          
+//          // get some attributs from h5_file
+//          auto run_number = h5_file.get_attribute<unsigned int>("run_number");
+//          auto file_index = h5_file.get_attribute<unsigned int>("file_index");
+//          auto creation_timestamp = h5_file.get_attribute<std::string>("creation_timestamp");
+//          auto app_name = h5_file.get_attribute<std::string>("application_name");
+//          //auto all_trigger_record_numbers = h5_file.get_all_trigger_record_numbers();
 //        
-//                  std::istringstream isSS(path);
-//                  std::string token;
+//          ss << "\n Run number = " << run_number;
+//          ss << "\n File index: " << file_index;
+//          ss << "\n Application name: " << app_name;
+//          //ss << "\n all_trigger_record_numbers"<<all_trigger_record_numbers;
 //        
-//                  cnt=0;
-//                  while (std::getline(isSS,token,'/')) {
-//                      if (!token.empty()) {
-//                          cnt++;
-//                          if (config.write_fragment_type==0 && cnt==4) {
-//                              if (token=="Link02") {
-//                                  is_replace=1;
-//                              } else {
-//                                  //TLOG()<<"<<==>>token "<<token<<" path "<<path;
-//                                  is_replace=0;
-//                              } 
-//                          }
-//                          if (config.write_fragment_type==1 && cnt==4) {                    
-//                              if (token == "Element00001") {
-//                                  TLOG()<<"<<==>>"<<token<<" will be removed from path "<<path;
-//                                  is_replace=1;
-//                              } else {
-//                                  is_replace=0;
-//                              }
-//                          }
-//                        }
-//                  }
-//        
-//                    if (is_replace==1) {
-//                        //std::vector<std::unique_ptr<Fragment>> frag_ptr1; 
-//                        //std::vector<std::pair<void*, size_t>> list_of_pieces(fragment_size,std::make_pair(void*,0));
-//                        //std::vector<std::pair<void*, size_t>> list_of_pieces;
-//                        //for (auto& list_of_piece : list_of_pieces)
-//                        //    TLOG()<<"\n list_of_piece \t"<<list_of_piece.first;
+//          //TLOG() << ss.str();
+//          ss.str("");
 //       
-//                        // create our fragment
-//                        FragmentHeader fh;
-//                        fh.trigger_number = trig_num;
-//                        fh.trigger_timestamp = ts;
-//                        fh.window_begin = ts - 10;
-//                        fh.window_end = ts;
-//                        fh.run_number = run_number;
-//                        fh.fragment_type = int(fragment_type);
-//                        fh.sequence_number = seq_num;
-//                        //fh.element_id = GeoID(gtype_to_use, reg_num, ele_num);
-//                        fh.element_id = elem_id;
+//          const int trigger_count = recorded_size;
+//          auto records = h5_file.get_all_record_ids();
+//          ss << "\nNumber of records: " << records.size();
+//          if (records.empty()) {
+//          	ss << "\n\nNO TRIGGER RECORDS FOUND";
+//          	TLOG() << ss.str();
+//          	return 0;
+//          }
+//          auto first_rec = *(records.begin());
+//          auto last_rec = *(std::next(records.begin(), records.size() - 1));
 //        
-//                        //std::unique_ptr<Fragment> frag(new Fragment(list_of_pieces));
-//                       
-//                        // this is another way to set the fragment header
-//                        //frag->set_type(frag_ptr->get_fragment_type());
-//                        //frag->set_detector_id(frag_ptr->get_detector_id());
-//                        //frag->set_run_number(run_number);
-//                        //frag->set_trigger_number(trig_num);
-//                        //frag->set_window_begin(ts-10);
-//                        //frag->set_window_end(ts);
-//                        //frag->set_element_id(elem_id);
-//                        //frag->set_type(daqdataformats::FragmentType::kTriggerPrimitives);
-//                        //frag->set_header_fields(frag_ptr->get_header());
-//                        //
-//                        //frag_ptr1.push_back(std::move(frag));
-//                        //  //frag_ptr1->set_header_fields(frag_ptr->get_header());
-//                        // 
-//                        //  //int num_frames = fragment_size/sizeof(detdataformats::wib::WIBFrame);
+//          ss << "\n\tFirst record: " << first_rec.first << "," << first_rec.second;
+//          ss << "\n\tLast record: " << last_rec.first << "," << last_rec.second;
+//          
+//          TLOG() << ss.str();
+//          ss.str("");
 //        
-//                        auto frag_ptr2 = std::make_unique<Fragment>(dummy_data1.data(), dummy_data1.size());
-//                        //frag_ptr2->set_header_fields(fh);
-//                        frag_ptr2->set_header_fields(frag_ptr->get_header());
+//          auto all_rh_paths = h5_file.get_record_header_dataset_paths();
+//          ss << "\nAll record header datasets found:";
+//          for (auto const& path : all_rh_paths)
+//          	ss << "\n\t" << path;
+//          TLOG() << ss.str();
+//          ss.str("");
+//        
+//          if(h5_file.is_trigger_record_type()) {
+//          	auto trh_ptr = h5_file.get_trh_ptr(first_rec);
+//          	ss << "\nTrigger Record Headers:";
+//          	ss << "\nFirst: " << trh_ptr->get_header();
+//          	ss << "\nLast: " << h5_file.get_trh_ptr(all_rh_paths.back())->get_header();
+//          } else if(h5_file.is_timeslice_type()) {
+//          	auto tsh_ptr = h5_file.get_tsh_ptr(first_rec);
+//          	ss << "\nTimeSlice Headers:";
+//          	ss << "\nFirst: " << *tsh_ptr;
+//          	ss << "\nLast: " << *(h5_file.get_tsh_ptr(all_rh_paths.back()));
+//          }
+//          TLOG() << ss.str();
+//          ss.str("");
+//                                                                                         //
+//          for (auto const& rid : records) {
+//        		auto record_header_dataset = h5_file.get_record_header_dataset_path(rid);
+//              auto tr = h5_file.get_trigger_record(rid);
+//      		auto trh_ptr = h5_file.get_trh_ptr(rid);
+//
+//            path_header1 = record_header_dataset;
+//
+//           	ss << "\n trh_ptr \t" << trh_ptr->get_header();
+//              ss << "\n record_header_dataset \t"<<record_header_dataset;
+//              // get a timestamp for this trigger
+//              uint64_t ts = std::chrono::duration_cast<std::chrono::milliseconds>( // NOLINT(build/unsigned)
+//                            system_clock::now().time_since_epoch())
+//                            .count();
+//        
+//              auto trig_num = trh_ptr->get_trigger_number();
+//              auto num_requested_components = trh_ptr->get_num_requested_components();
+//              ss <<"\n num_requested_components \t"<<num_requested_components;
+//              auto seq_num = trh_ptr->get_sequence_number();
+//              auto max_seq_num = trh_ptr->get_max_sequence_number();
+//              ss <<"\n seq_num \t"<<seq_num;
+//              config.seq_number=seq_num;
+//              config.trigger_number=trig_num;
+//
+//          	  //TLOG() << ss.str(); ss.str("");
+//        
+//        
+//              //std::vector<uint64_t> data2 = frag_ptr->get_data();
+//              std::vector<uint16_t > data2;
+//
+//              auto frag_paths =h5_file.get_fragment_dataset_paths(rid);
+//              auto all_frag_paths = h5_file.get_all_fragment_dataset_paths();
+//              for (auto const& path : frag_paths ) {
+//                  auto frag_ptr = h5_file.get_frag_ptr(path);
+//                  auto fragment_size=frag_ptr->get_size();
+//                  auto fragment_type = frag_ptr->get_fragment_type();
+//                  
+//                  auto elem_id = frag_ptr->get_element_id();
+//
+//                  //config.element_id=elem_id;
+//                  auto data = frag_ptr->get_data();
+//
+//                  //std::vector<uint64_t*>& data1 = *reinterpret_cast<std::vector<uint64_t*> *>(data);
+//
+//                  int nframes = (fragment_size-sizeof(daqdataformats::FragmentHeader))/sizeof(fddetdataformats::WIBEthFrame);
+//              //    py::array_t<uint16_t> ret(256*nframes);
+//              //    auto data2 = static_cast<uint16_t*>(ret.request().data2);
+//              //    auto data2 = std::make_unique<uint16_t>();
+//
+//                  //std::cout<<"fragment_size"<<fragment_size<<" "<<nframes<<"\n";
+//                  for (auto i=0;i<nframes;++i){
+//                      auto fr = reinterpret_cast<fddetdataformats::WIBEthFrame*>(static_cast<char*>(data) + i * sizeof(fddetdataformats::WIBEthFrame));
+//                      for (auto j=0;j<nsamples;++j){
+//                          for (auto k=0;k<nchannels;++k){
+//                               data3[(nsamples*nchannels)*i + nchannels*j + k]=fr->get_adc(k,j);
+//                               //std::cout<<"=======================>"<<i<<" "<<j<<" "<<data3[nsamples*nchannels*i + nchannels*j+k]<<'\n';
+//                          }
+//                      }
+//                  //for (auto &i: data) {
+//                  //for (auto i=0;data1.size();i++)
+//                     // std::cout<<"=======================>"<<"i"<<"  "<<data1[i]<<"\n";
+//                    //std::cout<<"=======================>"<<i<<" "<<((uint64_t *)data)[i]<<'\n';
+//                    //data1[i]=((uint64_t *)data)[i];
+//                  //  std::cout<<"============="<<i<<'\n';
+//                  }
+//
+//                  //for (auto i=0;data2.size();i++){
+//                  //    std::cout<<"========>"<<data2[i]<<"\n";
+//                  //} 
+////                  std::vector<std::unique_ptr<Fragment>> frag_ptr1; 
+////        
+////                  if ( config.write_fragment_type==0 )
+////                     std::vector<char> dummy_data1(fragment_size-80 ,0);
+////                  else
+////                      fragment_size=80;
+////                     std::vector<char> dummy_data1(fragment_size ,0);
+////        
+////                  for (auto& i: dummy_data1 ) {
+////                      i=1;
+////                      
+////                  }
+////      
+////                  //TLOG()<<"<====> path "<<path;
+////        
+////                  std::istringstream isSS(path);
+////                  std::string token;
+////        
+////                  cnt=0;
+////                  while (std::getline(isSS,token,'/')) {
+////                      if (!token.empty()) {
+////                          cnt++;
+////                          if (config.write_fragment_type==0 && cnt==4) {
+////                              if (token=="Link02") {
+////                                  is_replace=1;
+////                              } else {
+////                                  //TLOG()<<"<<==>>token "<<token<<" path "<<path;
+////                                  is_replace=0;
+////                              } 
+////                          }
+////                          if (config.write_fragment_type==1 && cnt==4) {                    
+////                              if (token == "Element00001") {
+////                                  TLOG()<<"<<==>>"<<token<<" will be removed from path "<<path;
+////                                  is_replace=1;
+////                              } else {
+////                                  is_replace=0;
+////                              }
+////                          }
+////                        }
+////                  }
+////        
+////                    if (is_replace==1) {
+////                        //std::vector<std::unique_ptr<Fragment>> frag_ptr1; 
+////                        //std::vector<std::pair<void*, size_t>> list_of_pieces(fragment_size,std::make_pair(void*,0));
+////                        //std::vector<std::pair<void*, size_t>> list_of_pieces;
+////                        //for (auto& list_of_piece : list_of_pieces)
+////                        //    TLOG()<<"\n list_of_piece \t"<<list_of_piece.first;
+////       
+////                        // create our fragment
+////                        FragmentHeader fh;
+////                        fh.trigger_number = trig_num;
+////                        fh.trigger_timestamp = ts;
+////                        fh.window_begin = ts - 10;
+////                        fh.window_end = ts;
+////                        fh.run_number = run_number;
+////                        fh.fragment_type = int(fragment_type);
+////                        fh.sequence_number = seq_num;
+////                        //fh.element_id = GeoID(gtype_to_use, reg_num, ele_num);
+////                        fh.element_id = elem_id;
+////        
+////                        //std::unique_ptr<Fragment> frag(new Fragment(list_of_pieces));
+////                       
+////                        // this is another way to set the fragment header
+////                        //frag->set_type(frag_ptr->get_fragment_type());
+////                        //frag->set_detector_id(frag_ptr->get_detector_id());
+////                        //frag->set_run_number(run_number);
+////                        //frag->set_trigger_number(trig_num);
+////                        //frag->set_window_begin(ts-10);
+////                        //frag->set_window_end(ts);
+////                        //frag->set_element_id(elem_id);
+////                        //frag->set_type(daqdataformats::FragmentType::kTriggerPrimitives);
+////                        //frag->set_header_fields(frag_ptr->get_header());
+////                        //
+////                        //frag_ptr1.push_back(std::move(frag));
+////                        //  //frag_ptr1->set_header_fields(frag_ptr->get_header());
+////                        // 
+////                        //  //int num_frames = fragment_size/sizeof(detdataformats::wib::WIBFrame);
+////        
+////                        auto frag_ptr2 = std::make_unique<Fragment>(dummy_data1.data(), dummy_data1.size());
+////                        //frag_ptr2->set_header_fields(fh);
+////                        frag_ptr2->set_header_fields(frag_ptr->get_header());
+////       
+////                        //auto record_number = h5_file.get_file_layout().get_record_number_string(trig_num,seq_num);
+////                        //std::cout<<"\n =====record_number_string \t"<<record_number; 
+////                        //frag_ptr2->set_header_fields(frag->get_header());
+////                        if (config.write_fragment_type==0) {
+////                            TLOG()<<"Link02 found in path and will be replaced by a vector with 1 in " << path;
+////                            tr1.add_fragment(std::move(frag_ptr2));
+////                        }
+////              } else {
+////                     
+////                        tr1.add_fragment(std::move(frag_ptr));
+////              }
+//        
+//              //dummy_data1.clear();
+//            }   // end loop over regions
+//        
+//        
+//            // write trigger record to file
+//            //if (trig_num%10!=0) {
+//      //      h5_raw_data_file.write(tr1);
+//          } // end loop over triggers
+//        
+//          //TLOG() << "Finished writing to file " << h5_raw_data_file.get_file_name();
+//          //TLOG() << "Recorded size: " << h5_raw_data_file.get_recorded_size();
 //       
-//                        //auto record_number = h5_file.get_file_layout().get_record_number_string(trig_num,seq_num);
-//                        //std::cout<<"\n =====record_number_string \t"<<record_number; 
-//                        //frag_ptr2->set_header_fields(frag->get_header());
-//                        if (config.write_fragment_type==0) {
-//                            TLOG()<<"Link02 found in path and will be replaced by a vector with 1 in " << path;
-//                            tr1.add_fragment(std::move(frag_ptr2));
-//                        }
-//              } else {
-//                     
-//                        tr1.add_fragment(std::move(frag_ptr));
-//              }
-        
-              //dummy_data1.clear();
-            }   // end loop over regions
-        
-        
-            // write trigger record to file
-            //if (trig_num%10!=0) {
-      //      h5_raw_data_file.write(tr1);
-          } // end loop over triggers
-        
-          //TLOG() << "Finished writing to file " << h5_raw_data_file.get_file_name();
-          //TLOG() << "Recorded size: " << h5_raw_data_file.get_recorded_size();
-       
-        //end hdf5libs
-    
-    return 0; 
-    }
-    
+//        //end hdf5libs
+//    
+//    return 0; 
+//    }
+//    
 
   void receive(size_t run_number1)
   {
+
+      if (config.next_tr) {
+          auto next_tr_sender = dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>("TR_tracking2");
+          TLOG()<<"send next_tr instruction";
+          dunedaq::datafilter::Handshake q("next_tr");
+          next_tr_sender->send(std::move(q), Sender::s_block);
+      }
+
     TLOG_DEBUG(5) << "Setting up SubscriberInfo objects";
     for (size_t group = 0; group < config.num_groups; ++group) {
      // subscribers.push_back(std::make_shared<SubscriberInfo>(group));
@@ -504,13 +507,55 @@ struct SubscriberTest
                     TLOG() <<"====> Trigger_number received: "<<msg.trigger_number<<"\n";
                     TLOG() <<"====> Dataflow emu run number received: "<<msg.run_number<<"\n";
                     TLOG() <<"====> record_header_dataset: " <<msg.path_header<<"\n";
-                    TLOG() <<"First 20 entries of a frame data received from the dataflow emulator";
-                    for (auto ii = 0; ii < 20; ii++)
+                    TLOG() <<"First 20 entries of a frame data received from the dataflow emulator of "<<msg.n_frames;
+//                    trh_data.trigger_number = msg.trigger_number;
+//                    trh_data.trigger_timestamp = msg.trigger_timestamp;
+//                    //trh_data.num_requested_components = num_requested_components;
+//                    trh_data.run_number = msg.run_number;
+//                    trh_data.sequence_number = msg.seq_number;
+//                    //trh_data.max_sequence_number = max_seq_num;
+//                  
+//                    TriggerRecordHeader trh1(&trh_data);
+//                    // create out TriggerRecord
+//                    TriggerRecord tr1(trh1);
+//                    // create our fragment
+////                    FragmentHeader fh;
+////                    fh.trigger_number = msg.trigger_number;
+////                    fh.trigger_timestamp = msg.trigger_timestamp;
+////                    fh.window_begin = msg.trigger_timestamp - 10;
+////                    fh.window_end = msg.trigger_timestamp;
+////                    fh.run_number = msg.run_number;
+////                    fh.fragment_type = msg.fragment_type;
+////                    fh.sequence_number = msg.seq_number;
+////                    //fh.element_id = GeoID(gtype_to_use, reg_num, ele_num);
+////                    //fh.element_id = elem_id;
+////                    
+//                    std::vector<std::pair<void*, size_t>> list_of_pieces;
+//                    std::unique_ptr<Fragment> frag(new Fragment(list_of_pieces));
+//                   
+//                    // this is another way to set the fragment header
+//                   // frag->set_type(msg.fragment_type);
+//                    //frag->set_detector_id(frag_ptr->get_detector_id());
+//                    frag->set_run_number(msg.run_number);
+//                    frag->set_trigger_number(msg.trigger_number);
+//                    frag->set_window_begin(msg.trigger_timestamp-10);
+//                    frag->set_window_end(msg.trigger_timestamp);
+//                    //frag->set_element_id(elem_id);
+//                    //frag->set_type(daqdataformats::FragmentType::kTriggerPrimitives);
+//
+//                    auto data = frag->get_data();
+                    
+                    for (auto i = 0; i < msg.n_frames; ++i)
                     {
-                        TLOG() <<"Receiver: contents "<<msg.contents[ii];
+//                      auto fr = reinterpret_cast<fddetdataformats::WIBEthFrame*>(static_cast<char*>(data) + i * sizeof(fddetdataformats::WIBEthFrame));
+                       if (i<20) 
+                          TLOG() <<"Receiver: contents "<<msg.contents[i];
+//                       for (auto j=0;j<nchannels;++j) {
+//                           fr->set_adc(j,nsamples,msg.contents[i]);
+//                       }
+
+//                       tr1.add_fragment(std::move(frag));
                     }
-
-
                       if (msg.contents.size() != config.message_size_kb * 1024 ||
                           msg.seq_number != info->last_sequence_received[msg.conn_id] + 1) {
                         info->msgs_with_error++;
@@ -539,6 +584,13 @@ struct SubscriberTest
                       std::chrono::duration_cast<std::chrono::milliseconds>(after_callback - after_receiver);
                   });
 
+     if (config.next_tr) {
+          auto next_tr_sender = dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>("TR_tracking2");
+          TLOG()<<"send wait for next instruction";
+          dunedaq::datafilter::Handshake q("wait");
+          next_tr_sender->send(std::move(q), Sender::s_block);
+      }
+
     TLOG_DEBUG(5) << "Starting wait loop for receives to complete";
     bool all_done = false;
     while (!all_done) {
@@ -566,8 +618,7 @@ struct SubscriberTest
 }
 // Must be in dunedaq namespace only
 DUNE_DAQ_SERIALIZABLE(dunedaq::datafilter::Data, "data_t");
-//DUNE_DAQ_SERIALIZABLE(iomanager::QuotaReached, "quota_t");
-DUNE_DAQ_SERIALIZABLE(iomanager::Handshake, "init_t");
+DUNE_DAQ_SERIALIZABLE(dunedaq::datafilter::Handshake, "init_t");
 }
 
 int
@@ -582,6 +633,9 @@ main(int argc, char* argv[])
   desc.add_options()("use_connectivity_service,c",
                      po::bool_switch(&config.use_connectivity_service),
                      "enable the ConnectivityService in IOManager")(
+      "next_tr,x",
+      po::value<bool>(&config.next_tr)->default_value(config.next_tr),
+      "get next TR")(
     "num_apps,N",
     po::value<size_t>(&config.num_apps)->default_value(config.num_apps),
     "Number of applications to start")("num_groups,g",
@@ -665,8 +719,9 @@ main(int argc, char* argv[])
 
     for (size_t run = 0; run < config.num_runs; ++run) {
       TLOG() << "Subscriber "  << config.my_id << ": "<< "Starting test run " << run;
-//        subscriber->init(run);
-        subscriber->receive(run);
+      if (config.num_apps>1)
+          subscriber->init(run);
+      subscriber->receive(run);
       TLOG() << "Subscriber "  << config.my_id << ": "<< "Test run " << run << " complete.";
     }
 

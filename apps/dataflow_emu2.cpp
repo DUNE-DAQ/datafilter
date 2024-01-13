@@ -47,6 +47,7 @@ struct DatafilterConfig
   size_t my_id = 0;
   size_t send_interval_ms = 100;
   int publish_interval = 10000;
+  bool next_tr=false;
 
   size_t seq_number;
   size_t trigger_number;
@@ -55,7 +56,8 @@ struct DatafilterConfig
   size_t element_id;
   size_t detector_id;
   size_t error_bits;
-  size_t fragment_type;
+  //size_t fragment_type;
+  //dunedaq::daqdataformats::Fragment fragment_type;
 
   std::string input_h5_filename = "/lcg/storage19/test-area/dune/trigger_records/swtest_run001039_0000_dataflow0_datawriter_0_20231103T121050.hdf5";
   std::string output_h5_filename = "/opt/tmp/chen/h5_test.hdf5";
@@ -98,6 +100,10 @@ struct DatafilterConfig
     return conn_addr;
   }
 
+  std::string get_pub_init_name() { return get_pub_init_name(my_id); }
+  std::string get_pub_init_name(size_t id) { return "conn_init_" + std::to_string(id); }
+  //std::string get_publisher_init_name() { return "conn_init_.*"; }
+
   void configure_iomanager()
   {
     setenv("DUNEDAQ_PARTITION", session_name.c_str(), 0);
@@ -114,6 +120,18 @@ struct DatafilterConfig
           connections.emplace_back(Connection{
             ConnectionId{ get_connection_name(my_id, group, conn), "data_t" }, conn_addr, ConnectionType::kPubSub });
         }
+      }
+
+//      for (size_t sub = 0; sub < num_apps; ++sub) {
+      for (size_t sub = 0; sub < 3; ++sub) {
+        auto port = 13000 + sub;
+        std::string conn_addr = "tcp://127.0.0.1:" + std::to_string(port);
+        TLOG() << "Adding control connection " << "TR_tracking"+std::to_string(sub) << " with address "
+                      << conn_addr;
+
+        connections.emplace_back(
+          //Connection{ ConnectionId{ "TR_tracking"+std::to_string(sub), "init_t" }, conn_addr, ConnectionType::kPubSub });
+          Connection{ ConnectionId{ "TR_tracking"+std::to_string(sub), "init_t" }, conn_addr, ConnectionType::kSendRecv });
       }
 
 
@@ -135,8 +153,10 @@ struct PublisherTest
       size_t element_id;
       size_t detector_id;
       size_t error_bits;
+      //dunedaq::daqdataformats::Fragment fragment_type;
       size_t fragment_type;
       std::string path_header;
+      int n_frames;
   
       std::shared_ptr<SenderConcept<dunedaq::datafilter::Data>> sender;
       std::unique_ptr<std::thread> send_thread;
@@ -173,10 +193,38 @@ struct PublisherTest
           HDF5RawDataFile h5_file(config.input_h5_filename);
           
     }
+  void init(size_t dataflow_run_number){
+
+    TLOG_DEBUG(5) << "Getting init sender";
+    //auto init_sender = dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(config.get_pub_init_name());
+    auto init_sender = dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>("TR_tracking0");
+    auto init_receiver = dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>("TR_tracking1");
+
+
+    std::atomic<std::chrono::steady_clock::time_point> last_received = std::chrono::steady_clock::now();
+    while (
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - last_received.load())
+        .count() < 50000) {
+      //Handshake q(config.my_id, -1, 0, run_number);
+      dunedaq::datafilter::Handshake q("start");
+      init_sender->send(std::move(q), Sender::s_block);
+      dunedaq::datafilter::Handshake recv;
+      recv = init_receiver->receive(std::chrono::milliseconds(100));
+      std::this_thread::sleep_for(100ms);
+      if (recv.msg_id == "gotit")
+          TLOG()<<"Receiver got it";
+          break;
+
+    }
+
+
+  }
+
   void send(size_t dataflow_run_number, pid_t subscriber_pid)
   {
     std::ostringstream ss;
 
+    auto init_receiver = dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>("TR_tracking2");
     std::unordered_map<int, std::set<size_t>> completed_receiver_tracking;
     std::mutex tracking_mutex;
 
@@ -203,17 +251,17 @@ struct PublisherTest
                   });
 
     auto size=1024;
-    std::vector<int> send_values;
-//    std::generate(send_values.begin(),send_values.end(), []() {
-//            return rand();
-//            });
-
-    for (auto j = 0; j < size*1024; j++)
-    { 
-
-        send_values.push_back(rand());
-    }
-
+//    std::vector<int> send_values;
+////    std::generate(send_values.begin(),send_values.end(), []() {
+////            return rand();
+////            });
+//
+//    for (auto j = 0; j < size*1024; j++)
+//    { 
+//
+//        send_values.push_back(rand());
+//    }
+//
 
     TLOG_DEBUG(7) << "Starting publish threads";
     std::for_each(
@@ -284,10 +332,15 @@ struct PublisherTest
             info->trigger_number=config.trigger_number;
             info->run_number=run_number;
             info->path_header=path;
+            info->n_frames=nframes;
+//            info->element_id=elem_id;
+//            info->detector_id=detector_id;
+//            info->error_bits=error_bits;
+//            info->fragment_type=fragment_type;
 
             dunedaq::datafilter::Data d(info->messages_sent, info->trigger_number, info->trigger_timestamp,
                    info->run_number, info->element_id, info->detector_id, info->error_bits, info->fragment_type,
-                   info->path_header, config.my_id, info->group_id, info->conn_id, config.message_size_kb * 1024);
+                   info->path_header, info->n_frames, config.my_id, info->group_id, info->conn_id, config.message_size_kb * 1024);
             auto v1=999;
             for (auto j = 0; j < size*1024; j++)
             { 
@@ -299,10 +352,11 @@ struct PublisherTest
             TLOG() <<"====> Trigger_number send: "<<config.trigger_number;
             TLOG() <<"====> run number send: "<<run_number<<"\n";
             TLOG() <<"====> record_header_dataset send: " <<path<<"\n";
-            TLOG() <<"Print first 20 entries of a frame";
-            for (auto ii = 0; ii < 20; ii++)
+            TLOG() <<"Print first 20 entries of a frame " <<nframes;
+            for (auto ii = 0; ii < nframes; ii++)
             { 
-                TLOG() <<"Sender contents =>"<<d.contents[ii];
+                if (ii<20)
+                   TLOG() <<"Sender contents =>"<<d.contents[ii];
             }
 
 
@@ -320,8 +374,27 @@ struct PublisherTest
 //              TLOG_DEBUG(7) << "Subscriber app has gone away.";
           //    complete_received = true;
 //            }
-          }
+        
+
+          } // fragments for loop
           
+             //wait for the next TR request            
+            std::atomic<std::chrono::steady_clock::time_point> last_received = std::chrono::steady_clock::now();
+             while (
+               std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - last_received.load())
+                 .count() < 500) {
+               dunedaq::datafilter::Handshake recv;
+               recv = init_receiver->receive(Receiver::s_block);
+               TLOG()<<"recv.msg_id "<<recv.msg_id;
+               std::this_thread::sleep_for(100ms);
+               if (recv.msg_id == "wait") {
+                   continue;
+               } else if (recv.msg_id == "next_tr" ) {
+                   TLOG()<<"Got next_tr instruction";
+                   break;
+               }
+         
+             }
               
           
             }
@@ -342,6 +415,7 @@ struct PublisherTest
 
 }
 DUNE_DAQ_SERIALIZABLE(dunedaq::datafilter::Data, "data_t");
+DUNE_DAQ_SERIALIZABLE(dunedaq::datafilter::Handshake, "init_t");
 }
 
 
@@ -443,6 +517,8 @@ main(int argc, char* argv[])
   
       for (size_t run = 0; run < config.num_runs; ++run) {
         TLOG() << "Dataflow emulator" << config.my_id << ": "<< "run " << run;
+        if (config.num_apps>1)
+          publisher->init(run);
         //publisher->send(run, forked_pids[0]);
         publisher->send(run, 0);
         TLOG() << "Dataflow emulator " << config.my_id << ": "<< "run " << run << " complete.";
