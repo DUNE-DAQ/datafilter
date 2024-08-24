@@ -1,5 +1,5 @@
 /*
-Datafiler : writer tests.
+Datafilter : writer tests.
 */
 
 #include "hdf5libs/HDF5RawDataFile.hpp"

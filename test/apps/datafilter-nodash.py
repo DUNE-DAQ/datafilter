@@ -17,7 +17,7 @@ import sys
 
 import h5py
 import json
-import xjson
+#import xjson
 
 from rich import print
 
@@ -134,7 +134,7 @@ def receive_hdf5libs_dset(ofilename):
     file_index=attrs_dict['file_index']
 
     print(fl_conf)
-    fl_conf_nl = xjson.dumps(fl_conf)
+    #fl_conf_nl = xjson.dumps(fl_conf)
 
 #    with open("testwriter_conf.json", "w") as ofile:
 #        json.dump(fl_conf, ofile)

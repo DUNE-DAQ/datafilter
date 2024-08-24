@@ -9,7 +9,7 @@ test3 : send all hdf5libs dataset
 import sys
 
 import daqdataformats
-import detdataformats.wib
+import fddetdataformats
 from rawdatautils.unpack.wib import *
 
 from hdf5libs import HDF5RawDataFile
@@ -27,7 +27,7 @@ from rich import print
 import click
 
 #initial setup condition
-is_full_write = 1   #1: full; 0: 1% of data will be sent to the datafilter for testing
+is_full_write = 0   #1: full; 0: 1% of data will be sent to the datafilter for testing
 
 def print_usage():
     print("Usage: dataflow_emu.py <input_h5file_name>")
@@ -95,7 +95,8 @@ def send_h5py_dset_test1(ifilename):
        socket_sync.send(b'')
 
 
-    #socket_sync.send(b'stop')
+    mesg=socket_sync.recv()
+    socket_sync.send(b'stop')
     sys.exit(0)
 
 def send_h5py_dset_test2(ifilename):
@@ -203,14 +204,14 @@ def send_hdf5libs_dset_test(ifilename, ofilename):
         for gid in h5_file.get_geo_ids(rid)[:nrecords_to_process]:
             frag = h5_file.get_frag(rid,gid)
             frag_hdr=frag.get_header()
-            wf = detdataformats.wib.WIBFrame(frag.get_data())
-            n_frames = (frag.get_size()-frag_hdr.sizeof())//detdataformats.wib.WIBFrame.sizeof()
+            wf = detdataformats.WIBFrame(frag.get_data())
+            n_frames = (frag.get_size()-frag_hdr.sizeof())//detdataformats.WIBFrame.sizeof()
             ts = np.zeros(n_frames,dtype='uint64')
             adcs = np.zeros((n_frames,256),dtype='uint16')
             t0 = time.time()
             #send frame by frame
             for iframe in range(n_frames):
-                wf = detdataformats.wib.WIBFrame(frag.get_data(iframe*detdataformats.wib.WIBFrame.sizeof()))
+                wf = detdataformats.WIBFrame(frag.get_data(iframe*detdataformats.WIBFrame.sizeof()))
                 ts[iframe] = wf.get_timestamp()
                 adcs[iframe] = [ wf.get_channel(k) for k in range(256) ]
                 #print(f"iframe={iframe} adcs value={adcs[iframe]}")
