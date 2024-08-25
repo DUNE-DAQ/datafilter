@@ -164,7 +164,8 @@ def send_h5py_dset_test2(ifilename):
        mesg=socket_sync.recv()
        socket_sync.send(b'')
 
-    #socket_sync.send(b'stop')
+    mesg=socket_sync.recv()
+    socket_sync.send(b'stop')
     print(f'Finished sending data. CTRL-C in the datafilter terminal if it is not exist by itself.')
     sys.exit(0)
 
@@ -192,26 +193,28 @@ def send_hdf5libs_dset_test(ifilename, ofilename):
 
     records_size=len(records)
     nrecords_to_process= 1
+    print(f'records_size : {records_size}')
 
     for rid in records[:nrecords_to_process]:
         #get record header datasets
         record_header_dataset = h5_file.get_record_header_dataset_path(rid)
         trh = h5_file.get_trh(rid)
-        wib_geo_ids = h5_file.get_geo_ids(records[0],daqdataformats.GeoID.SystemType.kTPC)
-        #print(f"{record_header_dataset}: {trh.get_trigger_number()},{trh.get_sequence_number()},{trh.get_trigger_timestamp()}")
+        #wib_geo_ids = h5_file.get_geo_ids(records[0],daqdataformats.GeoID.SystemType.kTPC)
+        print(f"{record_header_dataset}: {trh.get_trigger_number()},{trh.get_sequence_number()},{trh.get_trigger_timestamp()}")
 
         #loop through fragment datasets
-        for gid in h5_file.get_geo_ids(rid)[:nrecords_to_process]:
+        #for gid in h5_file.get_geo_ids(rid)[:nrecords_to_process]:
+        for gid in list(h5_file.get_geo_ids(rid))[:nrecords_to_process]:
             frag = h5_file.get_frag(rid,gid)
             frag_hdr=frag.get_header()
-            wf = detdataformats.WIBFrame(frag.get_data())
-            n_frames = (frag.get_size()-frag_hdr.sizeof())//detdataformats.WIBFrame.sizeof()
+            wf = fddetdataformats.WIBFrame(frag.get_data())
+            n_frames = (frag.get_size()-frag_hdr.sizeof())//fddetdataformats.WIBFrame.sizeof()
             ts = np.zeros(n_frames,dtype='uint64')
             adcs = np.zeros((n_frames,256),dtype='uint16')
             t0 = time.time()
             #send frame by frame
             for iframe in range(n_frames):
-                wf = detdataformats.WIBFrame(frag.get_data(iframe*detdataformats.WIBFrame.sizeof()))
+                wf = fddetdataformats.WIBFrame(frag.get_data(iframe*fddetdataformats.WIBFrame.sizeof()))
                 ts[iframe] = wf.get_timestamp()
                 adcs[iframe] = [ wf.get_channel(k) for k in range(256) ]
                 #print(f"iframe={iframe} adcs value={adcs[iframe]}")

@@ -1,5 +1,8 @@
 """
 Data filter process; receive TR and write it to file.
+
+test_type = 2 # hdf5libs else h5py.
+
 """
 # from dunedaq
 import hdf5libs
@@ -152,9 +155,9 @@ def receive_hdf5libs_dset(ofilename):
 
         record_header_dataset=message_data['record_header_dataset']
         n_frames = message_data['n_frames']
-        dd = message_data['dd']
+        dd = message_data['adcs']
         ts = message_data['ts']
-        block_size=message_data['block_size']
+        block_size=message_data['n_frames']
         print(f'======================={"="*30}\n')
         print(f'{record_header_dataset}')
         print(dd,len(dd))
