@@ -34,11 +34,10 @@ text format and using vimdiff to view the difference.
   * Run data filter in another terminal
 
   ```
-<<<<<<< HEAD
+  pip3 install dash # if we don't have it install
   python3 datafilter.py test_output.hdf5
 =======
   python3 datafilter 
->>>>>>> test
 
   ```
  * You can view the plots from a browser pointing to http://yourip:8080, where

@@ -4,8 +4,10 @@ Datafilter : writer tests.
 
 #include "hdf5libs/HDF5RawDataFile.hpp"
 #include "hdf5libs/hdf5filelayout/Nljs.hpp"
-#include "detdataformats/wib/WIBFrame.hpp"
-#include "detdataformats/wib2/WIB2Frame.hpp"
+#include "hdf5libs/hdf5rawdatafile/Nljs.hpp"
+//#include "detdataformats/wib/WIBFrame.hpp"
+//#include "detdataformats/wib2/WIB2Frame.hpp"
+#include "fddetdataformats/WIBEthFrame.hpp"
 
 #include "logging/Logging.hpp"
 
@@ -140,14 +142,26 @@ int main(int argc, char** argv)
     //		TLOG() << ss.str(); ss.str("");
     //	}
     //
+ 
+    //auto srcid_geoid_map = h5_file.get_srcid_geoid_map();
+    // Read src-geo id map fdfaq 4.1.0 required SrcIDGeoIDMap to be defined.
+    std::string hw_map_file_name="testwriter_hardwaremap.txt";
+    std::ifstream f(hw_map_file_name);
+    nlohmann::json data = nlohmann::json::parse(f);
   
+    auto srcid_geoid_map = data.get<hdf5rawdatafile::SrcIDGeoIDMap>();
+
+    //It will be replaced by the hdf5lib develop branch.
+    //HDF5SourceIDHandler::source_id_geo_id_map_t srcid_geoid_map;
+
     // create output file for writing
     HDF5RawDataFile h5_raw_data_file = HDF5RawDataFile(output_h5_filename,
                                                        run_number,                 // run_number
                                                        file_index,                 // file_index,
                                                        app_name,                   // app_name
                                                        flp,                    // file_layout_confs
-  						     ".writing",                 // optional: suffix to use for files being written
+                                                       srcid_geoid_map, 
+  						                               ".writing",                 // optional: suffix to use for files being written
                                                        HighFive::File::Overwrite); // optional: overwrite existing file
                                                                                    //
     for (auto const& rid : records) {
