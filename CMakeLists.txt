@@ -46,9 +46,8 @@ daq_add_python_bindings(*.cpp LINK_LIBRARIES ${PROJECT_NAME} hdf5libs::hdf5libs 
 ##############################################################################
 # Applications
 daq_add_application(hdf5libs_datafilter_writer_test hdf5libs_datafilter_writer_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-#daq_add_application(testwriter testwriter.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-daq_add_application(iom_pub_tr_test iom_pub_tr_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-daq_add_application(iom_sub_tr_test iom_sub_tr_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+daq_add_application(datafilter_tr_send_test datafilter_tr_send_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+daq_add_application(datafilter_tr_receive_test datafilter_tr_receive_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 #daq_add_application(dataflow_emu ../../apps/dataflow_emu.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 daq_add_application(dataflow_emu2 ../../apps/dataflow_emu2.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 daq_add_application(datafilter2 ../../apps/datafilter2.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})

@@ -66,4 +66,22 @@ text format and using vimdiff to view the difference.
   h5dump -d /TriggerRecord00001.0000/Trigger/Region00000/Element00001 test2.h5
  ```
 
+* Run Trigger Record tranfer test.
 
+ * start the receiver first
+
+```
+datafilter_tr_receive_test
+```
+ * then start the sender of the Trigger Record.
+
+ ```
+datafilter_tr_send_test 
+ ```
+ * check the output HDF5 file 
+
+ ```
+hdf5_dump.py -f test1.hdf5 -p header
+hdf5_dump.py -f test1.hdf5 -p fragment
+
+ ```
