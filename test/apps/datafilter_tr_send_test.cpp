@@ -421,7 +421,7 @@ struct TRRewriter {
         // create our TriggerRecord
         // dunedaq::daqdataformats::TriggerRecord tr(trh);
         // dunedaq::datafilter::trigger_record_ptr_t tr(&trh);
-        auto tr = std::make_unique<TriggerRecord>(trh);
+        auto tr = std::make_unique<dunedaq::daqdataformats::TriggerRecord>(trh);
 
         // loop over elements tpc
         for (size_t ele_num = 0; ele_num < element_count_tpc; ++ele_num) {
