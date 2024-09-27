@@ -126,12 +126,15 @@ struct DataFilterConfig {
                 auto conn_addr2 = get_connection_ip(my_id2, group, conn, portB);
                 TLOG() << "Adding connection with id "
                        << get_connection_name(my_id1, group, conn)
-                       << " and address1 " << conn_addr1 << "address2 "
-                       << conn_addr2;
+                       << " and address1 " << conn_addr1;
+                TLOG() << "Adding connection with id "
+                       << get_connection_name(my_id2, group, conn)
+                       << " and address2 " << conn_addr2;
                 // data between dispatcher and data filter.
                 connections.emplace_back(Connection{
                     ConnectionId{get_connection_name(my_id1, group, conn),
-                                 "data_t"},
+                                 //             "data_t"},
+                                 "TriggerRecord"},
                     conn_addr1, ConnectionType::kPubSub});
                 // data between data filter and filter results writer.
                 connections.emplace_back(Connection{
@@ -198,6 +201,30 @@ struct DataFilterConfig {
 struct DataFilterReceiver {};
 
 struct TRRewriter {
+    TRRewriter() {
+        setenv("DUNEDAQ_PARTITION", "IOManager_t", 0);
+
+        std::cout << "from TRRewriter";
+    }
+    ~TRRewriter() { IOManager::get()->reset(); }
+    explicit TRRewriter(dunedaq::datafilter::DataFilterConfig c) : config(c) {}
+
+    TRRewriter(TRRewriter const&) = default;
+    TRRewriter(TRRewriter&&) = default;
+    TRRewriter& operator=(TRRewriter const&) = default;
+    TRRewriter& operator=(TRRewriter&&) = default;
+
+    std::string session_name = "iomanager : TRRewriter test";
+    bool use_connectivity_service = false;  // unsed for now
+    int publish_interval = 10000;
+    size_t my_id = 0;
+    size_t my_gr = 0;
+    size_t my_conn = 0;
+    size_t num_apps = 1;
+    size_t num_connections_per_group = 1;
+    size_t num_groups = 1;
+    size_t num_messages = 1;
+
     struct TRWriterInfo {
         size_t conn_id;
         size_t group_id;
@@ -237,11 +264,6 @@ struct TRRewriter {
     std::vector<std::shared_ptr<TRWriterInfo>> trwriters;
     DataFilterConfig config;
 
-    //    explicit TRRewriter(DataFilterConfig c)
-    //      : config(c)
-    //    {
-    //     }
-
     void init(const data_t& init_data) {
         TLOG_DEBUG(5) << "Getting init sender";
         // auto init_sender =
@@ -277,7 +299,7 @@ struct TRRewriter {
     }
     dunedaq::datafilter::trigger_record_ptr_t create_trigger_record(
         uint64_t trig_num) {
-        // setup our dummy_data
+        // test setup our dummy_data
         std::vector<char> dummy_vector(fragment_size);
         char* dummy_data = dummy_vector.data();
 
@@ -560,7 +582,94 @@ struct TRRewriter {
         return temp;
     }
 
-    void send_tr() {
+    void send_tr(std::unique_ptr<daqdataformats::TriggerRecord>& trp) {
+        std::ostringstream ss;
+        ss << "Sending Trigger Rcord to FilterResultWriter";
+        TLOG() << ss.str();
+        ss.str("");
+
+        auto init_receiver =
+            dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
+                "trwriter0");
+        std::unordered_map<int, std::set<size_t>> completed_receiver_tracking;
+        std::mutex tracking_mutex;
+
+        //    for (size_t group = 0; group < config.num_groups; ++group) {
+        //      for (size_t conn = 0; conn < config.num_connections_per_group;
+        //      ++conn) {
+        // auto info = std::make_shared<TRWriterInfo>(group, conn);
+        auto info = std::make_shared<TRWriterInfo>(0, 0);
+        trwriters.push_back(info);
+        //      }
+        //    }
+        auto trigger_timestamp =
+            trp->get_fragments_ref().at(0)->get_trigger_timestamp();
+        auto trigger_number =
+            trp->get_fragments_ref().at(0)->get_trigger_number();
+        auto run_number = trp->get_fragments_ref().at(0)->get_run_number();
+
+        TLOG() << "run_number: " << run_number
+               << ", trigger number: " << trigger_number;
+
+        TLOG_DEBUG(7) << "Getting publisher objects for each connection";
+        std::for_each(
+            std::execution::par_unseq, std::begin(trwriters),
+            std::end(trwriters), [=](std::shared_ptr<TRWriterInfo> info) {
+                auto before_sender = std::chrono::steady_clock::now();
+                //                    info->sender =
+                //                    dunedaq::get_iom_sender<dunedaq::datafilter::Data>(
+                info->sender = dunedaq::get_iom_sender<
+                    std::unique_ptr<dunedaq::daqdataformats::TriggerRecord>>(
+                    config.get_connection_name(config.my_id2, info->group_id,
+                                               info->conn_id));
+                auto after_sender = std::chrono::steady_clock::now();
+                info->get_sender_time =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        after_sender - before_sender);
+            });
+
+        TLOG() << "Starting publish threads to connect with FilterResultWriter";
+        std::for_each(
+            std::execution::par_unseq, std::begin(trwriters),
+            std::end(trwriters),
+            [=, &completed_receiver_tracking, &tracking_mutex,
+             &trp](std::shared_ptr<TRWriterInfo> info) {
+                info->send_thread.reset(new std::thread(
+                    [=, &completed_receiver_tracking, &tracking_mutex, &trp]() {
+                        bool complete_received = false;
+
+                        std::this_thread::sleep_for(100ms);
+                        while (!complete_received) {
+                            info->sender->try_send(
+                                std::move(trp), std::chrono::milliseconds(
+                                                    config.send_interval_ms));
+
+                            ++info->messages_sent;
+                            {
+                                std::lock_guard<std::mutex> lk(tracking_mutex);
+                                if ((completed_receiver_tracking.count(
+                                         info->group_id) &&
+                                     completed_receiver_tracking[info->group_id]
+                                         .count(info->conn_id)) ||
+                                    completed_receiver_tracking.count(-1)) {
+                                    TLOG() << "Complete_received";
+                                    complete_received = true;
+                                }
+                            }
+                            complete_received = true;
+                            break;
+                        }  // while loop
+                    }));
+            });
+
+        TLOG() << "datafilter pub: Joining send threads";
+        for (auto& sender : trwriters) {
+            sender->send_thread->join();
+            sender->send_thread.reset(nullptr);
+        }
+    }
+
+    void send_tr2() {
         std::ostringstream ss;
 
         auto init_receiver =
@@ -595,7 +704,7 @@ struct TRRewriter {
                         after_sender - before_sender);
             });
 
-        TLOG_DEBUG(7) << "Starting publish threads";
+        TLOG() << "Starting publish threads";
         std::for_each(
             std::execution::par_unseq, std::begin(trwriters),
             std::end(trwriters),
@@ -642,10 +751,6 @@ struct TRRewriter {
         }
     }
 
-    // std::unique_ptr<daqdataformats::TriggerRecord>
-    // void
-    // send_trigger_record(std::unique_ptr<dunedaq::daqdataformats::TriggerRecord>
-    // &tr) void send_trigger_record(dunedaq::daqdataformats::TriggerRecord &tr)
     void send_trigger_record() {
         // std::unique_ptr<dunedaq::daqdataformats::TriggerRecord> tr1;
         TriggerRecordHeaderData trh_data;
@@ -719,7 +824,8 @@ struct TRRewriter {
                         temp_fragment.value()->set_trigger_number(4);
                         //          temp_fragment.value()->set_run_number(1);
                         //          temp_fragment.value()->set_sequence_number(1);
-                        //          TriggerId id(*temp_fragment.value());
+                        //          TriggerId
+                        //          id(*temp_fragment.value());
 
                         //          trigger_record_ptr_t
                         //          temp_record(extract_trigger_record(id));
@@ -849,18 +955,12 @@ struct DataFilterOrganiser {
         return tr1;
     }
 
-    // void
-    // accepted_trigger_record(std::unique_ptr<daqdataformats::TriggerRecord> &
-    // trigger_record_ptr)
     void accepted_trigger_record(size_t trigger_number,
                                  size_t trigger_timestamp, size_t run_number,
                                  size_t seq_number, size_t n_frames,
                                  size_t element_id, size_t detector_id,
-                                 std::vector<int> contents)
-    // void accepted_trigger_record(const daqdataformats::TriggerRecord &tr)
-    {
-        // get_name();
-        TLOG() << "====>accepted_trigger_record";
+                                 std::vector<int> contents) {
+        TLOG() << "====>accepted_trigger_record using frames method";
         hdf5datastore::ConfParams conf;
         conf.name = "tempWriter";
         conf.mode = "all-per-file";
@@ -877,6 +977,39 @@ struct DataFilterOrganiser {
         //    trigger_number, trigger_timestamp, run_number, seq_number,
         //    n_frames, element_id, detector_id, contents));
         //  rewriter.send_trigger_record();
+    }
+
+    void accepted_trigger_record2(
+        std::unique_ptr<daqdataformats::TriggerRecord>& trp) {
+        TLOG() << "====>accepted_trigger_record single-event per file";
+        //        hdf5datastore::ConfParams conf;
+        //        conf.name = "tempWriter";
+        //        conf.mode = "all-per-file";
+        //        conf.directory_path = "/opt/tmp/chen";
+        //        conf.filename_parameters.writer_identifier = "TRWriter_test";
+        //
+        //        std::unique_ptr<DataStore> data_store_ptr;
+        //        data_store_ptr = make_data_store("DatafilterDataStore", conf);
+        // data_store_ptr->write(*tr);
+
+        auto trigger_timestamp =
+            trp->get_fragments_ref().at(0)->get_trigger_timestamp();
+        auto trigger_number =
+            trp->get_fragments_ref().at(0)->get_trigger_number();
+        auto run_number = trp->get_fragments_ref().at(0)->get_run_number();
+
+        TLOG() << "trigger_timestamp " << trigger_timestamp
+               << " trigger_number " << trigger_number << " run_number "
+               << run_number;
+
+        // data_store_ptr->write(rebuild_trigger_record(
+        //     trigger_number, trigger_timestamp, run_number, seq_number,
+        //     n_frames,
+        //    element_id, detector_id, contents));
+        // rewriter.send_tr(rebuild_trigger_record(
+        //    trigger_number, trigger_timestamp, run_number, seq_number,
+        //    n_frames, element_id, detector_id, contents));
+        rewriter.send_tr(trp);
     }
 };
 
@@ -947,6 +1080,111 @@ struct SubscriberTest {
             init_sender->send(std::move(q), Sender::s_block);
             std::this_thread::sleep_for(100ms);
         }
+    }
+
+    dunedaq::hdf5libs::hdf5filelayout::FileLayoutParams
+    create_file_layout_params() {
+        dunedaq::hdf5libs::hdf5filelayout::PathParams params_tpc;
+        params_tpc.detector_group_type = "Detector_Readout";
+        params_tpc.detector_group_name = "TPC";
+        params_tpc.element_name_prefix = "Link";
+        params_tpc.digits_for_element_number = 5;
+
+        dunedaq::hdf5libs::hdf5filelayout::PathParamList param_list;
+        param_list.push_back(params_tpc);
+
+        dunedaq::hdf5libs::hdf5filelayout::FileLayoutParams layout_params;
+        layout_params.path_param_list = param_list;
+        layout_params.record_name_prefix = "TriggerRecord";
+        layout_params.digits_for_record_number = 6;
+        layout_params.digits_for_sequence_number = 0;
+        layout_params.record_header_dataset_name = "TriggerRecordHeader";
+
+        return layout_params;
+    }
+
+    dunedaq::hdf5libs::hdf5rawdatafile::SrcIDGeoIDMap create_srcid_geoid_map() {
+        using nlohmann::json;
+
+        dunedaq::hdf5libs::hdf5rawdatafile::SrcIDGeoIDMap map;
+        json srcid_geoid_map = json::parse(R"(
+        [
+        {
+          "source_id": 0,
+          "geo_id": {
+            "det_id": 3,
+            "crate_id": 1,
+            "slot_id": 0,
+            "stream_id": 0
+          }
+        },
+        {
+          "source_id": 1,
+          "geo_id": {
+            "det_id": 3,
+            "crate_id": 1,
+            "slot_id": 0,
+            "stream_id": 1
+          }
+        },
+        {
+          "source_id": 3,
+          "geo_id": {
+            "det_id": 3,
+            "crate_id": 1,
+            "slot_id": 1,
+            "stream_id": 0
+          }
+        },
+        {
+          "source_id": 4,
+          "geo_id": {
+            "det_id": 3,
+            "crate_id": 1,
+            "slot_id": 1,
+            "stream_id": 1
+          }
+        },
+        {
+          "source_id": 4,
+          "geo_id": {
+            "det_id": 2,
+            "crate_id": 1,
+            "slot_id": 0,
+            "stream_id": 0
+          }
+        },
+        {
+          "source_id": 5,
+          "geo_id": {
+            "det_id": 2,
+            "crate_id": 1,
+            "slot_id": 0,
+            "stream_id": 1
+          }
+        },
+        {
+          "source_id": 6,
+          "geo_id": {
+            "det_id": 2,
+            "crate_id": 1,
+            "slot_id": 1,
+            "stream_id": 0
+          }
+        },
+        {
+          "source_id": 7,
+          "geo_id": {
+            "det_id": 2,
+            "crate_id": 1,
+            "slot_id": 1,
+            "stream_id": 1
+          }
+        }
+      ]
+      )");
+
+        return srcid_geoid_map.get<hdf5rawdatafile::SrcIDGeoIDMap>();
     }
 
     void receive(size_t run_number1) {
@@ -1054,7 +1292,7 @@ struct SubscriberTest {
         }
 
         // organiser.rewriter.send_trigger_record();
-        organiser.rewriter.send_tr();
+        organiser.rewriter.send_tr2();
 
         TLOG_DEBUG(5) << "Starting wait loop for receives to complete";
         bool all_done = false;
@@ -1080,6 +1318,139 @@ struct SubscriberTest {
 
         subscribers.clear();
         TLOG_DEBUG(5) << "receive() done";
+    }
+    void receive_tr(size_t run_number1) {
+        std::stringstream ss;
+
+        ss << "datafilter sub: Preparing to receive Trigger Record";
+        TLOG() << ss.str();
+        ss.str("");
+        if (config.next_tr) {
+            auto next_tr_sender =
+                dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(
+                    "TR_tracking2");
+            TLOG() << "send next_tr instruction";
+            dunedaq::datafilter::Handshake q("next_tr");
+            next_tr_sender->send(std::move(q), Sender::s_block);
+        }
+
+        TLOG() << "datafilter sub: Setting up subscribers objects";
+        for (size_t group = 0; group < config.num_groups; ++group) {
+            for (size_t conn = 0; conn < config.num_connections_per_group;
+                 ++conn) {
+                subscribers.push_back(
+                    std::make_shared<SubscriberInfo>(group, conn));
+            }
+        }
+        // convert file_params to json, allows for easy comp later
+        dunedaq::hdf5libs::hdf5filelayout::data_t flp_json_in;
+        dunedaq::hdf5libs::hdf5filelayout::to_json(flp_json_in,
+                                                   create_file_layout_params());
+
+        // create src-geo id map
+        auto srcid_geoid_map = create_srcid_geoid_map();
+
+        std::atomic<std::chrono::steady_clock::time_point> last_received =
+            std::chrono::steady_clock::now();
+        TLOG() << "datatilter sub: adding callbacks for each subscriber";
+        std::for_each(
+            std::execution::par_unseq, std::begin(subscribers),
+            std::end(subscribers),
+            [=, &last_received](std::shared_ptr<SubscriberInfo> info) {
+                auto recv_proc =
+                    [=, &last_received](
+                        std::unique_ptr<dunedaq::daqdataformats::TriggerRecord>&
+                            tr) {
+                        auto trigger_timestamp = tr->get_fragments_ref()
+                                                     .at(0)
+                                                     ->get_trigger_timestamp();
+                        auto trigger_number =
+                            tr->get_fragments_ref().at(0)->get_trigger_number();
+                        auto run_number =
+                            tr->get_fragments_ref().at(0)->get_run_number();
+                        int file_index = 0;
+
+                        TLOG() << "run_number: " << run_number
+                               << ", trigger number: " << trigger_number;
+                        info->msgs_received++;
+                        last_received = std::chrono::steady_clock::now();
+
+                        if (info->msgs_received = config.num_messages) {
+                            TLOG() << "msgs_received from connection name:"
+                                   << info->get_connection_name(config);
+                            std::string app_name = "test";
+                            std::string ofile_name =
+                                "/opt/tmp/chen/test" +
+                                // std::to_string(info->msgs_received.load()) +
+                                std::to_string(trigger_number) + ".hdf5";
+                            //  create the file to write the TriggerRecords
+                            /*
+                            std::unique_ptr<HDF5RawDataFile> h5file_ptr(
+                                new HDF5RawDataFile(
+                                    ofile_name, run_number, file_index,
+                                    app_name, flp_json_in, srcid_geoid_map,
+                                    ".writing", HighFive::File::Overwrite));
+                            h5file_ptr->write(*tr);
+                            h5file_ptr.reset();
+*/
+                            // organiser.rewriter.send_tr(tr);
+                            organiser.accepted_trigger_record2(tr);
+
+                            info->complete = true;
+                        }
+                    };
+
+                TLOG() << "Using connection: "
+                       << info->get_connection_name(config);
+
+                auto before_receiver = std::chrono::steady_clock::now();
+                auto receiver = dunedaq::get_iom_receiver<
+                    std::unique_ptr<dunedaq::daqdataformats::TriggerRecord>>(
+                    info->get_connection_name(config));
+                auto after_receiver = std::chrono::steady_clock::now();
+                receiver->add_callback(recv_proc);
+                auto after_callback = std::chrono::steady_clock::now();
+                info->get_receiver_time =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        after_receiver - before_receiver);
+                info->add_callback_time =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        after_callback - after_receiver);
+            });
+
+        if (config.next_tr) {
+            auto next_tr_sender =
+                dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(
+                    "TR_tracking2");
+            TLOG() << "send wait for next instruction";
+            dunedaq::datafilter::Handshake q("wait");
+            next_tr_sender->send(std::move(q), Sender::s_block);
+        }
+
+        TLOG() << "Starting wait loop for receives to complete";
+        bool all_done = false;
+        while (!all_done) {
+            size_t recvrs_done = 0;
+            for (auto& sub : subscribers) {
+                if (sub->complete.load()) recvrs_done++;
+            }
+            TLOG_DEBUG(7) << "Done: " << recvrs_done << ", expected: "
+                          << config.num_groups *
+                                 config.num_connections_per_group;
+            all_done = recvrs_done >=
+                       config.num_groups * config.num_connections_per_group;
+            if (!all_done) std::this_thread::sleep_for(1ms);
+        }
+        TLOG() << "Removing callbacks";
+        for (auto& info : subscribers) {
+            auto receiver =
+                dunedaq::get_iom_receiver<dunedaq::datafilter::Data>(
+                    info->get_connection_name(config));
+            receiver->remove_callback();
+        }
+
+        subscribers.clear();
+        TLOG() << "receive() done";
     }
 };
 }  // namespace datafilter
@@ -1190,12 +1561,14 @@ int main(int argc, char* argv[]) {
     //    std::this_thread::sleep_until(startup_time + 2s);
 
     TLOG() << "DataFilter" << config.my_id1 << ": "
-           << "Configuring IOManager";
+           << "Configuring IOManager for receiving TriggerRecords";
+    TLOG() << "DataFilter" << config.my_id2 << ": "
+           << "Configuring IOManager for sending TriggerRecords";
     config.configure_iomanager();
 
     auto subscriber =
         std::make_unique<dunedaq::datafilter::SubscriberTest>(config);
-    auto trrewriter = std::make_unique<dunedaq::datafilter::TRRewriter>();
+    auto trrewriter = std::make_unique<dunedaq::datafilter::TRRewriter>(config);
 
     for (size_t run = 0; run < config.num_runs; ++run) {
         TLOG() << "Subscriber " << config.my_id1 << ": "
@@ -1204,7 +1577,8 @@ int main(int argc, char* argv[]) {
             subscriber->init(run);
             trrewriter->init(run);
         }
-        subscriber->receive(run);
+        // subscriber->receive(run);
+        subscriber->receive_tr(run);
 
         TLOG() << "Subscriber " << config.my_id1 << ": "
                << "Test run " << run << " complete.";

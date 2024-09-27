@@ -114,7 +114,8 @@ struct DatafilterConfig {
 
                 connections.emplace_back(Connection{
                     ConnectionId{get_connection_name(my_id, group, conn),
-                                 "data_t"},
+                                 //  "data_t"},
+                                 "TriggerRecord"},
                     conn_addr, ConnectionType::kPubSub});
             }
         }
