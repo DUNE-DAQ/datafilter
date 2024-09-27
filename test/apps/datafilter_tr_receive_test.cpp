@@ -412,8 +412,7 @@ struct TRRewriter {
                             std::string app_name = "test";
                             std::string ofile_name =
                                 config.odir + "/" + config.output_h5_filename +
-                                std::to_string(info->msgs_received.load()) +
-                                ".hdf5";
+                                std::to_string(trigger_number) + ".hdf5";
                             TLOG()
                                 << "Output trigger records to " << ofile_name;
                             // create the file
