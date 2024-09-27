@@ -1,12 +1,15 @@
 /*
-Datafilter : TriggerRecord send test with IOManager
+Datafilter : TriggerRecord send test with IOManager PUB
 */
+
+#include <stdlib.h>
 
 #include <execution>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "boost/program_options.hpp"
 #include "datafilter/data_struct.hpp"
 #include "detdataformats/DetID.hpp"
 #include "dfmessages/TriggerRecord_serialization.hpp"
@@ -244,8 +247,6 @@ struct TRRewriter {
             std::unique_ptr<dunedaq::daqdataformats::TriggerRecord>>>
             sender;
         // std::shared_ptr<SenderConcept<dunedaq::datafilter::Data>> sender;
-        // std::shared_ptr<SenderConcept<dunedaq::daqdataformats::TriggerRecord>>
-        // sender;
         std::unique_ptr<std::thread> send_thread;
         std::chrono::milliseconds get_sender_time;
 
@@ -262,8 +263,6 @@ struct TRRewriter {
     uint32_t nsamples = 64;
 
     std::string path_header1;
-    // std::string input_h5_filename =
-    // "/lcg/storage19/test-area/dune/trigger_records/swtest_run001039_0000_dataflow0_datawriter_0_20231103T121050.hdf5";
 
     void init() {
         auto init_sender =
@@ -393,7 +392,6 @@ struct TRRewriter {
         return srcid_geoid_map.get<hdf5rawdatafile::SrcIDGeoIDMap>();
     }
 
-    // dunedaq::daqdataformats::TriggerRecord
     dunedaq::datafilter::trigger_record_ptr_t create_trigger_record(
         uint64_t trig_num) {
         // setup our dummy_data
@@ -543,154 +541,6 @@ struct TRRewriter {
         dunedaq::datafilter::trigger_record_ptr_t temp = std::move(tr);
         return temp;
     }
-    struct TriggerId {
-        TriggerId() = default;
-
-        //     explicit TriggerId(const dfmessages::TriggerDecision& td,
-        //                         daqdataformats::sequence_number_t s =
-        //                         daqdataformats::TypeDefaults::s_invalid_sequence_number)
-        //        : trigger_number(td.trigger_number)
-        //        , sequence_number(s)
-        //        , run_number(td.run_number)
-        //      {
-        //        ;
-        //      }
-        explicit TriggerId(dunedaq::daqdataformats::Fragment& f)
-            : trigger_number(f.get_trigger_number()),
-              sequence_number(f.get_sequence_number()),
-              run_number(f.get_run_number()) {
-            ;
-        }
-
-        dunedaq::daqdataformats::trigger_number_t trigger_number;
-        dunedaq::daqdataformats::sequence_number_t sequence_number;
-        dunedaq::daqdataformats::run_number_t run_number;
-
-        bool operator<(const TriggerId& other) const noexcept {
-            return std::tuple(trigger_number, sequence_number, run_number) <
-                   std::tuple(other.trigger_number, other.sequence_number,
-                              other.run_number);
-        }
-
-        friend std::ostream& operator<<(std::ostream& out,
-                                        const TriggerId& id) noexcept {
-            out << id.trigger_number << '-' << id.sequence_number << '/'
-                << id.run_number;
-            return out;
-        }
-
-        friend TraceStreamer& operator<<(TraceStreamer& out,
-                                         const TriggerId& id) noexcept {
-            return out << id.trigger_number << '.' << id.sequence_number << "/"
-                       << id.run_number;
-        }
-
-        friend std::istream& operator>>(std::istream& in, TriggerId& id) {
-            char t1, t2;
-            in >> id.trigger_number >> t1 >> id.sequence_number >> t2 >>
-                id.run_number;
-            return in;
-        }
-    };
-
-    dunedaq::datafilter::trigger_record_ptr_t extract_trigger_record() {
-        TLOG() << "I am in extract_trigger_record";
-        // Setup
-        std::vector<ComponentRequest> components;
-        components.emplace_back();
-        components.back().component.subsystem =
-            SourceID::Subsystem::kDetectorReadout;
-        components.back().component.id = 2;
-        components.back().window_begin = 3;
-        components.back().window_end = 4;
-        components.emplace_back();
-        components.back().component.subsystem =
-            SourceID::Subsystem::kDetectorReadout;
-        components.back().component.id = 6;
-        components.back().window_begin = 7;
-        components.back().window_end = 8;
-
-        TriggerRecordHeader record_header(components);
-        record_header.set_trigger_number(1);
-        record_header.set_trigger_timestamp(123456789);
-        record_header.set_run_number(3);
-        record_header.set_trigger_type(4);
-        record_header.set_sequence_number(5);
-        record_header.set_max_sequence_number(6);
-
-        auto record = std::make_unique<TriggerRecord>(record_header);
-        // auto record = std::unique_ptr<TriggerRecord>(new
-        // TriggerRecord(record_header));
-
-        // auto record =
-        // std::unique_ptr<dunedaq::daqdataformats::TriggerRecord>(record_header);
-
-        FragmentHeader header;
-        header.size = sizeof(FragmentHeader) + 4;
-        header.trigger_number = 1;
-        header.trigger_timestamp = 12456789;
-        header.run_number = 3;
-
-        auto frag = malloc(sizeof(FragmentHeader) + 4);
-        memcpy(frag, &header, sizeof(FragmentHeader));
-
-        uint8_t one = 1, two = 2, three = 3,
-                four = 4;  // NOLINT(build/unsigned)
-        memcpy(static_cast<uint8_t*>(frag) + sizeof(FragmentHeader), &one,
-               1);  // NOLINT(build/unsigned)
-        memcpy(static_cast<uint8_t*>(frag) + sizeof(FragmentHeader) + 1, &two,
-               1);  // NOLINT(build/unsigned)
-        memcpy(static_cast<uint8_t*>(frag) + sizeof(FragmentHeader) + 2, &three,
-               1);  // NOLINT(build/unsigned)
-        memcpy(static_cast<uint8_t*>(frag) + sizeof(FragmentHeader) + 3, &four,
-               1);  // NOLINT(build/unsigned)
-
-        auto another_frag = malloc(sizeof(FragmentHeader) + 8);
-        header.size = sizeof(FragmentHeader) + 8;
-        memcpy(another_frag, &header, sizeof(FragmentHeader));
-
-        uint8_t five = 5, six = 6, seven = 7,
-                eight = 8;  // NOLINT(build/unsigned)
-        uint8_t nine = 9, ten = 10, eleven = 11,
-                twelve = 12;  // NOLINT(build/unsigned)
-        memcpy(static_cast<uint8_t*>(another_frag) + sizeof(FragmentHeader),
-               &five, 1);  // NOLINT(build/unsigned)
-        memcpy(static_cast<uint8_t*>(another_frag) + sizeof(FragmentHeader) + 1,
-               &six, 1);  // NOLINT(build/unsigned)
-        memcpy(static_cast<uint8_t*>(another_frag) + sizeof(FragmentHeader) + 2,
-               &seven, 1);  // NOLINT(build/unsigned)
-        memcpy(static_cast<uint8_t*>(another_frag) + sizeof(FragmentHeader) + 3,
-               &eight, 1);  // NOLINT(build/unsigned)
-        memcpy(static_cast<uint8_t*>(another_frag) + sizeof(FragmentHeader) + 4,
-               &nine, 1);  // NOLINT(build/unsigned)
-        memcpy(static_cast<uint8_t*>(another_frag) + sizeof(FragmentHeader) + 5,
-               &ten, 1);  // NOLINT(build/unsigned)
-        memcpy(static_cast<uint8_t*>(another_frag) + sizeof(FragmentHeader) + 6,
-               &eleven, 1);  // NOLINT(build/unsigned)
-        memcpy(static_cast<uint8_t*>(another_frag) + sizeof(FragmentHeader) + 7,
-               &twelve, 1);  // NOLINT(build/unsigned)
-
-        auto test_frag = std::make_unique<Fragment>(
-            frag, Fragment::BufferAdoptionMode::kTakeOverBuffer);
-        auto another_test_frag = std::make_unique<Fragment>(
-            another_frag, Fragment::BufferAdoptionMode::kTakeOverBuffer);
-
-        record->add_fragment(std::move(test_frag));
-        record->add_fragment(std::move(another_test_frag));
-        // SERIALIZE
-        auto bytes = dunedaq::serialization::serialize(
-            record, dunedaq::serialization::kMsgPack);
-
-        // DESERIALIZE
-        auto deserialized =
-            dunedaq::serialization::deserialize<std::unique_ptr<TriggerRecord>>(
-                bytes);
-
-        dunedaq::datafilter::trigger_record_ptr_t temp = std::move(record);
-
-        TLOG() << "before return temp TR:";
-        return temp;
-    }
 
     void send_tr_from_hdf5file(size_t dataflow_run_number,
                                pid_t subscriber_pid) {
@@ -701,47 +551,33 @@ struct TRRewriter {
         std::unordered_map<int, std::set<size_t>> completed_receiver_tracking;
         std::mutex tracking_mutex;
 
-        std::string file_path(std::filesystem::temp_directory_path());
-        //        std::string hdf5_filename = "demo" + std::to_string(getpid())
-        //        + "_" +
-        //                                    std::string(getenv("USER")) +
-        //                                    ".hdf5";
-        const int trigger_count = 5;
-
-        // convert file_params to json, allows for easy comp later
-        hdf5filelayout::data_t flp_json_in;
-        hdf5filelayout::to_json(flp_json_in, create_file_layout_params());
-
         for (size_t group = 0; group < config.num_groups; ++group) {
             for (size_t conn = 0; conn < config.num_connections_per_group;
                  ++conn) {
                 auto info = std::make_shared<TRWriterInfo>(group, conn);
+                // auto info = std::make_shared<TRWriterInfo>(0, 0);
                 trwriters.push_back(info);
             }
         }
 
-        TLOG() << "Getting TRWriter objects for each connection";
+        TLOG_DEBUG(7) << "Getting publisher objects for each connection";
         std::for_each(
             std::execution::par_unseq, std::begin(trwriters),
             std::end(trwriters), [=](std::shared_ptr<TRWriterInfo> info) {
                 auto before_sender = std::chrono::steady_clock::now();
+                //                    info->sender =
+                //                    dunedaq::get_iom_sender<dunedaq::datafilter::Data>(
                 info->sender = dunedaq::get_iom_sender<
                     std::unique_ptr<dunedaq::daqdataformats::TriggerRecord>>(
-                    //                         get_connection_name(my_id,
-                    //                         info->group_id, info->conn_id));
-                    // info->sender =
-                    // dunedaq::get_iom_sender<dunedaq::datafilter::Data>(
                     config.get_connection_name(config.my_id, info->group_id,
                                                info->conn_id));
-
                 auto after_sender = std::chrono::steady_clock::now();
-                TLOG() << "create sender socket";
                 info->get_sender_time =
                     std::chrono::duration_cast<std::chrono::milliseconds>(
                         after_sender - before_sender);
             });
 
-        TLOG() << "Starting TRWriter threads";
+        TLOG_DEBUG(7) << "Starting publish threads";
         std::for_each(
             std::execution::par_unseq, std::begin(trwriters),
             std::end(trwriters),
@@ -750,49 +586,60 @@ struct TRRewriter {
                 info->send_thread.reset(new std::thread(
                     [=, &completed_receiver_tracking, &tracking_mutex]() {
                         bool complete_received = false;
-                        TLOG() << "after send_thread";
 
-                        HDF5RawDataFile h5_file(input_h5_filename);
-                        auto run_number =
-                            h5_file.get_attribute<size_t>("run_number");
-                        auto file_index =
-                            h5_file.get_attribute<size_t>("file_index");
-                        auto creation_timestamp =
-                            h5_file.get_attribute<std::string>(
-                                "creation_timestamp");
-                        auto app_name = h5_file.get_attribute<std::string>(
-                            "application_name");
-
-                        auto records = h5_file.get_all_record_ids();
-
-                        for (auto const& rid : records) {
-                            auto record_header_dataset =
-                                h5_file.get_record_header_dataset_path(rid);
-                            auto tr = h5_file.get_trigger_record(rid);
-                            auto trh_ptr = h5_file.get_trh_ptr(rid);
-
-                            // dunedaq::datafilter::trigger_record_ptr_t
-                            // temp_record2 = std::move(trh_ptr);
-                            // TLOG()<<"Sending TR starting here :
-                            // "<<complete_received;
-                            // info->sender->try_send(std::move(temp_record2),
-                            // std::chrono::milliseconds(100));
-                        }
-
-                        // info->sender->try_send(std::move(d),
-                        // std::chrono::milliseconds(100));
+                        std::ostringstream ss;
+                        std::this_thread::sleep_for(100ms);
                         while (!complete_received) {
-                            TLOG() << "=====>Sending TR";
-                            // info->sender->try_send(std::move(d),
-                            // std::chrono::milliseconds(100));
-                            //                  info->sender->try_send(std::move(d),
-                            //                  std::chrono::milliseconds(config.send_interval_ms));
-                            //                  info->sender->try_send(std::move(temp_record),
-                            //                  std::chrono::milliseconds(100));
+                            TLOG() << "Sender message: generate trigger "
+                                      "record";
 
-                            //                 info->sender->try_send(std::move(record),
-                            //                 std::chrono::milliseconds(100));
-                            //                 info->sender->send(std::move(tr1),iomanager::Sender::s_no_block);
+                            //                            std::string
+                            //                            input_h5_filename1 =
+                            //                                "/lcg/storage19/test-area/dune/trigger_records/"
+                            //                                "swtest_run001039_0000_dataflow0_datawriter_0_"
+                            //                                "20231103T121050.hdf5";
+                            std::string ifilename = config.input_h5_filename;
+                            HDF5RawDataFile h5_file(ifilename);
+                            auto records = h5_file.get_all_record_ids();
+                            ss << "\nNumber of records: " << records.size();
+                            if (records.empty()) {
+                                ss << "\n\nNO TRIGGER RECORDS FOUND";
+                                TLOG() << ss.str();
+                                exit(0);
+                            }
+                            auto first_rec = *(records.begin());
+                            auto last_rec = *(
+                                std::next(records.begin(), records.size() - 1));
+
+                            ss << "\n\tFirst trigger record: "
+                               << first_rec.first << "," << first_rec.second;
+                            ss << "\n\tLast trigger record: " << last_rec.first
+                               << "," << last_rec.second;
+
+                            TLOG() << ss.str();
+                            ss.str("");
+
+                            for (auto const& rid : records) {
+                                auto record_header_dataset =
+                                    h5_file.get_record_header_dataset_path(rid);
+                                auto tr = h5_file.get_trigger_record(rid);
+
+                                // SERIALIZE
+                                auto bytes = dunedaq::serialization::serialize(
+                                    tr, dunedaq::serialization::kMsgPack);
+                                // DESERIALIZE
+                                auto deserialized =
+                                    dunedaq::serialization::deserialize<
+                                        std::unique_ptr<TriggerRecord>>(bytes);
+
+                                // dunedaq::datafilter::trigger_record_ptr_t
+                                //     temp_record(&tr);
+
+                                info->sender->try_send(
+                                    std::move(deserialized),
+                                    std::chrono::milliseconds(50));
+                            }
+
                             ++info->messages_sent;
                             {
                                 std::lock_guard<std::mutex> lk(tracking_mutex);
@@ -801,16 +648,17 @@ struct TRRewriter {
                                      completed_receiver_tracking[info->group_id]
                                          .count(info->conn_id)) ||
                                     completed_receiver_tracking.count(-1)) {
+                                    TLOG() << "Complete_received";
                                     complete_received = true;
                                 }
                             }
-                        }
-                    }));  // send.reset
+                            complete_received = true;
+                            break;
+                        }  // while loop
+                    }));
             });
 
-        trwriters.clear();
-        TLOG() << "send done";
-
+        TLOG_DEBUG(7) << "Joining send threads";
         for (auto& sender : trwriters) {
             sender->send_thread->join();
             sender->send_thread.reset(nullptr);
@@ -827,7 +675,8 @@ struct TRRewriter {
         std::mutex tracking_mutex;
 
         //    for (size_t group = 0; group < config.num_groups; ++group) {
-        //      for (size_t conn = 0; conn < config.num_connections_per_group;
+        //      for (size_t conn = 0; conn <
+        //      config.num_connections_per_group;
         //      ++conn) {
         // auto info = std::make_shared<TRWriterInfo>(group, conn);
         auto info = std::make_shared<TRWriterInfo>(0, 0);
@@ -864,7 +713,8 @@ struct TRRewriter {
 
                         std::this_thread::sleep_for(100ms);
                         while (!complete_received) {
-                            TLOG() << "Sender message: generate trigger record";
+                            TLOG() << "Sender message: generate trigger "
+                                      "record";
                             dunedaq::datafilter::trigger_record_ptr_t
                                 temp_record(create_trigger_record(1));
 
@@ -886,6 +736,7 @@ struct TRRewriter {
                                     complete_received = true;
                                 }
                             }
+                            std::this_thread::sleep_for(1000ms);
                             complete_received = true;
                             break;
                         }  // while loop
@@ -914,6 +765,33 @@ int main(int argc, char** argv) {
     dunedaq::logging::Logging::setup();
     dunedaq::datafilter::DatafilterConfig config;
 
+    bool help_requested = false;
+    bool is_hdf5file = false;
+
+    namespace po = boost::program_options;
+    po::options_description desc("data filter trigger records send test.");
+    desc.add_options()("input-file,f",
+                       po::value<std::string>(&config.input_h5_filename)
+                           ->default_value(config.input_h5_filename),
+                       "input filename ")(
+        "hdf5,h5", po::bool_switch(&is_hdf5file), "toggle to hdf5 file")(
+        "help,h", po::bool_switch(&help_requested), "For help.");
+
+    try {
+        po::variables_map vm;
+        po::store(po::parse_command_line(argc, argv, desc), vm);
+        po::notify(vm);
+    } catch (std::exception& ex) {
+        std::cerr << "Error parsing command line " << ex.what() << std::endl;
+        std::cerr << desc << std::endl;
+        return 1;
+    }
+
+    if (help_requested) {
+        std::cout << desc << std::endl;
+        return 0;
+    }
+
     config.configure_iomanager();
 
     auto trwriter = std::make_unique<dunedaq::datafilter::TRRewriter>(config);
@@ -922,7 +800,11 @@ int main(int argc, char** argv) {
                << "run " << run;
         if (config.num_apps > 1) trwriter->init();
         // trwriter->send(run, forked_pids[0]);
-        trwriter->send_tr(run, 0);
+        if (is_hdf5file) {
+            trwriter->send_tr_from_hdf5file(run, 0);
+        } else {
+            trwriter->send_tr(run, 0);
+        }
         TLOG() << "TR rewriter " << config.my_id << ": "
                << "run " << run << " complete.";
     }

@@ -48,11 +48,15 @@ daq_add_python_bindings(*.cpp LINK_LIBRARIES ${PROJECT_NAME} hdf5libs::hdf5libs 
 daq_add_application(hdf5libs_datafilter_writer_test hdf5libs_datafilter_writer_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 daq_add_application(datafilter_tr_send_test datafilter_tr_send_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 daq_add_application(datafilter_tr_receive_test datafilter_tr_receive_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+#daq_add_application(datafilter_tr_receive_writer datafilter_tr_receive_writer.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 #daq_add_application(dataflow_emu ../../apps/dataflow_emu.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 daq_add_application(dataflow_emu2 ../../apps/dataflow_emu2.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 daq_add_application(datafilter2 ../../apps/datafilter2.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 #daq_add_application(dataflow_emu3 ../../apps/dataflow_emu3.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 #daq_add_application(datafilter3 ../../apps/datafilter3.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+#daq_add_application(dataflow_emu4 ../../apps/dataflow_emu4.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+#daq_add_application(datafilter4 ../../apps/datafilter4.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+#
 #
 #daq_add_application(datafilter_config_test ../../apps/datafilter_config_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 

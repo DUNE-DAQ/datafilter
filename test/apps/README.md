@@ -71,9 +71,9 @@ text format and using vimdiff to view the difference.
  * start the receiver first
 
 ```
-datafilter_tr_receive_test
+datafilter_tr_receive_test -d `pwd` -o test
 ```
- * then start the sender of the Trigger Record.
+ * then start the sender of the a generated Trigger Record.
 
  ```
 datafilter_tr_send_test 
@@ -85,3 +85,10 @@ hdf5_dump.py -f test1.hdf5 -p header
 hdf5_dump.py -f test1.hdf5 -p fragment
 
  ```
+
+* start to send trigger records from HDF5 file
+
+```
+datafilter_tr_send_test -f swtest_run001039_0000_dataflow0_datawriter_0_20231103T121050.hdf5 --hdf5
+
+```

@@ -7,6 +7,7 @@ Datafilter : test TriggerRecord with IOManager SUB
 #include <utility>
 #include <vector>
 
+#include "boost/program_options.hpp"
 #include "datafilter/data_struct.hpp"
 #include "detdataformats/DetID.hpp"
 #include "dfmessages/TriggerRecord_serialization.hpp"
@@ -59,7 +60,8 @@ struct DatafilterConfig {
         "/lcg/storage19/test-area/dune/trigger_records/"
         "swtest_run001039_0000_dataflow0_datawriter_0_20231103T121050.hdf5";
 
-    std::string output_h5_filename = "/opt/tmp/chen/h5_test.hdf5";
+    std::string odir = "/opt/tmp/chen";  // current directory
+    std::string output_h5_filename = "h5_test";
 
     void configure_connsvc() {
         setenv("CONNECTION_SERVER", server.c_str(), 1);
@@ -86,7 +88,7 @@ struct DatafilterConfig {
 
         int first_byte = conn_id + 2;    // 2-254
         int second_byte = group_id + 1;  // 1-254
-        int third_byte = app_id + 1;     // 1 - 254
+        int third_byte = app_id + 1;     // 1-254
 
         std::string conn_addr = "tcp://127." + std::to_string(third_byte) +
                                 "." + std::to_string(second_byte) + "." +
@@ -192,10 +194,6 @@ struct TRRewriter {
         std::string path_header;
         int n_frames;
 
-        // std::shared_ptr<SenderConcept<std::unique_ptr<dunedaq::daqdataformats::TriggerRecord>>>
-        // sender;
-        // std::shared_ptr<ReceiverConcept<std::unique_ptr<dunedaq::daqdataformats::TriggerRecord>>>
-        // tr_receiver;
         std::shared_ptr<
             ReceiverConcept<std::unique_ptr<dunedaq::datafilter::Data>>>
             tr_receiver;
@@ -401,29 +399,29 @@ struct TRRewriter {
                             tr->get_fragments_ref().at(0)->get_run_number();
                         int file_index = 0;
 
-                        TLOG() << "run_number " << run_number << "\n";
+                        TLOG() << "run_number " << run_number
+                               << ", trigger number: " << trigger_number;
                         info->msgs_received++;
                         last_received = std::chrono::steady_clock::now();
 
                         if (info->msgs_received = config.num_messages) {
-                            TLOG() << "Complete condition reached, sending "
-                                      "init message for "
-                                   << info->get_connection_name(config);
+                            TLOG_DEBUG(7)
+                                << "Complete condition reached, sending "
+                                   "init message for "
+                                << info->get_connection_name(config);
                             std::string app_name = "test";
                             std::string ofile_name =
-                                "test" +
+                                config.odir + "/" + config.output_h5_filename +
                                 std::to_string(info->msgs_received.load()) +
                                 ".hdf5";
+                            TLOG()
+                                << "Output trigger records to " << ofile_name;
                             // create the file
                             std::unique_ptr<HDF5RawDataFile> h5file_ptr(
                                 new HDF5RawDataFile(
                                     ofile_name, run_number, file_index,
                                     app_name, flp_json_in, srcid_geoid_map,
-                                    ".writing",  // optional: suffix to use for
-                                    // files being written
-                                    HighFive::File::Overwrite));  // optional:
-                                                                  // overwrite
-                            // existing file
+                                    ".writing", HighFive::File::OpenOrCreate));
 
                             h5file_ptr->write(*tr);
                             h5file_ptr.reset();
@@ -495,6 +493,34 @@ using namespace std;
 int main(int argc, char** argv) {
     dunedaq::logging::Logging::setup();
     dunedaq::datafilter::DatafilterConfig config;
+
+    bool help_requested = false;
+    namespace po = boost::program_options;
+    po::options_description desc("data filter trigger records receive test.");
+    desc.add_options()("odir,d",
+                       po::value<std::string>(&config.odir)
+                           ->default_value(config.output_h5_filename),
+                       "output directory")(
+        "ofilename,o",
+        po::value<std::string>(&config.output_h5_filename)
+            ->default_value(config.output_h5_filename),
+        "output filename ")("help,h", po::bool_switch(&help_requested),
+                            "For help.");
+
+    try {
+        po::variables_map vm;
+        po::store(po::parse_command_line(argc, argv, desc), vm);
+        po::notify(vm);
+    } catch (std::exception& ex) {
+        std::cerr << "Error parsing command line " << ex.what() << std::endl;
+        std::cerr << desc << std::endl;
+        return 1;
+    }
+
+    if (help_requested) {
+        std::cout << desc << std::endl;
+        return 0;
+    }
 
     config.configure_iomanager();
 

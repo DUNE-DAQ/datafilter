@@ -262,8 +262,7 @@ int main(int argc, char** argv) {
         ss << "\n trh_ptr \t" << trh_ptr->get_header();
         ss << "\n record_header_dataset \t" << record_header_dataset;
         // get a timestamp for this trigger
-        uint64_t ts = std::chrono::duration_cast<
-                          std::chrono::milliseconds>(  // NOLINT(build/unsigned)
+        uint64_t ts = std::chrono::duration_cast<std::chrono::milliseconds>(
                           system_clock::now().time_since_epoch())
                           .count();
 
