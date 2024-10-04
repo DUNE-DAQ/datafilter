@@ -1,4 +1,16 @@
-INSTALL_DIR=/lcg/storage19/test-area/dune-v4-spack-datafilter-integration-test
+#!/bin/bash
+
+hn=`hostname -s`
+if [[ $hn == *"np02"* || $hn == *"np04"*  ]]; then
+        echo " setup for np02 or np04"
+        source ~np04daq/bin/web_proxy.sh
+        cd $HOME
+        mkdir -p test-area
+        INSTALL_DIR=$HOME/test-area/dune-v4-spack-datafilter-integration-test
+else
+        INSTALL_DIR=/lcg/storage19/test-area/dune-v4-spack-datafilter-integration-test
+fi
+
 DUNE_DAQ_release=NFD_PROD4_240929_A9 
 
 
