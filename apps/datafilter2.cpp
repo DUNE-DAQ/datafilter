@@ -95,7 +95,7 @@ struct DataFilterConfig {
 
         int first_byte = conn_id + 2;    // 2-254
         int second_byte = group_id + 1;  // 1-254
-        int third_byte = app_id + 1;     // 1 - 254
+        int third_byte = app_id + 1;     // 1-254
 
         std::string conn_addr = "tcp://127." + std::to_string(third_byte) +
                                 "." + std::to_string(second_byte) + "." +
