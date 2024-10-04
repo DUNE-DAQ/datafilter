@@ -2,7 +2,7 @@
 
 * For the first time setup of the datafilter, you can run 
 ```
-wget https://github.com/DUNE-DAQ/datafilter/blob/develop/setup-datafilter.sh
+wget https://raw.githubusercontent.com/DUNE-DAQ/datafilter/refs/heads/develop/setup-datafilter.sh
 source setup-datafilter.sh
 
 ```
