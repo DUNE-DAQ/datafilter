@@ -122,7 +122,7 @@ int main(int argc, char** argv) {
     auto write_fragment_type = std::stoi(argv[3]);  // 0 -> TPC; 1 -> Trigger
 
     auto cnt = 0;  // "/" counter
-    bool is_replace = 0;
+    bool is_replace = 1;
 
     // open h5 file
     HDF5RawDataFile h5_file(input_h5_filename);
@@ -300,7 +300,8 @@ int main(int argc, char** argv) {
             std::vector<std::unique_ptr<Fragment>> frag_ptr1;
 
             if (write_fragment_type == 0)
-                std::vector<char> dummy_data1(fragment_size - 80, 0);
+                // std::vector<char> dummy_data1(fragment_size - 80, 0);
+                std::vector<char> dummy_data1(fragment_size, 0);
             else
                 fragment_size = 80;
             std::vector<char> dummy_data1(fragment_size, 0);
@@ -309,7 +310,7 @@ int main(int argc, char** argv) {
                 i = 1;
             }
 
-            // TLOG()<<"<====> path "<<path;
+            // TLOG() << "<====> path " << path;
 
             std::istringstream isSS(path);
             std::string token;
@@ -318,16 +319,18 @@ int main(int argc, char** argv) {
             while (std::getline(isSS, token, '/')) {
                 if (!token.empty()) {
                     cnt++;
-                    if (write_fragment_type == 0 && cnt == 4) {
-                        if (token == "Link02") {
+                    // if (write_fragment_type == 0 && cnt == 4) {
+                    if (write_fragment_type == 0 && cnt == 3) {
+                        // if (token == "Link02") {
+                        if (token == "Detector_Readout_0x00000064_WIBEth") {
                             is_replace = 1;
                         } else {
                             // TLOG()<<"<<==>>token "<<token<<" path "<<path;
                             is_replace = 0;
                         }
                     }
-                    if (write_fragment_type == 1 && cnt == 4) {
-                        if (token == "Element00001") {
+                    if (write_fragment_type == 1 && cnt == 3) {
+                        if (token == "Detector_Readout_0x00000064_WIBEth") {
                             TLOG() << "<<==>>" << token
                                    << " will be removed from path " << path;
                             is_replace = 1;
@@ -388,13 +391,19 @@ int main(int argc, char** argv) {
                 // std::cout<<"\n =====record_number_string \t"<<record_number;
                 // frag_ptr2->set_header_fields(frag->get_header());
                 if (write_fragment_type == 0) {
-                    TLOG() << "Link02 found in path and will be replaced by a "
+                    // TLOG() << "Link02 found in path and will be replaced by a
+                    // "
+                    TLOG() << "Detector_Readout_0x00000064_WIBEth found in "
+                              "path and will be replaced by a "
                               "vector with 1 in "
                            << path;
                     tr1.add_fragment(std::move(frag_ptr2));
                 }
             } else {
-                tr1.add_fragment(std::move(frag_ptr));
+                if (write_fragment_type == 1 and is_replace)
+                    continue;
+                else
+                    tr1.add_fragment(std::move(frag_ptr));
             }
 
             // dummy_data1.clear();

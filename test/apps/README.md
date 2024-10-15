@@ -45,25 +45,26 @@ text format and using vimdiff to view the difference.
 
 * Test data filter writer
 
-  * Modify every Link02 in TPC
+  * Modify Detector_Readout_0x00000064_WIBEth in RawData
 
   ```
 
-  hdf5libs_datafilter_writer_test  np04_coldbox_run014182_0000_dataflow0_20220712T102315.hdf5 test2.h5 0
+  hdf5libs_datafilter_writer_test  np04hd_run024559_0009_dataflow0_datawriter_0_20240321T103447.hdf5 test2.h5 0
   
   # to check the results
-  h5diff -c test2.h5 np04_coldbox_run014182_0000_dataflow0_20220712T102315.hdf5
+  h5diff -c test2.h5 np04hd_run024559_0009_dataflow0_datawriter_0_20240321T103447.hdf5
 
   ```
 
- * Remove Trigger element0001
+ * Remove Detector_Readout_0x00000064_WIBEth from RawData
 
  ```
 
-  hdf5libs_datafilter_writer_test  np04_coldbox_run014182_0000_dataflow0_20220712T102315.hdf5 test2.h5 1
+  hdf5libs_datafilter_writer_test  np04hd_run024559_0009_dataflow0_datawriter_0_20240321T103447.hdf5 test2.h5 1
 
-  # to check for the dataset Element0001. 
-  h5dump -d /TriggerRecord00001.0000/Trigger/Region00000/Element00001 test2.h5
+  # to check for the dataset Detector_Readout_0x00000064_WIBEth 
+
+  h5dump -d /TriggerRecord00253.0000/RawData/Detector_Readout_0x00000064_WIBEth test2.h5
  ```
 
 * Run Trigger Record tranfer test.
