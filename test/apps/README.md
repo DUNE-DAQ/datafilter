@@ -93,3 +93,31 @@ hdf5_dump.py -f test1.hdf5 -p fragment
 datafilter_tr_send_test -f swtest_run001039_0000_dataflow0_datawriter_0_20231103T121050.hdf5 --hdf5
 
 ```
+
+* Full integration test
+
+Open 4 terminals and run the following apps (trdispatcher, filterorchestrator,
+datafilter2, filterresultwriter) in a separate terminal.
+
+
+```
+# for generated simple TR
+trdispatcher
+
+# for TR dataset
+trdispatcher -f np04hd_run024559_0009_dataflow0_datawriter_0_20240321T103447.hdf5 --hdf5
+```
+
+```
+filterorchestrator
+```
+
+```
+datafilter2
+```
+
+```
+filterresultwriter -d `pwd` -o test2
+```
+
+
