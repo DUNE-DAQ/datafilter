@@ -38,9 +38,9 @@ using trigger_record_ptr_t = std::unique_ptr<daqdataformats::TriggerRecord>;
 struct DataFilterConfig {
     bool use_connectivity_service = false;
     int port = 5000;
-    std::string server = "localhost";
+    std::string server = "127.0.0.1";
     std::string info_file_base = "datafilter";
-    std::string session_name = "iomanager : datafilter";
+    std::string session_name = "datafilter run";
     size_t num_apps = 1;
     size_t num_connections_per_group = 1;
     size_t num_groups = 1;

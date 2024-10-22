@@ -56,8 +56,8 @@ daq_add_application(datafilter2 ../../apps/datafilter2.cpp TEST LINK_LIBRARIES $
 #daq_add_application(datafilter3 ../../apps/datafilter3.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 #daq_add_application(dataflow_emu4 ../../apps/dataflow_emu4.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 #daq_add_application(datafilter4 ../../apps/datafilter4.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-#daq_add_application(iom_send_test iom_send_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-#daq_add_application(iom_receive_test iom_receive_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+daq_add_application(iom_send_test iom_send_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+daq_add_application(iom_receive_test iom_receive_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 #
 #
 #daq_add_application(datafilter_config_test ../../apps/datafilter_config_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
