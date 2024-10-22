@@ -72,12 +72,20 @@ text format and using vimdiff to view the difference.
  * start the receiver first
 
 ```
+# sender on the same node
 datafilter_tr_receive_test -d `pwd` -o test
+
+# sender on different node
+datafilter_tr_receive_test --server np04-srv-004 -d `pwd` -o test
 ```
  * then start the sender of the a generated Trigger Record.
 
  ```
+# sender on the same node as receiver
 datafilter_tr_send_test 
+
+# sender on different node as receiver
+datafilter_tr_send_test  --server np04-srv-004
  ```
  * check the output HDF5 file 
 
