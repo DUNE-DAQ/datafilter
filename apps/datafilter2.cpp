@@ -40,7 +40,7 @@ struct DataFilterConfig {
     int port = 5000;
     std::string server = "127.0.0.1";
     std::string info_file_base = "datafilter";
-    std::string session_name = "datafilter run";
+    std::string session_name = "datafilter test run";
     size_t num_apps = 1;
     size_t num_connections_per_group = 1;
     size_t num_groups = 1;
@@ -53,6 +53,8 @@ struct DataFilterConfig {
     int publish_interval = 1000;
     bool next_tr = false;
 
+    std::string tr_writer_conn_name = "trwriter_conn";
+
     size_t seq_number;
     size_t trigger_number;
     size_t trigger_timestamp;
@@ -63,12 +65,13 @@ struct DataFilterConfig {
     size_t fragment_type;
     size_t portA = 15500;
     size_t portB = 15501;
-    // dunedaq::daqdataformats::FragmentType fragment_type;
 
     std::string input_h5_filename =
         "/lcg/storage19/test-area/dune/trigger_records/"
         "swtest_run001039_0000_dataflow0_datawriter_0_20231103T121050.hdf5";
-    std::string output_h5_filename = "/opt/tmp/chen/h5_test.hdf5";
+
+    std::string odir = "/opt/tmp/chen";  // current directory
+    std::string output_h5_filename = "h5_test";
 
     void configure_connsvc() {
         setenv("CONNECTION_SERVER", server.c_str(), 1);
@@ -96,12 +99,14 @@ struct DataFilterConfig {
         int first_byte = conn_id + 2;    // 2-254
         int second_byte = group_id + 1;  // 1-254
         int third_byte = app_id + 1;     // 1-254
-
-        std::string conn_addr = "tcp://127." + std::to_string(third_byte) +
-                                "." + std::to_string(second_byte) + "." +
-                                // std::to_string(first_byte) + ":15500";
-                                std::to_string(first_byte) + ":" +
-                                std::to_string(port);
+        std::string conn_addr;
+        if (server == "127.0.0.1") {
+            conn_addr = "tcp://127." + std::to_string(third_byte) + "." +
+                        std::to_string(second_byte) + "." +
+                        std::to_string(first_byte) + ":" + std::to_string(port);
+        } else {
+            conn_addr = "tcp://" + server + ":" + std::to_string(port);
+        }
 
         return conn_addr;
     }
@@ -120,34 +125,48 @@ struct DataFilterConfig {
         Queues_t queues;
         Connections_t connections;
 
-        for (size_t group = 0; group < num_groups; ++group) {
-            for (size_t conn = 0; conn < num_connections_per_group; ++conn) {
-                auto conn_addr1 = get_connection_ip(my_id1, group, conn, portA);
-                auto conn_addr2 = get_connection_ip(my_id2, group, conn, portB);
-                TLOG() << "Adding connection with id "
-                       << get_connection_name(my_id1, group, conn)
-                       << " and address1 " << conn_addr1;
-                TLOG() << "Adding connection with id "
-                       << get_connection_name(my_id2, group, conn)
-                       << " and address2 " << conn_addr2;
-                // data between dispatcher and data filter.
-                connections.emplace_back(Connection{
-                    ConnectionId{get_connection_name(my_id1, group, conn),
-                                 //             "data_t"},
-                                 "TriggerRecord"},
-                    conn_addr1, ConnectionType::kPubSub});
-                // data between data filter and filter results writer.
-                connections.emplace_back(Connection{
-                    ConnectionId{get_connection_name(my_id2, group, conn),
-                                 "TriggerRecord"},
-                    conn_addr2, ConnectionType::kPubSub});
-            }
-        }
+        //        for (size_t group = 0; group < num_groups; ++group) {
+        //            for (size_t conn = 0; conn < num_connections_per_group;
+        //            ++conn) {
+        //                auto conn_addr1 = get_connection_ip(my_id1, group,
+        //                conn, portA); auto conn_addr2 =
+        //                get_connection_ip(my_id2, group, conn, portB); TLOG()
+        //                << "Adding connection with id "
+        //                       << get_connection_name(my_id1, group, conn)
+        //                       << " and address1 " << conn_addr1;
+        //                TLOG() << "Adding connection with id "
+        //                       << get_connection_name(my_id2, group, conn)
+        //                       << " and address2 " << conn_addr2;
+        //                // data between dispatcher and data filter.
+        //                connections.emplace_back(Connection{
+        //                    ConnectionId{get_connection_name(my_id1, group,
+        //                    conn),
+        //                                 //             "data_t"},
+        //                                 "TriggerRecord"},
+        //                    conn_addr1, ConnectionType::kPubSub});
+        //                // data between data filter and filter results writer.
+        //                connections.emplace_back(Connection{
+        //                    ConnectionId{get_connection_name(my_id2, group,
+        //                    conn),
+        //                                 "TriggerRecord"},
+        //                    conn_addr2, ConnectionType::kPubSub});
+        //            }
+        //        }
+        //
+        auto conn_addr0 = "tcp://" + server + ":" + std::to_string(portA);
+        auto conn_addr1 = "tcp://" + server + ":" + std::to_string(portB);
+        connections.emplace_back(
+            Connection{ConnectionId{"conn_A0_G0_C0_", "TriggerRecord"},
+                       conn_addr0, ConnectionType::kSendRecv});
+        connections.emplace_back(
+            Connection{ConnectionId{"conn_A1_G0_C0_", "TriggerRecord"},
+                       conn_addr1, ConnectionType::kSendRecv});
 
         //  for (size_t sub = 0; sub < num_apps; ++sub) {
         for (size_t sub = 0; sub < 3; ++sub) {
             auto port = 13000 + sub;
-            std::string conn_addr = "tcp://127.0.0.1:" + std::to_string(port);
+            std::string conn_addr =
+                "tcp://" + server + ":" + std::to_string(port);
             TLOG() << "Adding control connection "
                    << "TR_tracking" + std::to_string(sub) << " with address "
                    << conn_addr;
@@ -163,7 +182,8 @@ struct DataFilterConfig {
         //  for (size_t sub = 0; sub < num_apps; ++sub) {
         for (size_t sub = 0; sub < 3; ++sub) {
             auto port = 23000 + sub;
-            std::string conn_addr = "tcp://127.0.0.1:" + std::to_string(port);
+            std::string conn_addr =
+                "tcp://" + server + ":" + std::to_string(port);
             TLOG() << "Adding control connection "
                    << "trdispatcher" + std::to_string(sub) << " with address "
                    << conn_addr;
@@ -179,7 +199,8 @@ struct DataFilterConfig {
         //      for (size_t sub = 0; sub < num_apps; ++sub) {
         for (size_t sub = 0; sub < 3; ++sub) {
             auto port = 33000 + sub;
-            std::string conn_addr = "tcp://127.0.0.1:" + std::to_string(port);
+            std::string conn_addr =
+                "tcp://" + server + ":" + std::to_string(port);
             TLOG() << "Adding control connection "
                    << "trwriter" + std::to_string(sub) << " with address "
                    << conn_addr;
@@ -216,7 +237,7 @@ struct TRRewriter {
 
     std::string session_name = "iomanager : TRRewriter test";
     bool use_connectivity_service = false;  // unsed for now
-    int publish_interval = 10000;
+    int publish_interval = 1000;
     size_t my_id = 0;
     size_t my_gr = 0;
     size_t my_conn = 0;
@@ -239,9 +260,7 @@ struct TRRewriter {
         size_t fragment_type;
         std::string path_header;
         int n_frames;
-        std::shared_ptr<
-            SenderConcept<std::unique_ptr<daqdataformats::TriggerRecord>>>
-            sender;
+        std::shared_ptr<SenderConcept<trigger_record_ptr_t>> sender;
         // std::shared_ptr<SenderConcept<daqdataformats::TriggerRecord>> sender;
         std::unique_ptr<std::thread> send_thread;
         std::chrono::milliseconds get_sender_time;
@@ -249,7 +268,6 @@ struct TRRewriter {
         TRWriterInfo(size_t group, size_t conn)
             : conn_id(conn), group_id(group) {}
     };
-    std::string tr_writer_conn = "trwriter_conn_0";
 
     size_t fragment_size = 100;
     size_t element_count_tpc = 4;
@@ -584,13 +602,16 @@ struct TRRewriter {
 
     void send_tr(std::unique_ptr<daqdataformats::TriggerRecord>& trp) {
         std::ostringstream ss;
-        ss << "Sending Trigger Rcord to FilterResultWriter";
+        ss << "datafilter: ->accepted_trigger_record2->send_tr :Sending Trigger Rcord to FilterResultWriter";
         TLOG() << ss.str();
         ss.str("");
 
-        auto init_receiver =
-            dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
+        auto init_sender =
+            dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(
                 "trwriter0");
+        dunedaq::datafilter::Handshake q("write_tr");
+        init_sender->send(std::move(q), Sender::s_block);
+
         std::unordered_map<int, std::set<size_t>> completed_receiver_tracking;
         std::mutex tracking_mutex;
 
@@ -608,7 +629,7 @@ struct TRRewriter {
             trp->get_fragments_ref().at(0)->get_trigger_number();
         auto run_number = trp->get_fragments_ref().at(0)->get_run_number();
 
-        TLOG() << "run_number: " << run_number
+        TLOG() << "datafilter->send_tr: run_number: " << run_number
                << ", trigger number: " << trigger_number;
 
         TLOG_DEBUG(7) << "Getting publisher objects for each connection";
@@ -656,6 +677,8 @@ struct TRRewriter {
                                     complete_received = true;
                                 }
                             }
+
+                            std::this_thread::sleep_for(500ms);
                             complete_received = true;
                             break;
                         }  // while loop
@@ -981,7 +1004,7 @@ struct DataFilterOrganiser {
 
     void accepted_trigger_record2(
         std::unique_ptr<daqdataformats::TriggerRecord>& trp) {
-        TLOG() << "====>accepted_trigger_record single-event per file";
+        TLOG() << "====>accepted_trigger_record2 single-event per file";
         //        hdf5datastore::ConfParams conf;
         //        conf.name = "tempWriter";
         //        conf.mode = "all-per-file";
@@ -997,10 +1020,13 @@ struct DataFilterOrganiser {
         auto trigger_number =
             trp->get_fragments_ref().at(0)->get_trigger_number();
         auto run_number = trp->get_fragments_ref().at(0)->get_run_number();
+        auto frag_size = trp->get_fragments_ref().at(0)->get_size();
+        auto recorded_size = trp->get_total_size_bytes();
 
         TLOG() << "trigger_timestamp " << trigger_timestamp
                << " trigger_number " << trigger_number << " run_number "
-               << run_number;
+               << run_number << " fragment size " << frag_size
+               << " TR Total size" << recorded_size;
 
         // data_store_ptr->write(rebuild_trigger_record(
         //     trigger_number, trigger_timestamp, run_number, seq_number,
@@ -1320,19 +1346,40 @@ struct SubscriberTest {
         TLOG_DEBUG(5) << "receive() done";
     }
     void receive_tr(size_t run_number1) {
+        bool handshake_done = false;
+        std::atomic<unsigned int> received_cnt = 0;
+
         std::stringstream ss;
 
         ss << "datafilter sub: Preparing to receive Trigger Record";
         TLOG() << ss.str();
         ss.str("");
-        if (config.next_tr) {
-            auto next_tr_sender =
-                dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(
-                    "TR_tracking2");
-            TLOG() << "send next_tr instruction";
-            dunedaq::datafilter::Handshake q("next_tr");
-            next_tr_sender->send(std::move(q), Sender::s_block);
+
+        auto cb_receiver =
+            dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
+                "TR_tracking2");
+        std::function<void(dunedaq::datafilter::Handshake)> str_receiver_cb =
+            [&](dunedaq::datafilter::Handshake msg) {
+                if (msg.msg_id == "next_tr") {
+                    ++received_cnt;
+                }
+                TLOG_DEBUG(5)
+                    << "datafilter: TR receiver callback: " << msg.msg_id;
+            };
+
+        cb_receiver->add_callback(str_receiver_cb);
+        while (!handshake_done) {
+            if (received_cnt == 1) handshake_done = true;
         }
+
+        //        if (config.next_tr) {
+        //            auto next_tr_sender =
+        //                dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(
+        //                    "TR_tracking2");
+        //            TLOG() << "send next_tr instruction";
+        //            dunedaq::datafilter::Handshake q("next_tr");
+        //            next_tr_sender->send(std::move(q), Sender::s_block);
+        //        }
 
         TLOG() << "datafilter sub: Setting up subscribers objects";
         for (size_t group = 0; group < config.num_groups; ++group) {
@@ -1368,10 +1415,17 @@ struct SubscriberTest {
                             tr->get_fragments_ref().at(0)->get_trigger_number();
                         auto run_number =
                             tr->get_fragments_ref().at(0)->get_run_number();
-                        int file_index = 0;
 
-                        TLOG() << "run_number: " << run_number
-                               << ", trigger number: " << trigger_number;
+                        auto frag_size =
+                            tr->get_fragments_ref().at(0)->get_size();
+                        auto recorded_size = tr->get_total_size_bytes();
+
+                        TLOG()
+                            << "trigger_timestamp " << trigger_timestamp
+                            << " trigger_number " << trigger_number
+                            << " run_number " << run_number << " fragment size "
+                            << frag_size << " TR Total size" << recorded_size;
+
                         info->msgs_received++;
                         last_received = std::chrono::steady_clock::now();
 
@@ -1380,11 +1434,12 @@ struct SubscriberTest {
                                    << info->get_connection_name(config);
                             std::string app_name = "test";
                             std::string ofile_name =
-                                "/opt/tmp/chen/test" +
+                                config.odir + "/" + config.output_h5_filename +
                                 // std::to_string(info->msgs_received.load()) +
                                 std::to_string(trigger_number) + ".hdf5";
                             //  create the file to write the TriggerRecords
                             /*
+                        int file_index = 0;
                             std::unique_ptr<HDF5RawDataFile> h5file_ptr(
                                 new HDF5RawDataFile(
                                     ofile_name, run_number, file_index,
@@ -1418,16 +1473,16 @@ struct SubscriberTest {
                         after_callback - after_receiver);
             });
 
-        if (config.next_tr) {
-            auto next_tr_sender =
-                dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(
-                    "TR_tracking2");
-            TLOG() << "send wait for next instruction";
-            dunedaq::datafilter::Handshake q("wait");
-            next_tr_sender->send(std::move(q), Sender::s_block);
-        }
+        //        if (config.next_tr) {
+        //            auto next_tr_sender =
+        //                dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(
+        //                    "TR_tracking2");
+        //            TLOG() << "send wait for next instruction";
+        //            dunedaq::datafilter::Handshake q("wait");
+        //            next_tr_sender->send(std::move(q), Sender::s_block);
+        //        }
 
-        TLOG() << "Starting wait loop for receives to complete";
+        TLOG_DEBUG(5) << "Starting wait loop for receives to complete";
         bool all_done = false;
         while (!all_done) {
             size_t recvrs_done = 0;
@@ -1443,9 +1498,8 @@ struct SubscriberTest {
         }
         TLOG() << "Removing callbacks";
         for (auto& info : subscribers) {
-            auto receiver =
-                dunedaq::get_iom_receiver<dunedaq::datafilter::Data>(
-                    info->get_connection_name(config));
+            auto receiver = dunedaq::get_iom_receiver<trigger_record_ptr_t>(
+                info->get_connection_name(config));
             receiver->remove_callback();
         }
 

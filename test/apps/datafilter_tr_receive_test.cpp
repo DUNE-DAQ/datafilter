@@ -168,7 +168,7 @@ struct TRRewriter {
 
     std::string session_name = "iomanager : TRRewriter test";
     bool use_connectivity_service = false;  // unsed for now
-    int publish_interval = 10000;
+    int publish_interval = 1000;
     size_t my_id = 0;
     size_t my_gr = 0;
     size_t my_conn = 0;
