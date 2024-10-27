@@ -33,12 +33,18 @@ using namespace dunedaq::dfmessages;
 namespace dunedaq {
 namespace datafilter {
 
-using trigger_record_ptr_t = std::unique_ptr<daqdataformats::TriggerRecord>;
+using trigger_record_ptr_t =
+    std::unique_ptr<dunedaq::daqdataformats::TriggerRecord>;
 
 struct DataFilterConfig {
     bool use_connectivity_service = false;
+
     int port = 5000;
+    int portA = 15500;  // for trdispatcher/datafilter connection
+    int portB = 15501;  // for datafilter/trwriter connection
+
     std::string server = "127.0.0.1";
+    std::string server_trdispatcher = "127.0.0.1";
     std::string info_file_base = "datafilter";
     std::string session_name = "datafilter test run";
     size_t num_apps = 1;
@@ -53,8 +59,6 @@ struct DataFilterConfig {
     int publish_interval = 1000;
     bool next_tr = false;
 
-    std::string tr_writer_conn_name = "trwriter_conn";
-
     size_t seq_number;
     size_t trigger_number;
     size_t trigger_timestamp;
@@ -63,8 +67,6 @@ struct DataFilterConfig {
     size_t detector_id;
     size_t error_bits;
     size_t fragment_type;
-    size_t portA = 15500;
-    size_t portB = 15501;
 
     std::string input_h5_filename =
         "/lcg/storage19/test-area/dune/trigger_records/"
@@ -157,9 +159,11 @@ struct DataFilterConfig {
         auto conn_addr1 = "tcp://" + server + ":" + std::to_string(portB);
         connections.emplace_back(
             Connection{ConnectionId{"conn_A0_G0_C0_", "TriggerRecord"},
+                       // conn_addr0, ConnectionType::kPubSub});
                        conn_addr0, ConnectionType::kSendRecv});
         connections.emplace_back(
             Connection{ConnectionId{"conn_A1_G0_C0_", "TriggerRecord"},
+                       // conn_addr1, ConnectionType::kPubSub});
                        conn_addr1, ConnectionType::kSendRecv});
 
         //  for (size_t sub = 0; sub < num_apps; ++sub) {
@@ -183,7 +187,7 @@ struct DataFilterConfig {
         for (size_t sub = 0; sub < 3; ++sub) {
             auto port = 23000 + sub;
             std::string conn_addr =
-                "tcp://" + server + ":" + std::to_string(port);
+                "tcp://" + server_trdispatcher + ":" + std::to_string(port);
             TLOG() << "Adding control connection "
                    << "trdispatcher" + std::to_string(sub) << " with address "
                    << conn_addr;
@@ -307,13 +311,6 @@ struct TRRewriter {
             if (recv.msg_id == "gotit") TLOG() << "Receiver got it";
             break;
         }
-
-        //        auto iom = iomanager::IOManager::get();
-        //        using tr_receiver_ct =
-        //        iomanager::ReceiverConcept<std::unique_ptr<daqdataformats::TriggerRecord>>;
-        //        std::shared_ptr<tr_receiver_ct> tr_receiver;
-        //        tr_receiver = iom ->
-        //        get_receiver<std::unique_ptr<daqdataformats::TriggerRecord>>(tr_writer_conn);
     }
     dunedaq::datafilter::trigger_record_ptr_t create_trigger_record(
         uint64_t trig_num) {
@@ -600,9 +597,9 @@ struct TRRewriter {
         return temp;
     }
 
-    void send_tr(std::unique_ptr<daqdataformats::TriggerRecord>& trp) {
+    void send_tr(trigger_record_ptr_t& trp) {
         std::ostringstream ss;
-        ss << "datafilter: ->accepted_trigger_record2->send_tr :Sending Trigger Rcord to FilterResultWriter";
+        ss << "datafilter: ->accepted_trigger_record2->send_tr :Sending TR to FilterResultWriter";
         TLOG() << ss.str();
         ss.str("");
 
@@ -637,10 +634,7 @@ struct TRRewriter {
             std::execution::par_unseq, std::begin(trwriters),
             std::end(trwriters), [=](std::shared_ptr<TRWriterInfo> info) {
                 auto before_sender = std::chrono::steady_clock::now();
-                //                    info->sender =
-                //                    dunedaq::get_iom_sender<dunedaq::datafilter::Data>(
-                info->sender = dunedaq::get_iom_sender<
-                    std::unique_ptr<dunedaq::daqdataformats::TriggerRecord>>(
+                info->sender = dunedaq::get_iom_sender<trigger_record_ptr_t>(
                     config.get_connection_name(config.my_id2, info->group_id,
                                                info->conn_id));
                 auto after_sender = std::chrono::steady_clock::now();
@@ -685,7 +679,7 @@ struct TRRewriter {
                     }));
             });
 
-        TLOG() << "datafilter pub: Joining send threads";
+        TLOG() << "datafilter send_tr: Joining send threads";
         for (auto& sender : trwriters) {
             sender->send_thread->join();
             sender->send_thread.reset(nullptr);
@@ -715,10 +709,7 @@ struct TRRewriter {
             std::execution::par_unseq, std::begin(trwriters),
             std::end(trwriters), [=](std::shared_ptr<TRWriterInfo> info) {
                 auto before_sender = std::chrono::steady_clock::now();
-                //                    info->sender =
-                //                    dunedaq::get_iom_sender<dunedaq::datafilter::Data>(
-                info->sender = dunedaq::get_iom_sender<
-                    std::unique_ptr<dunedaq::daqdataformats::TriggerRecord>>(
+                info->sender = dunedaq::get_iom_sender<trigger_record_ptr_t>(
                     config.get_connection_name(config.my_id2, info->group_id,
                                                info->conn_id));
                 auto after_sender = std::chrono::steady_clock::now();
@@ -818,10 +809,7 @@ struct TRRewriter {
             std::execution::par_unseq, std::begin(trwriters),
             std::end(trwriters), [=](std::shared_ptr<TRWriterInfo> info) {
                 auto before_sender = std::chrono::steady_clock::now();
-                info->sender = dunedaq::get_iom_sender<
-                    std::unique_ptr<dunedaq::daqdataformats::TriggerRecord>>(
-                    // info->sender =
-                    // dunedaq::get_iom_sender<dunedaq::daqdataformats::TriggerRecord>(
+                info->sender = dunedaq::get_iom_sender<trigger_record_ptr_t>(
                     config.get_connection_name(config.my_id2, info->group_id,
                                                info->conn_id));
                 auto after_sender = std::chrono::steady_clock::now();
@@ -830,7 +818,7 @@ struct TRRewriter {
                         after_sender - before_sender);
             });
 
-        TLOG(7) << "Starting TRWriter threads";
+        TLOG_DEBUG(7) << "Starting TRWriter threads";
         std::for_each(
             std::execution::par_unseq, std::begin(trwriters),
             std::end(trwriters),
@@ -1002,8 +990,7 @@ struct DataFilterOrganiser {
         //  rewriter.send_trigger_record();
     }
 
-    void accepted_trigger_record2(
-        std::unique_ptr<daqdataformats::TriggerRecord>& trp) {
+    void accepted_trigger_record2(trigger_record_ptr_t& trp) {
         TLOG() << "====>accepted_trigger_record2 single-event per file";
         //        hdf5datastore::ConfParams conf;
         //        conf.name = "tempWriter";
@@ -1020,13 +1007,10 @@ struct DataFilterOrganiser {
         auto trigger_number =
             trp->get_fragments_ref().at(0)->get_trigger_number();
         auto run_number = trp->get_fragments_ref().at(0)->get_run_number();
-        auto frag_size = trp->get_fragments_ref().at(0)->get_size();
-        auto recorded_size = trp->get_total_size_bytes();
 
         TLOG() << "trigger_timestamp " << trigger_timestamp
                << " trigger_number " << trigger_number << " run_number "
-               << run_number << " fragment size " << frag_size
-               << " TR Total size" << recorded_size;
+               << run_number;
 
         // data_store_ptr->write(rebuild_trigger_record(
         //     trigger_number, trigger_timestamp, run_number, seq_number,
@@ -1036,6 +1020,14 @@ struct DataFilterOrganiser {
         //    trigger_number, trigger_timestamp, run_number, seq_number,
         //    n_frames, element_id, detector_id, contents));
         rewriter.send_tr(trp);
+    }
+    void send_next_tr() {
+        auto init_sender =
+            dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(
+                "trdispatcher1");
+
+        dunedaq::datafilter::Handshake sent_t1("next_tr");
+        init_sender->send(std::move(sent_t1), Sender::s_block);
     }
 };
 
@@ -1051,6 +1043,7 @@ struct SubscriberTest {
         std::chrono::milliseconds add_callback_time;
         std::atomic<bool> complete{false};
 
+        size_t total_size_bytes;
         SubscriberInfo(size_t group, size_t conn)
             : group_id(group), conn_id(conn), is_group_subscriber(false) {}
         SubscriberInfo(size_t group)
@@ -1404,63 +1397,57 @@ struct SubscriberTest {
             std::execution::par_unseq, std::begin(subscribers),
             std::end(subscribers),
             [=, &last_received](std::shared_ptr<SubscriberInfo> info) {
-                auto recv_proc =
-                    [=, &last_received](
-                        std::unique_ptr<dunedaq::daqdataformats::TriggerRecord>&
-                            tr) {
-                        auto trigger_timestamp = tr->get_fragments_ref()
-                                                     .at(0)
-                                                     ->get_trigger_timestamp();
-                        auto trigger_number =
-                            tr->get_fragments_ref().at(0)->get_trigger_number();
-                        auto run_number =
-                            tr->get_fragments_ref().at(0)->get_run_number();
+                auto recv_proc = [=, &last_received](trigger_record_ptr_t& tr) {
+                    auto trigger_timestamp =
+                        tr->get_fragments_ref().at(0)->get_trigger_timestamp();
+                    auto trigger_number =
+                        tr->get_fragments_ref().at(0)->get_trigger_number();
+                    auto run_number =
+                        tr->get_fragments_ref().at(0)->get_run_number();
 
-                        auto frag_size =
-                            tr->get_fragments_ref().at(0)->get_size();
-                        auto recorded_size = tr->get_total_size_bytes();
+                    auto frag_size = tr->get_fragments_ref().at(0)->get_size();
+                    info->total_size_bytes = tr->get_total_size_bytes();
 
-                        TLOG()
-                            << "trigger_timestamp " << trigger_timestamp
-                            << " trigger_number " << trigger_number
-                            << " run_number " << run_number << " fragment size "
-                            << frag_size << " TR Total size" << recorded_size;
+                    TLOG() << "trigger_timestamp " << trigger_timestamp
+                           << " trigger_number " << trigger_number
+                           << " run_number " << run_number << " fragment size "
+                           << frag_size << " TR Total size bytes "
+                           << info->total_size_bytes;
 
-                        info->msgs_received++;
-                        last_received = std::chrono::steady_clock::now();
+                    info->msgs_received++;
+                    last_received = std::chrono::steady_clock::now();
 
-                        if (info->msgs_received = config.num_messages) {
-                            TLOG() << "msgs_received from connection name:"
-                                   << info->get_connection_name(config);
-                            std::string app_name = "test";
-                            std::string ofile_name =
-                                config.odir + "/" + config.output_h5_filename +
-                                // std::to_string(info->msgs_received.load()) +
-                                std::to_string(trigger_number) + ".hdf5";
-                            //  create the file to write the TriggerRecords
-                            /*
-                        int file_index = 0;
-                            std::unique_ptr<HDF5RawDataFile> h5file_ptr(
-                                new HDF5RawDataFile(
-                                    ofile_name, run_number, file_index,
-                                    app_name, flp_json_in, srcid_geoid_map,
-                                    ".writing", HighFive::File::Overwrite));
-                            h5file_ptr->write(*tr);
-                            h5file_ptr.reset();
+                    if (info->msgs_received = config.num_messages) {
+                        TLOG() << "msgs_received from connection name:"
+                               << info->get_connection_name(config);
+                        std::string app_name = "test";
+                        std::string ofile_name =
+                            config.odir + "/" + config.output_h5_filename +
+                            // std::to_string(info->msgs_received.load()) +
+                            std::to_string(trigger_number) + ".hdf5";
+                        //  create the file to write the TriggerRecords
+                        /*
+                    int file_index = 0;
+                        std::unique_ptr<HDF5RawDataFile> h5file_ptr(
+                            new HDF5RawDataFile(
+                                ofile_name, run_number, file_index,
+                                app_name, flp_json_in, srcid_geoid_map,
+                                ".writing", HighFive::File::Overwrite));
+                        h5file_ptr->write(*tr);
+                        h5file_ptr.reset();
 */
-                            // organiser.rewriter.send_tr(tr);
-                            organiser.accepted_trigger_record2(tr);
+                        // organiser.rewriter.send_tr(tr);
+                        organiser.accepted_trigger_record2(tr);
 
-                            info->complete = true;
-                        }
-                    };
+                        info->complete = true;
+                    }
+                };
 
                 TLOG() << "Using connection: "
                        << info->get_connection_name(config);
 
                 auto before_receiver = std::chrono::steady_clock::now();
-                auto receiver = dunedaq::get_iom_receiver<
-                    std::unique_ptr<dunedaq::daqdataformats::TriggerRecord>>(
+                auto receiver = dunedaq::get_iom_receiver<trigger_record_ptr_t>(
                     info->get_connection_name(config));
                 auto after_receiver = std::chrono::steady_clock::now();
                 receiver->add_callback(recv_proc);
@@ -1471,6 +1458,10 @@ struct SubscriberTest {
                 info->add_callback_time =
                     std::chrono::duration_cast<std::chrono::milliseconds>(
                         after_callback - after_receiver);
+                auto elapsed_time = info->get_receiver_time.count();
+                auto rate = info->total_size_bytes / elapsed_time;
+                TLOG() << " Performance test: elapsed_time " << elapsed_time;
+                // << "transfer rate" << rate;
             });
 
         //        if (config.next_tr) {
@@ -1541,7 +1532,10 @@ int main(int argc, char* argv[]) {
         "port to connect to on configuration server")(
         "server,s",
         po::value<std::string>(&config.server)->default_value(config.server),
-        "Configuration server to connect to")(
+        "datafilter server")("server_trdispatcher,st",
+                             po::value<std::string>(&config.server_trdispatcher)
+                                 ->default_value(config.server_trdispatcher),
+                             "trdispatcher server")(
         "num_messages,m",
         po::value<size_t>(&config.num_messages)
             ->default_value(config.num_messages),
@@ -1632,6 +1626,7 @@ int main(int argc, char* argv[]) {
             trrewriter->init(run);
         }
         // subscriber->receive(run);
+        subscriber->organiser.send_next_tr();
         subscriber->receive_tr(run);
 
         TLOG() << "Subscriber " << config.my_id1 << ": "
