@@ -105,7 +105,7 @@ datafilter_tr_send_test -f swtest_run001039_0000_dataflow0_datawriter_0_20231103
 * Full integration test
 
 Open 4 terminals and run the following apps (trdispatcher, filterorchestrator,
-datafilter2, filterresultwriter) in a separate terminal.
+filterresultwriter, datafilter2) in a separate terminal.
 
 
 ```
