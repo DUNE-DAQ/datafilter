@@ -111,8 +111,8 @@ filterresultwriter, datafilter2) in a separate terminal.
 ```
 # run trdispatcher in np04-srv-004
 
-# for generated simple TR
-trdispatcher --server np02-srv-004 --server_trdispatcher np04-srv-004
+# To generate simple TR 
+trdispatcher --server np02-srv-004 --server_trdispatcher np04-srv-004 -r 1
 
 # for TR dataset
 trdispatcher --server np02-srv-004 --server_trdispatcher np04-srv-004 -f np04hd_run024559_0009_dataflow0_datawriter_0_20240321T103447.hdf5 --hdf5
@@ -120,20 +120,22 @@ trdispatcher --server np02-srv-004 --server_trdispatcher np04-srv-004 -f np04hd_
 
 ```
 # run filterorchestrator in np04-srv-004
-filterorchestrator --server np02-srv-004 --server_trdispatcher np04-srv-004
+filterorchestrator --server np02-srv-004 --server_trdispatcher np04-srv-004 -r 1
 
 ```
 
 ```
 # run filterresultwriter in np02-srv-004
-filterresultwriter --server np02-srv-004 --server_trdispatcher np04-srv-004 -d `pwd` -o test2
+filterresultwriter --server np02-srv-004 --server_trdispatcher np04-srv-004 -d `pwd` -o test2 -r 1
 ```
 
 ```
 # run datafilter2 on np02-srv-004 
-datafilter2 --server np02-srv-004 --server_trdispatcher np04-srv-004
+datafilter2 --server np02-srv-004 --server_trdispatcher np04-srv-004 -r 1
 
 ```
 
+The option "-r" allows to set the number of generated trigger record. The
+example above was set to 1.
 
 
