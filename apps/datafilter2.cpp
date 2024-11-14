@@ -1459,8 +1459,11 @@ struct SubscriberTest {
                     std::chrono::duration_cast<std::chrono::milliseconds>(
                         after_callback - after_receiver);
                 auto elapsed_time = info->get_receiver_time.count();
-                auto rate = info->total_size_bytes / elapsed_time;
-                TLOG() << " Performance test: elapsed_time " << elapsed_time;
+                if (elapsed_time > 0) {
+                    auto rate = info->total_size_bytes / elapsed_time;
+                    TLOG() << " Performance test: elapsed_time "
+                           << elapsed_time;
+                }
                 // << "transfer rate" << rate;
             });
 
