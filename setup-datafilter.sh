@@ -19,7 +19,9 @@ else
         INSTALL_DIR=/lcg/storage19/test-area/dune-v4-spack-datafilter-integration-test
 fi
 
-DUNE_DAQ_release=NFD_PROD4_240929_A9 
+# we take the second last tag 
+NFD_PRO4_V=`ls -d /cvmfs/dunedaq-development.opensciencegrid.org/nightly/NFD_PROD4_*|sort|tail -2|cut -f5 -d "/"`
+DUNE_DAQ_release=$NFD_PROD4_V 
 
 
 if [ -d $HOME/test-area ]; then
