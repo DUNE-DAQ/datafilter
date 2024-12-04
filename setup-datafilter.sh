@@ -60,7 +60,7 @@ if [ -d $HOME/test-area ]; then
                 cd ../..
                 source dbt-env.sh
                 dbt-workarea-env
-                dbt-build
+                dbt-build -j$(nproc)
 	else
 		echo "$INSTALL_DIR does not exist."
 	fi
