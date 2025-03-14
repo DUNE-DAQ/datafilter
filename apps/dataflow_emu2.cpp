@@ -317,14 +317,21 @@ struct PublisherTest {
                                     // std::vector<uint64_t*>& data1 =
                                     // *reinterpret_cast<std::vector<uint64_t*>
                                     // *>(data);
+                                    auto hdr_size =
+                                        sizeof(frag_ptr->get_header());
+                                    auto WIBEthFrame_size = sizeof(
+                                        dunedaq::fddetdataformats::WIBEthFrame);
 
                                     int nframes =
                                         (fragment_size -
                                          sizeof(
                                              daqdataformats::FragmentHeader)) /
                                         sizeof(fddetdataformats::WIBEthFrame);
-                                    // std::cout<<"fragment_size"<<fragment_size<<"
-                                    // "<<nframes<<"\n";
+                                    TLOG()
+                                        << "fragment_size" << fragment_size
+                                        << "nframes " << nframes << "hdr_size"
+                                        << hdr_size << "WIBEthFrame_size"
+                                        << WIBEthFrame_size;
                                     for (auto i = 0; i < nframes; ++i) {
                                         auto fr = reinterpret_cast<
                                             fddetdataformats::WIBEthFrame*>(

@@ -176,7 +176,7 @@ struct TRRewriter {
     TRRewriter() {
         setenv("DUNEDAQ_PARTITION", "IOManager_t", 0);
 
-        std::cout << "from TRRewriter";
+        TLOG() << "from TRRewriter";
     }
     ~TRRewriter() { IOManager::get()->reset(); }
 
@@ -200,7 +200,7 @@ struct TRRewriter {
     std::string input_h5_filename =
         "/lcg/storage19/test-area/dune/trigger_records/"
         "swtest_run001039_0000_dataflow0_datawriter_0_20231103T121050.hdf5";
-    size_t fragment_size = 100;
+    size_t fragment_size = 7272;
     size_t element_count_tpc = 4;
     size_t element_count_pds = 4;
     size_t element_count_ta = 4;
@@ -561,14 +561,27 @@ struct TRRewriter {
         return temp;
     }
 
+    //    h5file_ptr_t open(const std::string& fname) {
+    //        h5file_ptr_t h5file_ptr(new HDF5RawDataFile(fname, false));
+    //    }
     void send_tr_from_hdf5file(size_t dataflow_run_number,
                                pid_t subscriber_pid) {
         std::ostringstream ss;
+        HDF5RawDataFile h5_file1(config.input_h5_filename);
+        auto records1 = h5_file1.get_all_record_ids();
+        auto total_tr = *(std::next(records1.begin(), records1.size() - 1));
+        ss << "\n\tLast trigger record: " << int(total_tr.first) << ","
+           << total_tr.second;
+
+        TLOG() << ss.str();
+        ss.str("");
 
         auto isender = dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(
             "TR_tracking2");
 
         dunedaq::datafilter::Handshake sent_t1("next_tr");
+        sent_t1.total_tr = int(total_tr.first);
+        TLOG() << "total_tr====> " << sent_t1.total_tr;
         isender->send(std::move(sent_t1), Sender::s_block);
 
         //        bool handshake_done = false;
@@ -624,10 +637,11 @@ struct TRRewriter {
         std::for_each(
             std::execution::par_unseq, std::begin(trwriters),
             std::end(trwriters),
-            [=, &completed_receiver_tracking,
+            [=, &h5_file1, &completed_receiver_tracking,
              &tracking_mutex](std::shared_ptr<TRWriterInfo> info) {
-                info->send_thread.reset(new std::thread(
-                    [=, &completed_receiver_tracking, &tracking_mutex]() {
+                info->send_thread.reset(
+                    new std::thread([=, &h5_file1, &completed_receiver_tracking,
+                                     &tracking_mutex]() {
                         bool complete_received = false;
 
                         std::this_thread::sleep_for(100ms);
@@ -635,9 +649,9 @@ struct TRRewriter {
                         while (!complete_received) {
                             TLOG_DEBUG(7) << "Sender message: generate trigger "
                                              "record";
-                            std::string ifilename = config.input_h5_filename;
-                            HDF5RawDataFile h5_file(ifilename);
-                            auto records = h5_file.get_all_record_ids();
+                            // std::string ifilename = config.input_h5_filename;
+                            // HDF5RawDataFile h5_file(ifilename);
+                            auto records = h5_file1.get_all_record_ids();
                             ss << "\nNumber of records: " << records.size();
                             if (records.empty()) {
                                 ss << "\n\nNO TRIGGER RECORDS FOUND";
@@ -658,8 +672,9 @@ struct TRRewriter {
 
                             for (auto const& rid : records) {
                                 auto record_header_dataset =
-                                    h5_file.get_record_header_dataset_path(rid);
-                                auto tr = h5_file.get_trigger_record(rid);
+                                    h5_file1.get_record_header_dataset_path(
+                                        rid);
+                                auto tr = h5_file1.get_trigger_record(rid);
 
                                 // SERIALIZE
                                 auto bytes = dunedaq::serialization::serialize(

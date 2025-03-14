@@ -21,6 +21,7 @@ find_package(dfmessages REQUIRED)
 find_package(iomanager REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(cetlib REQUIRED)   # Uses the daq-buildtools/cmake/Findcetlib.cmake
+find_package(opmonlib REQUIRED)
 find_package(Boost COMPONENTS iostreams unit_test_framework REQUIRED)
 
 #find_package(pybind11_json ${pybind11_json_REQUIRED_VERSION} REQUIRED)
@@ -32,7 +33,7 @@ daq_codegen( appinfo.jsonnet DEP_PKGS opmonlib TEMPLATES opmonlib/InfoStructs.hp
 ##############################################################################
 # Main library
 daq_add_library (*.cpp LINK_LIBRARIES stdc++fs ers::ers HighFive hdf5libs dfmodules dfmessages::dfmessages daqdataformats::daqdataformats detdataformats::detdataformats \\
-                    fddetdataformats::fddetdataformats detchannelmaps::detchannelmaps iomanager::iomanager logging::logging nlohmann_json::nlohmann_json ${CETLIB} ${CETLIB_EXCEPT})
+                    fddetdataformats::fddetdataformats detchannelmaps::detchannelmaps  iomanager::iomanager opmonlib::opmonlib logging::logging nlohmann_json::nlohmann_json ${CETLIB} ${CETLIB_EXCEPT})
 
 ##############################################################################
 # Unit tests
@@ -41,17 +42,20 @@ daq_add_library (*.cpp LINK_LIBRARIES stdc++fs ers::ers HighFive hdf5libs dfmodu
 
 ##############################################################################
 # Python bindings
-daq_add_python_bindings(*.cpp LINK_LIBRARIES ${PROJECT_NAME} hdf5libs::hdf5libs dfmessages::dfmessages dfmodules::dfmodules daqdataformats::daqdataformats fddetdataformats::fddetdataformats)
+daq_add_python_bindings(*.cpp LINK_LIBRARIES ${PROJECT_NAME} hdf5libs::hdf5libs opmonlib::opmonlib dfmessages::dfmessages dfmodules::dfmodules daqdataformats::daqdataformats fddetdataformats::fddetdataformats)
 
 ##############################################################################
 # Applications
 daq_add_application(hdf5libs_datafilter_writer_test hdf5libs_datafilter_writer_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 daq_add_application(datafilter_tr_send_test datafilter_tr_send_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+#daq_add_application(datafilter_tr_send_test-modified2 datafilter_tr_send_test-modified2.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 daq_add_application(datafilter_tr_receive_test datafilter_tr_receive_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+daq_add_application(datafilter_tr_receive_test3 datafilter_tr_receive_test-modified2.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 #daq_add_application(datafilter_tr_receive_writer datafilter_tr_receive_writer.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 #daq_add_application(dataflow_emu ../../apps/dataflow_emu.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 daq_add_application(dataflow_emu2 ../../apps/dataflow_emu2.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 daq_add_application(datafilter2 ../../apps/datafilter2.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+#daq_add_application(get_header_size get_header_size.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 #daq_add_application(dataflow_emu3 ../../apps/dataflow_emu3.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 #daq_add_application(datafilter3 ../../apps/datafilter3.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 #daq_add_application(dataflow_emu4 ../../apps/dataflow_emu4.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
@@ -59,6 +63,7 @@ daq_add_application(datafilter2 ../../apps/datafilter2.cpp TEST LINK_LIBRARIES $
 #daq_add_application(iom_send_test iom_send_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 #daq_add_application(iom_receive_test iom_receive_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 #daq_add_application(iom_receive_test2 iom_receive_test2.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+#daq_add_application(queues_vs_threads_iomanager queues_vs_threads_iomanager.cxx TEST LINK_LIBRARIES ${PROJECT_NAME})
 #
 #
 #daq_add_application(datafilter_config_test ../../apps/datafilter_config_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})

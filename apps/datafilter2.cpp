@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <execution>
 #include <fstream>
+#include <string>
+#include <thread>
 
 #include "boost/program_options.hpp"
 #include "datafilter/app/Nljs.hpp"
@@ -217,6 +219,19 @@ struct DataFilterConfig {
                     conn_addr, ConnectionType::kSendRecv});
         }
 
+        // Create BookKeeping socket
+        auto port = 83000;
+        auto sub = 0;
+        std::string conn_addrbookkeeping =
+            "tcp://" + server + ":" + std::to_string(port);
+        TLOG() << "Adding control connection "
+               << "bookkeeping" + std::to_string(sub) << " with address "
+               << conn_addrbookkeeping;
+
+        connections.emplace_back(Connection{
+            ConnectionId{"bookkeeping" + std::to_string(sub), "bk_t"},
+            conn_addrbookkeeping, ConnectionType::kSendRecv});
+
         IOManager::get()->configure(
             queues, connections, use_connectivity_service,
             std::chrono::milliseconds(publish_interval));
@@ -347,7 +362,7 @@ struct TRRewriter {
             dunedaq::daqdataformats::FragmentHeader fh;
             fh.trigger_number = trig_num;
             fh.trigger_timestamp = ts;
-            fh.window_begin = ts;
+            fh.window_begin = ts - 10;
             fh.window_end = ts;
             fh.run_number = run_number;
             fh.fragment_type =
@@ -598,7 +613,7 @@ struct TRRewriter {
     }
 
     void send_tr(trigger_record_ptr_t& trp) {
-        std::ostringstream ss;
+        std::stringstream ss;
         ss << "datafilter: ->accepted_trigger_record2->send_tr :Sending TR to FilterResultWriter";
         TLOG() << ss.str();
         ss.str("");
@@ -687,7 +702,7 @@ struct TRRewriter {
     }
 
     void send_tr2() {
-        std::ostringstream ss;
+        std::stringstream ss;
 
         auto init_receiver =
             dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
@@ -1021,6 +1036,7 @@ struct DataFilterOrganiser {
         //    n_frames, element_id, detector_id, contents));
         rewriter.send_tr(trp);
     }
+
     void send_next_tr() {
         auto init_sender =
             dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(
@@ -1060,6 +1076,10 @@ struct SubscriberTest {
     std::vector<std::shared_ptr<SubscriberInfo>> subscribers;
     DataFilterConfig config;
     DataFilterOrganiser organiser;
+
+    std::queue<nlohmann::json> bk_queue;
+    std::mutex queue_mutex;
+    std::condition_variable queue_cv;
 
     explicit SubscriberTest(DataFilterConfig c) : config(c) {}
     uint16_t data3[200000000];
@@ -1204,6 +1224,154 @@ struct SubscriberTest {
       )");
 
         return srcid_geoid_map.get<hdf5rawdatafile::SrcIDGeoIDMap>();
+    }
+
+    nlohmann::json to_json(const BookKeeping& bk) {
+        return nlohmann::json{{"entry_id", bk.entry_id},
+                              {"conn_id", bk.conn_id},
+                              {"from_id", bk.from_id},
+                              {"data_filter_id", bk.data_filter_id},
+                              {"node", bk.node},
+                              {"tr_header_info", bk.tr_header_info},
+                              {"tr_status", bk.tr_status},
+                              {"file_send_list", bk.file_send_list},
+                              {"file_send_status", bk.file_send_status},
+                              {"transfer_rate", bk.transfer_rate}};
+    }
+
+    // Function to read existing transactions from the file
+    nlohmann::json open_existing_bk(const std::string& filename) {
+        std::ifstream file(filename);
+        if (file.is_open()) {
+            try {
+                nlohmann::json existing_bk;
+                file >> existing_bk;
+                return existing_bk;
+            } catch (const std::exception& e) {
+                std::cerr << "Error reading JSON file: " << e.what()
+                          << std::endl;
+            }
+        }
+        return nlohmann::json::array();  // Return an empty array if the file
+                                         // doesn't exist or is invalid
+    }
+
+    void write_to_file(const std::string& filename,
+                       std::atomic<bool>& stop_flag) {
+        nlohmann::json existing_bk = open_existing_bk(filename);
+
+        auto start_time = std::chrono::high_resolution_clock::now();
+        int transaction_count = 0;
+
+        while (true) {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+
+            // Use a lambda to wait for the condition variable
+            queue_cv.wait(lock, [&] { return !bk_queue.empty(); });
+
+            nlohmann::json transaction = bk_queue.front();
+            bk_queue.pop();
+            lock.unlock();
+
+            if (existing_bk.is_array()) {
+                existing_bk.push_back(transaction);
+            } else {
+                std::cerr
+                    << "Error: Existing transactions is not an array. Cannot append."
+                    << std::endl;
+                continue;
+            }
+
+            std::ofstream file(filename);
+            if (file.is_open()) {
+                file << existing_bk.dump(4);
+            } else {
+                std::cerr << "Failed to open file for writing!" << std::endl;
+            }
+            transaction_count++;
+
+            if (transaction_count % 1 == 0) {
+                auto end_time = std::chrono::high_resolution_clock::now();
+                auto duration =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        end_time - start_time)
+                        .count();
+                std::cout << "Processed " << transaction_count
+                          << " transactions in " << duration << " ms"
+                          << std::endl;
+            }
+        }
+    }
+
+    void receive_bk() {
+        bool bk_done = false;
+        std::atomic<unsigned int> received_cnt = 0;
+        std::atomic<bool> stop_flag{false};
+        std::atomic<unsigned int> run_number;
+        std::string bk_file;
+
+        auto cb_receiver =
+            dunedaq::get_iom_receiver<dunedaq::datafilter::BookKeeping>(
+                "bookkeeping0");
+
+        std::function<void(dunedaq::datafilter::BookKeeping)> str_receiver_cb =
+            [&](dunedaq::datafilter::BookKeeping bk) {
+                if (bk.entry_id != " ") {
+                    // if (bk.bk_info['entry_id'] != " ") {
+                    ++received_cnt;
+                    // for (auto& item : bk.tr_header_info) {
+                    //     if (item.first == "run number") {
+                    //         run_number = std::stol(item.second);
+                    //     }
+                    // }
+                    TLOG() << "received_cnt " << received_cnt;
+                    // if (received_cnt == 2) {
+                    if (bk.from_id == "trdispatcher") {
+                        run_number = bk.run_number;
+                        bk_file = "bookkeeping" +
+                                  std::to_string(bk.run_number) + ".json";
+                        TLOG() << "receive_bk " << run_number;
+                    } else {
+                        run_number = 0;
+                        bk_file = "bookkeeping.json";
+                    }
+                    //}
+
+                    // write_to_file(bk_file, stop_flag);
+                    nlohmann::json bk_json = to_json(bk);
+                    // nlohmann::json bk_json = bk.bk_info;
+                    {
+                        std::lock_guard<std::mutex> lock(queue_mutex);
+                        bk_queue.push(bk_json);
+                    }
+                    queue_cv.notify_one();
+                }
+                TLOG() << "Received new bookkeeping info to store."
+                       << bk.entry_id << "from_id " << bk.from_id;
+                //                       << bk.bk_info['entry_id'] << "from_id "
+                //                       << bk.bk_info['from_id'];
+            };
+
+        cb_receiver->add_callback(str_receiver_cb);
+
+        //        std::string bk_file;
+        //        if (received_cnt == 2) {
+        //            if (run_number != 0) {
+        //                bk_file = "bookkeeping" + std::to_string(run_number) +
+        //                ".json";
+        //            } else {
+        //                bk_file = "bookkeeping.json";
+        //            }
+        //        }
+        write_to_file(bk_file, stop_flag);
+
+        while (!bk_done) {
+            if (received_cnt == 1) bk_done = true;
+        }
+
+        cb_receiver->remove_callback();
+        stop_flag.store(true);
+        queue_cv.notify_one();
     }
 
     void receive(size_t run_number1) {
@@ -1354,6 +1522,7 @@ struct SubscriberTest {
         std::function<void(dunedaq::datafilter::Handshake)> str_receiver_cb =
             [&](dunedaq::datafilter::Handshake msg) {
                 if (msg.msg_id == "next_tr") {
+                    config.num_messages = msg.total_tr;
                     ++received_cnt;
                 }
                 TLOG_DEBUG(5)
@@ -1407,17 +1576,25 @@ struct SubscriberTest {
 
                     auto frag_size = tr->get_fragments_ref().at(0)->get_size();
                     info->total_size_bytes = tr->get_total_size_bytes();
+                    auto fg_window_begin =
+                        tr->get_fragments_ref().at(0)->get_window_begin();
+                    auto fg_window_end =
+                        tr->get_fragments_ref().at(0)->get_window_end();
 
                     TLOG() << "trigger_timestamp " << trigger_timestamp
                            << " trigger_number " << trigger_number
                            << " run_number " << run_number << " fragment size "
                            << frag_size << " TR Total size bytes "
-                           << info->total_size_bytes;
+                           << info->total_size_bytes << " window_begin "
+                           << fg_window_begin << " window_end "
+                           << fg_window_end;
 
                     info->msgs_received++;
                     last_received = std::chrono::steady_clock::now();
 
-                    if (info->msgs_received = config.num_messages) {
+                    organiser.accepted_trigger_record2(tr);
+
+                    if (info->msgs_received == config.num_messages) {
                         TLOG() << "msgs_received from connection name:"
                                << info->get_connection_name(config);
                         std::string app_name = "test";
@@ -1435,9 +1612,9 @@ struct SubscriberTest {
                                 ".writing", HighFive::File::Overwrite));
                         h5file_ptr->write(*tr);
                         h5file_ptr.reset();
-*/
+    */
                         // organiser.rewriter.send_tr(tr);
-                        organiser.accepted_trigger_record2(tr);
+                        // organiser.accepted_trigger_record2(tr);
 
                         info->complete = true;
                     }
@@ -1460,9 +1637,9 @@ struct SubscriberTest {
                         after_callback - after_receiver);
                 auto elapsed_time = info->get_receiver_time.count();
                 if (elapsed_time > 0) {
-                    auto rate = info->total_size_bytes / elapsed_time;
-                    TLOG() << " Performance test: elapsed_time "
-                           << elapsed_time;
+                    auto transfer_rate = info->total_size_bytes / elapsed_time;
+                    TLOG() << " Performance test: elapsed_time " << elapsed_time
+                           << "transfer_rate " << transfer_rate;
                 }
                 // << "transfer rate" << rate;
             });
@@ -1505,6 +1682,8 @@ struct SubscriberTest {
 // Must be in dunedaq namespace only
 DUNE_DAQ_SERIALIZABLE(dunedaq::datafilter::Data, "data_t");
 DUNE_DAQ_SERIALIZABLE(dunedaq::datafilter::Handshake, "init_t");
+DUNE_DAQ_SERIALIZABLE(dunedaq::datafilter::BookKeeping, "bk_t");
+// DUNE_DAQ_SERIALIZABLE(dunedaq::datafilter::BookKeeping_json, "bk_t");
 }  // namespace dunedaq
 
 int main(int argc, char* argv[]) {
@@ -1621,6 +1800,10 @@ int main(int argc, char* argv[]) {
         std::make_unique<dunedaq::datafilter::SubscriberTest>(config);
     auto trrewriter = std::make_unique<dunedaq::datafilter::TRRewriter>(config);
 
+    // Create a thread for receive_bk
+    std::thread bk_thread(&dunedaq::datafilter::SubscriberTest::receive_bk,
+                          subscriber.get());
+
     for (size_t run = 0; run < config.num_runs; ++run) {
         TLOG() << "Subscriber " << config.my_id1 << ": "
                << "Starting test run " << run;
@@ -1628,9 +1811,10 @@ int main(int argc, char* argv[]) {
             subscriber->init(run);
             trrewriter->init(run);
         }
-        // subscriber->receive(run);
         subscriber->organiser.send_next_tr();
         subscriber->receive_tr(run);
+
+        // subscriber->subscribers.pop_back();
 
         TLOG() << "Subscriber " << config.my_id1 << ": "
                << "Test run " << run << " complete.";
@@ -1638,6 +1822,11 @@ int main(int argc, char* argv[]) {
 
     TLOG() << "Subscriber " << config.my_id1 << ": "
            << "Cleaning up";
+
+    // Wait for the receive_bk thread to finish
+    if (bk_thread.joinable()) {
+        bk_thread.join();
+    }
     subscriber.reset(nullptr);
 
     dunedaq::iomanager::IOManager::get()->reset();

@@ -183,6 +183,7 @@ def send_hdf5libs_dset_test(ifilename, ofilename):
         subscribers +=1
         print(f"+1 subscriber ({subscribers}/{SUBSCRIBERS_EXPECTED})")
 
+    print(f"====> {fddetdataformats.WIBFrame.sizeof()}")
     # get attributes using h5py
     h5py_file = h5py.File(ifilename, 'r')
 
