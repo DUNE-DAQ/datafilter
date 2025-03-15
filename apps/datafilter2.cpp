@@ -1593,6 +1593,9 @@ struct SubscriberTest {
                     last_received = std::chrono::steady_clock::now();
 
                     organiser.accepted_trigger_record2(tr);
+                    TLOG() << "After organiser.accepted_trigger_record2 "
+                           << info->msgs_received << " num_messages "
+                           << config.num_messages;
 
                     if (info->msgs_received == config.num_messages) {
                         TLOG() << "msgs_received from connection name:"
@@ -1811,11 +1814,12 @@ int main(int argc, char* argv[]) {
             subscriber->init(run);
             trrewriter->init(run);
         }
-        subscriber->organiser.send_next_tr();
-        subscriber->receive_tr(run);
-
-        // subscriber->subscribers.pop_back();
-
+        while (true) {
+            TLOG() << "send next tr";
+            subscriber->organiser.send_next_tr();
+            subscriber->receive_tr(run);
+            //    subscriber->subscribers.pop_back();
+        }
         TLOG() << "Subscriber " << config.my_id1 << ": "
                << "Test run " << run << " complete.";
     }
