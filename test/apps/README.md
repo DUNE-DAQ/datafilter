@@ -114,24 +114,28 @@ filterresultwriter, datafilter2) in a separate terminal.
 # To generate simple TR 
 trdispatcher --server np02-srv-004 --server_trdispatcher np04-srv-004 -r 1
 
-# for TR dataset
+# for TR dataset from a HDF5 file
 trdispatcher --server np02-srv-004 --server_trdispatcher np04-srv-004 -f np04hd_run024559_0009_dataflow0_datawriter_0_20240321T103447.hdf5 --hdf5
+
+# for TR dataset from a directory
+
+trdispatcher --server np02-srv-004 --server_trdispatcher np04-srv-004 --from-storage --storage_pathname=/put_your_storage_pathname_here
 ```
 
 ```
 # run filterorchestrator in np04-srv-004
-filterorchestrator --server np02-srv-004 --server_trdispatcher np04-srv-004 -r 1
+filterorchestrator --server np02-srv-004 --server_trdispatcher np04-srv-004 
 
 ```
 
 ```
 # run filterresultwriter in np02-srv-004
-filterresultwriter --server np02-srv-004 --server_trdispatcher np04-srv-004 -d `pwd` -o test2 -r 1
+filterresultwriter --server np02-srv-004 --server_trdispatcher np04-srv-004 -d `pwd` -o test2 
 ```
 
 ```
 # run datafilter2 on np02-srv-004 
-datafilter2 --server np02-srv-004 --server_trdispatcher np04-srv-004 -r 1
+datafilter2 --server np02-srv-004 --server_trdispatcher np04-srv-004 
 
 ```
 
