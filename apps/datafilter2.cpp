@@ -9,7 +9,7 @@
 #include "boost/program_options.hpp"
 #include "datafilter/app/Nljs.hpp"
 #include "datafilter/app/Structs.hpp"
-#include "datafilter/data_struct.hpp"
+#include "datafilter/datafilter_structs.hpp"
 #include "detdataformats/DetID.hpp"
 #include "dfmessages/TriggerRecord_serialization.hpp"
 #include "dfmessages/Types.hpp"

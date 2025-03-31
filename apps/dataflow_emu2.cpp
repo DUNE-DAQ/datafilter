@@ -5,7 +5,7 @@
 #include <fstream>
 
 #include "boost/program_options.hpp"
-#include "datafilter/data_struct.hpp"
+#include "datafilter/datafilter_structs.hpp"
 #include "detdataformats/DetID.hpp"
 #include "fddetdataformats/WIBEthFrame.hpp"
 #include "hdf5libs/HDF5RawDataFile.hpp"

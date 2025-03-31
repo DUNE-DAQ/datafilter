@@ -8,7 +8,7 @@ Datafilter : test TriggerRecord with IOManager SUB
 #include <vector>
 
 #include "boost/program_options.hpp"
-#include "datafilter/data_struct.hpp"
+#include "datafilter/datafilter_structs.hpp"
 #include "detdataformats/DetID.hpp"
 #include "dfmessages/TriggerRecord_serialization.hpp"
 #include "fddetdataformats/WIBEthFrame.hpp"

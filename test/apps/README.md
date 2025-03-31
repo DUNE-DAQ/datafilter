@@ -119,7 +119,7 @@ trdispatcher --server np02-srv-004 --server_trdispatcher np04-srv-004 -f np04hd_
 
 # for TR dataset from a directory
 
-trdispatcher --server np02-srv-004 --server_trdispatcher np04-srv-004 --from-storage --storage_pathname=/put_your_storage_pathname_here
+trdispatcher --server np02-srv-004 --server_trdispatcher np04-srv-004 --from_storage --storage_pathname=/put_your_storage_pathname_here
 ```
 
 ```
