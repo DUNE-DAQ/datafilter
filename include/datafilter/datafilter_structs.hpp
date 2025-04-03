@@ -1,3 +1,8 @@
+#include <chrono>
+#include <ctime>
+#include <iomanip>
+#include <sstream>
+#include <string>
 #include <utility>  // for std::pair
 #include <variant>
 #include <vector>
@@ -7,11 +12,7 @@
 namespace dunedaq {
 namespace datafilter {
 
-// using bk_info_ =
-//     std::map<std::string,
-//              std::variant<std::string, double, std::vector<double>>>;
-//
-using VariantType = std::variant<std::string, double, std::vector<double>>;
+enum struct Precision { SECONDS, MILLISECONDS, MICROSECONDS, NANOSECONDS };
 
 struct Data {
     size_t seq_number;
@@ -63,15 +64,6 @@ struct Data {
                        group_id, conn_id, contents);
 };
 
-// struct Payload
-//{
-//     std::unique_ptr<daqdataformats::trigger_records> tr;
-//     Payload() = default;
-//     Payload()
-//     DUNE_DAQ_SERIALIZE(Payload,tr);
-//
-// }
-
 struct BookKeeping {
     std::string entry_id;
     std::string conn_id;
@@ -79,6 +71,7 @@ struct BookKeeping {
     std::string data_filter_id;
     std::vector<std::pair<std::string, std::string>> node{};
     std::vector<std::pair<std::string, std::string>> tr_header_info{};
+    std::vector<std::pair<std::string, std::string>> file_attributes_info{};
     std::string tr_status{};
 
     std::vector<std::string> file_send_list{};
@@ -90,18 +83,10 @@ struct BookKeeping {
     BookKeeping() = default;
     BookKeeping(std::string entry) : entry_id(entry) {}
     DUNE_DAQ_SERIALIZE(BookKeeping, entry_id, conn_id, from_id, data_filter_id,
-                       node, tr_header_info, tr_status, file_send_list,
-                       file_send_status, transfer_rate, write_status,
-                       run_number);
+                       node, tr_header_info, file_attributes_info, tr_status,
+                       file_send_list, file_send_status, transfer_rate,
+                       write_status, run_number);
 };
-
-// struct BookKeeping_json {
-//     std::string msg_id;
-//     std::map<std::string, std::variant<std::string>> bk_info;
-//     BookKeeping_json() = default;
-//     BookKeeping_json(std::string msg) : msg_id(msg){};
-//     DUNE_DAQ_SERIALIZE(BookKeeping_json, bk_info);
-// };
 
 // struct BookKeeping_json {
 //     std::string msg_id;
@@ -110,6 +95,7 @@ struct BookKeeping {
 //     BookKeeping_json(std::string msg) : msg_id(msg){};
 //     DUNE_DAQ_SERIALIZE(BookKeeping_json, bk_info);
 // };
+
 struct Handshake {
     std::string msg_id;
     int total_tr;
@@ -117,6 +103,65 @@ struct Handshake {
     Handshake(std::string msg) : msg_id(msg) {}
 
     DUNE_DAQ_SERIALIZE(Handshake, msg_id, total_tr);
+};
+
+struct time_point_to_string {
+    Precision precision = Precision::SECONDS;  // Default to seconds
+
+    // Constructor (optional, for direct initialization)
+    explicit time_point_to_string(Precision prec = Precision::SECONDS)
+        : precision(prec) {}
+
+    // Conversion function
+    std::string operator()(
+        const std::chrono::system_clock::time_point& tp) const {
+        // Convert to time_t for seconds since epoch
+        std::time_t time = std::chrono::system_clock::to_time_t(tp);
+        std::tm tm = *std::localtime(&time);
+
+        // Format the base time string (YYYY-MM-DD HH:MM:SS)
+        std::ostringstream oss;
+        oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+
+        // Append subsecond precision if needed
+        if (precision != Precision::SECONDS) {
+            auto since_epoch = tp.time_since_epoch();
+            auto seconds =
+                std::chrono::duration_cast<std::chrono::seconds>(since_epoch);
+            auto subseconds = since_epoch - seconds;
+
+            switch (precision) {
+                case Precision::MILLISECONDS: {
+                    auto ms =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            subseconds);
+                    oss << "." << std::setfill('0') << std::setw(3)
+                        << ms.count();
+                    break;
+                }
+                case Precision::MICROSECONDS: {
+                    auto us =
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            subseconds);
+                    oss << "." << std::setfill('0') << std::setw(6)
+                        << us.count();
+                    break;
+                }
+                case Precision::NANOSECONDS: {
+                    auto ns =
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            subseconds);
+                    oss << "." << std::setfill('0') << std::setw(9)
+                        << ns.count();
+                    break;
+                }
+                default:
+                    break;  // SECONDS (no subsecond)
+            }
+        }
+
+        return oss.str();
+    }
 };
 
 }  // namespace datafilter

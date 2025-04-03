@@ -9,7 +9,8 @@
 #include "boost/program_options.hpp"
 #include "datafilter/app/Nljs.hpp"
 #include "datafilter/app/Structs.hpp"
-#include "datafilter/datafilter_structs.hpp"
+#include "datafilter/bookkeeping_manager.hpp"
+// #include "datafilter/datafilter_structs.hpp"
 #include "detdataformats/DetID.hpp"
 #include "dfmessages/TriggerRecord_serialization.hpp"
 #include "dfmessages/Types.hpp"
@@ -65,6 +66,7 @@ struct DataFilterConfig {
     size_t trigger_number;
     size_t trigger_timestamp;
     size_t run_number;
+    size_t file_index;
     size_t element_id;
     size_t detector_id;
     size_t error_bits;
@@ -121,7 +123,6 @@ struct DataFilterConfig {
     std::string get_subscriber_init_name(size_t id) {
         return "conn_init_" + std::to_string(id);
     }
-    // std::string get_publisher_init_name() { return "conn_init_.*"; }
 
     void configure_iomanager() {
         setenv("DUNEDAQ_PARTITION", session_name.c_str(), 0);
@@ -129,34 +130,6 @@ struct DataFilterConfig {
         Queues_t queues;
         Connections_t connections;
 
-        //        for (size_t group = 0; group < num_groups; ++group) {
-        //            for (size_t conn = 0; conn < num_connections_per_group;
-        //            ++conn) {
-        //                auto conn_addr1 = get_connection_ip(my_id1, group,
-        //                conn, portA); auto conn_addr2 =
-        //                get_connection_ip(my_id2, group, conn, portB); TLOG()
-        //                << "Adding connection with id "
-        //                       << get_connection_name(my_id1, group, conn)
-        //                       << " and address1 " << conn_addr1;
-        //                TLOG() << "Adding connection with id "
-        //                       << get_connection_name(my_id2, group, conn)
-        //                       << " and address2 " << conn_addr2;
-        //                // data between dispatcher and data filter.
-        //                connections.emplace_back(Connection{
-        //                    ConnectionId{get_connection_name(my_id1, group,
-        //                    conn),
-        //                                 //             "data_t"},
-        //                                 "TriggerRecord"},
-        //                    conn_addr1, ConnectionType::kPubSub});
-        //                // data between data filter and filter results writer.
-        //                connections.emplace_back(Connection{
-        //                    ConnectionId{get_connection_name(my_id2, group,
-        //                    conn),
-        //                                 "TriggerRecord"},
-        //                    conn_addr2, ConnectionType::kPubSub});
-        //            }
-        //        }
-        //
         auto conn_addr0 = "tcp://" + server + ":" + std::to_string(portA);
         auto conn_addr1 = "tcp://" + server + ":" + std::to_string(portB);
         connections.emplace_back(
@@ -220,17 +193,18 @@ struct DataFilterConfig {
         }
 
         // Create BookKeeping socket
-        auto port = 83000;
-        auto sub = 0;
-        std::string conn_addrbookkeeping =
-            "tcp://" + server + ":" + std::to_string(port);
-        TLOG() << "Adding control connection "
-               << "bookkeeping" + std::to_string(sub) << " with address "
-               << conn_addrbookkeeping;
+        for (size_t sub = 0; sub < 2; ++sub) {
+            auto port = 83000 + sub;
+            std::string conn_addrbookkeeping =
+                "tcp://" + server + ":" + std::to_string(port);
+            TLOG() << "Adding control connection "
+                   << "bookkeeping" + std::to_string(sub) << " with address "
+                   << conn_addrbookkeeping;
 
-        connections.emplace_back(Connection{
-            ConnectionId{"bookkeeping" + std::to_string(sub), "bk_t"},
-            conn_addrbookkeeping, ConnectionType::kSendRecv});
+            connections.emplace_back(Connection{
+                ConnectionId{"bookkeeping" + std::to_string(sub), "bk_t"},
+                conn_addrbookkeeping, ConnectionType::kSendRecv});
+        }
 
         IOManager::get()->configure(
             queues, connections, use_connectivity_service,
@@ -894,15 +868,6 @@ struct DataFilterMonitor {
     void get_info() { opmonlib::InfoCollector ci; }
 };
 
-// struct Bookkeeping
-//{
-//     //central collection of bookkeeping data
-//     request_number_t request_number{ TypeDefaults::s_invalid_request_number
-//     }; trigger_type_t trigger_type{ TypeDefaults::s_invalid_trigger_type };
-//     request_number{ TypeDefaults::s_invalid_request_number };
-//     std::string book_data_from;
-// }
-//
 struct DataFilterOrganiser {
     // DataFilterConfig config;
     // DataFilterOrganiser(DataFilterConfig c) :config(c)
@@ -1037,7 +1002,7 @@ struct DataFilterOrganiser {
         rewriter.send_tr(trp);
     }
 
-    void send_next_tr() {
+    void request_next_tr() {
         auto init_sender =
             dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(
                 "trdispatcher1");
@@ -1224,154 +1189,6 @@ struct SubscriberTest {
       )");
 
         return srcid_geoid_map.get<hdf5rawdatafile::SrcIDGeoIDMap>();
-    }
-
-    nlohmann::json to_json(const BookKeeping& bk) {
-        return nlohmann::json{{"entry_id", bk.entry_id},
-                              {"conn_id", bk.conn_id},
-                              {"from_id", bk.from_id},
-                              {"data_filter_id", bk.data_filter_id},
-                              {"node", bk.node},
-                              {"tr_header_info", bk.tr_header_info},
-                              {"tr_status", bk.tr_status},
-                              {"file_send_list", bk.file_send_list},
-                              {"file_send_status", bk.file_send_status},
-                              {"transfer_rate", bk.transfer_rate}};
-    }
-
-    // Function to read existing transactions from the file
-    nlohmann::json open_existing_bk(const std::string& filename) {
-        std::ifstream file(filename);
-        if (file.is_open()) {
-            try {
-                nlohmann::json existing_bk;
-                file >> existing_bk;
-                return existing_bk;
-            } catch (const std::exception& e) {
-                std::cerr << "Error reading JSON file: " << e.what()
-                          << std::endl;
-            }
-        }
-        return nlohmann::json::array();  // Return an empty array if the file
-                                         // doesn't exist or is invalid
-    }
-
-    void write_to_file(const std::string& filename,
-                       std::atomic<bool>& stop_flag) {
-        nlohmann::json existing_bk = open_existing_bk(filename);
-
-        auto start_time = std::chrono::high_resolution_clock::now();
-        int transaction_count = 0;
-
-        while (true) {
-            std::unique_lock<std::mutex> lock(queue_mutex);
-
-            // Use a lambda to wait for the condition variable
-            queue_cv.wait(lock, [&] { return !bk_queue.empty(); });
-
-            nlohmann::json transaction = bk_queue.front();
-            bk_queue.pop();
-            lock.unlock();
-
-            if (existing_bk.is_array()) {
-                existing_bk.push_back(transaction);
-            } else {
-                std::cerr
-                    << "Error: Existing transactions is not an array. Cannot append."
-                    << std::endl;
-                continue;
-            }
-
-            std::ofstream file(filename);
-            if (file.is_open()) {
-                file << existing_bk.dump(4);
-            } else {
-                std::cerr << "Failed to open file for writing!" << std::endl;
-            }
-            transaction_count++;
-
-            if (transaction_count % 1 == 0) {
-                auto end_time = std::chrono::high_resolution_clock::now();
-                auto duration =
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        end_time - start_time)
-                        .count();
-                std::cout << "Processed " << transaction_count
-                          << " transactions in " << duration << " ms"
-                          << std::endl;
-            }
-        }
-    }
-
-    void receive_bk() {
-        bool bk_done = false;
-        std::atomic<unsigned int> received_cnt = 0;
-        std::atomic<bool> stop_flag{false};
-        std::atomic<unsigned int> run_number;
-        std::string bk_file;
-
-        auto cb_receiver =
-            dunedaq::get_iom_receiver<dunedaq::datafilter::BookKeeping>(
-                "bookkeeping0");
-
-        std::function<void(dunedaq::datafilter::BookKeeping)> str_receiver_cb =
-            [&](dunedaq::datafilter::BookKeeping bk) {
-                if (bk.entry_id != " ") {
-                    // if (bk.bk_info['entry_id'] != " ") {
-                    ++received_cnt;
-                    // for (auto& item : bk.tr_header_info) {
-                    //     if (item.first == "run number") {
-                    //         run_number = std::stol(item.second);
-                    //     }
-                    // }
-                    TLOG() << "received_cnt " << received_cnt;
-                    // if (received_cnt == 2) {
-                    if (bk.from_id == "trdispatcher") {
-                        run_number = bk.run_number;
-                        bk_file = "bookkeeping" +
-                                  std::to_string(bk.run_number) + ".json";
-                        TLOG() << "receive_bk " << run_number;
-                    } else {
-                        run_number = 0;
-                        bk_file = "bookkeeping.json";
-                    }
-                    //}
-
-                    // write_to_file(bk_file, stop_flag);
-                    nlohmann::json bk_json = to_json(bk);
-                    // nlohmann::json bk_json = bk.bk_info;
-                    {
-                        std::lock_guard<std::mutex> lock(queue_mutex);
-                        bk_queue.push(bk_json);
-                    }
-                    queue_cv.notify_one();
-                }
-                TLOG() << "Received new bookkeeping info to store."
-                       << bk.entry_id << "from_id " << bk.from_id;
-                //                       << bk.bk_info['entry_id'] << "from_id "
-                //                       << bk.bk_info['from_id'];
-            };
-
-        cb_receiver->add_callback(str_receiver_cb);
-
-        //        std::string bk_file;
-        //        if (received_cnt == 2) {
-        //            if (run_number != 0) {
-        //                bk_file = "bookkeeping" + std::to_string(run_number) +
-        //                ".json";
-        //            } else {
-        //                bk_file = "bookkeeping.json";
-        //            }
-        //        }
-        write_to_file(bk_file, stop_flag);
-
-        while (!bk_done) {
-            if (received_cnt == 1) bk_done = true;
-        }
-
-        cb_receiver->remove_callback();
-        stop_flag.store(true);
-        queue_cv.notify_one();
     }
 
     void receive(size_t run_number1) {
@@ -1770,29 +1587,6 @@ int main(int argc, char* argv[]) {
         config.configure_connsvc();
     }
 
-    auto startup_time = std::chrono::steady_clock::now();
-    // start fork process : we don't need it for now
-    //   std::vector<pid_t> forked_pids;
-    //   for (size_t ii = 0; ii < config.num_apps; ++ii) {
-    //     auto pid = fork();
-    //     if (pid < 0) {
-    //        TLOG() <<"fork error";
-    //        exit(EXIT_FAILURE);
-    //     } else if (pid == 0) { // child
-    //
-    //       forked_pids.clear();
-    //       config.my_id = ii;
-    //
-    //       TLOG() << "DataFilter : child process " << config.my_id
-    //       <<"ii="<<ii; break;
-    //     } else {
-    //         TLOG() << "DataFilter : parent process " << getpid();
-    //         forked_pids.push_back(pid);
-    //     }
-    //   }
-
-    //    std::this_thread::sleep_until(startup_time + 2s);
-
     TLOG() << "DataFilter" << config.my_id1 << ": "
            << "Configuring IOManager for receiving TriggerRecords";
     TLOG() << "DataFilter" << config.my_id2 << ": "
@@ -1803,9 +1597,11 @@ int main(int argc, char* argv[]) {
         std::make_unique<dunedaq::datafilter::SubscriberTest>(config);
     auto trrewriter = std::make_unique<dunedaq::datafilter::TRRewriter>(config);
 
-    // Create a thread for receive_bk
-    std::thread bk_thread(&dunedaq::datafilter::SubscriberTest::receive_bk,
-                          subscriber.get());
+    // Create BookkeepingReceiver's thread
+    dunedaq::datafilter::RunInfo run_info;
+    dunedaq::datafilter::BookkeepingReceiver receiver(run_info);
+
+    receiver.start();
 
     for (size_t run = 0; run < config.num_runs; ++run) {
         TLOG() << "Subscriber " << config.my_id1 << ": "
@@ -1815,10 +1611,10 @@ int main(int argc, char* argv[]) {
             trrewriter->init(run);
         }
         while (true) {
-            TLOG() << "send next tr";
-            subscriber->organiser.send_next_tr();
+            TLOG() << "Request next tr";
+            subscriber->organiser.request_next_tr();
             subscriber->receive_tr(run);
-            //    subscriber->subscribers.pop_back();
+            // subscriber->subscribers.pop_back();
         }
         TLOG() << "Subscriber " << config.my_id1 << ": "
                << "Test run " << run << " complete.";
@@ -1828,25 +1624,13 @@ int main(int argc, char* argv[]) {
            << "Cleaning up";
 
     // Wait for the receive_bk thread to finish
-    if (bk_thread.joinable()) {
-        bk_thread.join();
-    }
+    //    if (bk_thread.joinable()) {
+    //        bk_thread.join();
+    //    }
+    receiver.stop();
     subscriber.reset(nullptr);
 
     dunedaq::iomanager::IOManager::get()->reset();
     TLOG() << "Subscriber " << config.my_id1 << ": "
            << "DONE";
-
-    //  if (forked_pids.size() > 0) {
-    //    TLOG() << "Waiting for forked PIDs";
-    //
-    //    for (auto& pid : forked_pids) {
-    //      siginfo_t status;
-    //      auto sts = waitid(P_PID, pid, &status, WEXITED);
-    //
-    //      TLOG_DEBUG(6) << "Forked process " << pid << " exited with status "
-    //      << status.si_status << " (wait status " << sts
-    //                    << ")";
-    //    }
-    //  }
 };
