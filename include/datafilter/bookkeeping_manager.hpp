@@ -147,7 +147,7 @@ struct BookkeepingReceiver {
             TLOG() << "Processing bookkeeping # " << cnt << " from "
                    << bk.from_id << " (Run: " << bk.run_number << ")";
 
-            if (cnt == 2) {
+            if (cnt == 1) {
                 std::string file_index = "0";
                 if (auto it = std::find_if(
                         bk.file_attributes_info.begin(),
