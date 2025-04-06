@@ -177,7 +177,7 @@ struct BookkeepingReceiver {
             }
 
             auto transfer_rate = get_transfer_rate();
-            TLOG() << "Transfer rate Mbps " << transfer_rate;
+            TLOG() << "Transfer rate " << transfer_rate << " Mbps";
             bk.transfer_rate = transfer_rate;
 
             auto [run, file_idx] = run_info.get();

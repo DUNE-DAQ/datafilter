@@ -211,8 +211,6 @@ struct DataFilterConfig {
     }
 };
 
-struct DataFilterReceiver {};
-
 struct TRRewriter {
     TRRewriter() {
         setenv("DUNEDAQ_PARTITION", "IOManager_t", 0);
@@ -874,7 +872,7 @@ struct DataFilterOrganiser {
     TRRewriter rewriter;
     DataFilterMonitor monitor;
 
-    // create TriggerRecordHeader
+    // Create TriggerRecordHeader
     TriggerRecordHeaderData trh_data;
 
     uint32_t nchannels = 64;
@@ -1011,8 +1009,8 @@ struct DataFilterOrganiser {
     }
 };
 
-struct SubscriberTest {
-    struct SubscriberInfo {
+struct DataFilterReceiver {
+    struct DataFilterReceiverInfo {
         size_t group_id;
         size_t conn_id;
         bool is_group_subscriber;
@@ -1026,9 +1024,9 @@ struct SubscriberTest {
         std::chrono::steady_clock::time_point last_received_time;
         std::atomic<size_t> total_size_bytes{0};
 
-        SubscriberInfo(size_t group, size_t conn)
+        DataFilterReceiverInfo(size_t group, size_t conn)
             : group_id(group), conn_id(conn), is_group_subscriber(false) {}
-        SubscriberInfo(size_t group)
+        DataFilterReceiverInfo(size_t group)
             : group_id(group), conn_id(0), is_group_subscriber(true) {}
 
         std::string get_connection_name(DataFilterConfig& config) {
@@ -1039,7 +1037,7 @@ struct SubscriberTest {
             return config.get_connection_name(config.my_id1, group_id, conn_id);
         }
     };
-    std::vector<std::shared_ptr<SubscriberInfo>> subscribers;
+    std::vector<std::shared_ptr<DataFilterReceiverInfo>> receivers;
     DataFilterConfig config;
     DataFilterOrganiser organiser;
 
@@ -1049,11 +1047,11 @@ struct SubscriberTest {
     std::mutex queue_mutex;
     std::condition_variable queue_cv;
 
-    explicit SubscriberTest(DataFilterConfig c, RunInfo& run_info)
+    explicit DataFilterReceiver(DataFilterConfig c, RunInfo& run_info)
         : config(c), bk_receiver(run_info) {
         bk_receiver.start();
     }
-    ~SubscriberTest() {
+    ~DataFilterReceiver() {
         bk_receiver.stop();  // Auto cleanup
     }
     uint16_t data3[200000000];
@@ -1211,13 +1209,13 @@ struct SubscriberTest {
             next_tr_sender->send(std::move(q), Sender::s_block);
         }
 
-        TLOG_DEBUG(5) << "Setting up SubscriberInfo objects";
+        TLOG_DEBUG(5) << "Setting up DataFilterReceiverInfo objects";
         for (size_t group = 0; group < config.num_groups; ++group) {
-            // subscribers.push_back(std::make_shared<SubscriberInfo>(group));
+            // receivers.push_back(std::make_shared<DataFilterReceiverInfo>(group));
             for (size_t conn = 0; conn < config.num_connections_per_group;
                  ++conn) {
-                subscribers.push_back(
-                    std::make_shared<SubscriberInfo>(group, conn));
+                receivers.push_back(
+                    std::make_shared<DataFilterReceiverInfo>(group, conn));
             }
         }
 
@@ -1225,9 +1223,9 @@ struct SubscriberTest {
             std::chrono::steady_clock::now();
         TLOG_DEBUG(5) << "Adding callbacks for each subscriber";
         std::for_each(
-            std::execution::par_unseq, std::begin(subscribers),
-            std::end(subscribers),
-            [=, &last_received](std::shared_ptr<SubscriberInfo> info) {
+            std::execution::par_unseq, std::begin(receivers),
+            std::end(receivers),
+            [=, &last_received](std::shared_ptr<DataFilterReceiverInfo> info) {
                 auto recv_proc = [=, &last_received](
                                      dunedaq::datafilter::Data& msg) {
                     TLOG_DEBUG(3)
@@ -1311,7 +1309,7 @@ struct SubscriberTest {
         bool all_done = false;
         while (!all_done) {
             size_t recvrs_done = 0;
-            for (auto& sub : subscribers) {
+            for (auto& sub : receivers) {
                 if (sub->complete.load()) recvrs_done++;
             }
             TLOG_DEBUG(6) << "Done: " << recvrs_done << ", expected: "
@@ -1322,14 +1320,14 @@ struct SubscriberTest {
             if (!all_done) std::this_thread::sleep_for(1ms);
         }
         TLOG_DEBUG(5) << "Removing callbacks";
-        for (auto& info : subscribers) {
+        for (auto& info : receivers) {
             auto receiver =
                 dunedaq::get_iom_receiver<dunedaq::datafilter::Data>(
                     info->get_connection_name(config));
             receiver->remove_callback();
         }
 
-        subscribers.clear();
+        receivers.clear();
         TLOG_DEBUG(5) << "receive() done";
     }
     void receive_tr(size_t run_number1) {
@@ -1369,12 +1367,12 @@ struct SubscriberTest {
         //            next_tr_sender->send(std::move(q), Sender::s_block);
         //        }
 
-        TLOG() << "datafilter sub: Setting up subscribers objects";
+        TLOG() << "datafilter sub: Setting up receivers objects";
         for (size_t group = 0; group < config.num_groups; ++group) {
             for (size_t conn = 0; conn < config.num_connections_per_group;
                  ++conn) {
-                subscribers.push_back(
-                    std::make_shared<SubscriberInfo>(group, conn));
+                receivers.push_back(
+                    std::make_shared<DataFilterReceiverInfo>(group, conn));
             }
         }
         // Convert file_params to json, allows for easy comp later
@@ -1390,9 +1388,9 @@ struct SubscriberTest {
         TLOG()
             << "DataFilter::receive_tr: adding callbacks for each subscriber";
         std::for_each(
-            std::execution::par_unseq, std::begin(subscribers),
-            std::end(subscribers),
-            [=, &last_received](std::shared_ptr<SubscriberInfo> info) {
+            std::execution::par_unseq, std::begin(receivers),
+            std::end(receivers),
+            [=, &last_received](std::shared_ptr<DataFilterReceiverInfo> info) {
                 auto recv_proc = [=, &last_received](trigger_record_ptr_t& tr) {
                     auto now = std::chrono::steady_clock::now();
 
@@ -1513,7 +1511,7 @@ struct SubscriberTest {
         bool all_done = false;
         while (!all_done) {
             size_t recvrs_done = 0;
-            for (auto& sub : subscribers) {
+            for (auto& sub : receivers) {
                 if (sub->complete.load()) recvrs_done++;
             }
             TLOG_DEBUG(7) << "Done: " << recvrs_done << ", expected: "
@@ -1524,13 +1522,13 @@ struct SubscriberTest {
             if (!all_done) std::this_thread::sleep_for(1ms);
         }
         TLOG() << "Removing callbacks";
-        for (auto& info : subscribers) {
+        for (auto& info : receivers) {
             auto receiver = dunedaq::get_iom_receiver<trigger_record_ptr_t>(
                 info->get_connection_name(config));
             receiver->remove_callback();
         }
 
-        subscribers.clear();
+        receivers.clear();
         TLOG() << "receive() done";
     }
 };
@@ -1545,6 +1543,7 @@ DUNE_DAQ_SERIALIZABLE(dunedaq::datafilter::BookKeeping, "bk_t");
 int main(int argc, char* argv[]) {
     dunedaq::logging::Logging::setup();
     dunedaq::datafilter::DataFilterConfig config;
+    dunedaq::datafilter::RunInfo run_info;
 
     bool help_requested = false;
     namespace po = boost::program_options;
@@ -1628,39 +1627,37 @@ int main(int argc, char* argv[]) {
     TLOG() << "DataFilter" << config.my_id2 << ": "
            << "Configuring IOManager for sending TriggerRecords";
     config.configure_iomanager();
-    dunedaq::datafilter::RunInfo run_info;
 
-    // The BookkeepingReceiver's thread is controlled by the SubscriberTest.
-    auto subscriber =
-        std::make_unique<dunedaq::datafilter::SubscriberTest>(config, run_info);
-    auto trrewriter = std::make_unique<dunedaq::datafilter::TRRewriter>(config);
-
-    // subscriber->bk_receiver.start();
+    // The BookkeepingReceiver's thread is controlled by the DataFilterReceiver.
+    auto df_receiver =
+        std::make_unique<dunedaq::datafilter::DataFilterReceiver>(config,
+                                                                  run_info);
+    // auto trrewriter =
+    // std::make_unique<dunedaq::datafilter::TRRewriter>(config);
 
     for (size_t run = 0; run < config.num_runs; ++run) {
         TLOG() << "Subscriber " << config.my_id1 << ": "
                << "Starting test run " << run;
         if (config.num_apps > 1) {
-            subscriber->init(run);
-            trrewriter->init(run);
+            df_receiver->init(run);
+            // trrewriter->init(run);
         }
         while (true) {
             TLOG() << "Request next tr";
-            subscriber->organiser.request_next_tr();
-            subscriber->receive_tr(run);
-            // subscriber->subscribers.pop_back();
+            df_receiver->organiser.request_next_tr();
+            df_receiver->receive_tr(run);
+            // df_receiver->receivers.pop_back();
         }
-        TLOG() << "Subscriber " << config.my_id1 << ": "
+        TLOG() << "DataFilterReceiver " << config.my_id1 << ": "
                << "Test run " << run << " complete.";
     }
 
-    TLOG() << "Subscriber " << config.my_id1 << ": "
+    TLOG() << "DataFilterReceiver " << config.my_id1 << ": "
            << "Cleaning up";
 
-    // subscriber->bk_receiver.stop();
-    subscriber.reset(nullptr);
+    df_receiver.reset(nullptr);
 
     dunedaq::iomanager::IOManager::get()->reset();
-    TLOG() << "Subscriber " << config.my_id1 << ": "
+    TLOG() << "DataFilterReceiver " << config.my_id1 << ": "
            << "DONE";
 };
