@@ -10,7 +10,6 @@
 #include "datafilter/app/Nljs.hpp"
 #include "datafilter/app/Structs.hpp"
 #include "datafilter/bookkeeping_manager.hpp"
-// #include "datafilter/datafilter_structs.hpp"
 #include "detdataformats/DetID.hpp"
 #include "dfmessages/TriggerRecord_serialization.hpp"
 #include "dfmessages/Types.hpp"
@@ -1023,8 +1022,10 @@ struct SubscriberTest {
         std::chrono::milliseconds get_receiver_time;
         std::chrono::milliseconds add_callback_time;
         std::atomic<bool> complete{false};
+        std::chrono::steady_clock::time_point first_received_time;
+        std::chrono::steady_clock::time_point last_received_time;
+        std::atomic<size_t> total_size_bytes{0};
 
-        size_t total_size_bytes;
         SubscriberInfo(size_t group, size_t conn)
             : group_id(group), conn_id(conn), is_group_subscriber(false) {}
         SubscriberInfo(size_t group)
@@ -1042,11 +1043,19 @@ struct SubscriberTest {
     DataFilterConfig config;
     DataFilterOrganiser organiser;
 
+    dunedaq::datafilter::BookkeepingReceiver bk_receiver;
+
     std::queue<nlohmann::json> bk_queue;
     std::mutex queue_mutex;
     std::condition_variable queue_cv;
 
-    explicit SubscriberTest(DataFilterConfig c) : config(c) {}
+    explicit SubscriberTest(DataFilterConfig c, RunInfo& run_info)
+        : config(c), bk_receiver(run_info) {
+        bk_receiver.start();
+    }
+    ~SubscriberTest() {
+        bk_receiver.stop();  // Auto cleanup
+    }
     uint16_t data3[200000000];
     std::string path_header1;
 
@@ -1368,22 +1377,30 @@ struct SubscriberTest {
                     std::make_shared<SubscriberInfo>(group, conn));
             }
         }
-        // convert file_params to json, allows for easy comp later
+        // Convert file_params to json, allows for easy comp later
         dunedaq::hdf5libs::hdf5filelayout::data_t flp_json_in;
         dunedaq::hdf5libs::hdf5filelayout::to_json(flp_json_in,
                                                    create_file_layout_params());
 
-        // create src-geo id map
+        // Create src-geo id map
         auto srcid_geoid_map = create_srcid_geoid_map();
 
         std::atomic<std::chrono::steady_clock::time_point> last_received =
             std::chrono::steady_clock::now();
-        TLOG() << "datatilter sub: adding callbacks for each subscriber";
+        TLOG()
+            << "DataFilter::receive_tr: adding callbacks for each subscriber";
         std::for_each(
             std::execution::par_unseq, std::begin(subscribers),
             std::end(subscribers),
             [=, &last_received](std::shared_ptr<SubscriberInfo> info) {
                 auto recv_proc = [=, &last_received](trigger_record_ptr_t& tr) {
+                    auto now = std::chrono::steady_clock::now();
+
+                    // Record first received time
+                    if (info->msgs_received == 0) {
+                        info->first_received_time = now;
+                    }
+
                     auto trigger_timestamp =
                         tr->get_fragments_ref().at(0)->get_trigger_timestamp();
                     auto trigger_number =
@@ -1392,7 +1409,7 @@ struct SubscriberTest {
                         tr->get_fragments_ref().at(0)->get_run_number();
 
                     auto frag_size = tr->get_fragments_ref().at(0)->get_size();
-                    info->total_size_bytes = tr->get_total_size_bytes();
+                    info->total_size_bytes += tr->get_total_size_bytes();
                     auto fg_window_begin =
                         tr->get_fragments_ref().at(0)->get_window_begin();
                     auto fg_window_end =
@@ -1407,12 +1424,32 @@ struct SubscriberTest {
                            << fg_window_end;
 
                     info->msgs_received++;
+                    info->last_received_time = now;
                     last_received = std::chrono::steady_clock::now();
 
                     organiser.accepted_trigger_record2(tr);
                     TLOG() << "After organiser.accepted_trigger_record2 "
                            << info->msgs_received << " num_messages "
                            << config.num_messages;
+
+                    last_received = now;
+                    auto duration_ms =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            info->last_received_time -
+                            info->first_received_time)
+                            .count();
+
+                    if (duration_ms > 0) {
+                        double transfer_rate_mbps =
+                            (info->total_size_bytes * 8 / 1e6) /
+                            (duration_ms / 1000.0);
+                        TLOG() << "Transfer complete. Duration: " << duration_ms
+                               << " ms, "
+                               << "TR size: " << info->total_size_bytes
+                               << " bytes, "
+                               << "Rate: " << transfer_rate_mbps << " Mbps";
+                        bk_receiver.set_transfer_rate(transfer_rate_mbps);
+                    }
 
                     if (info->msgs_received == config.num_messages) {
                         TLOG() << "msgs_received from connection name:"
@@ -1461,7 +1498,6 @@ struct SubscriberTest {
                     TLOG() << " Performance test: elapsed_time " << elapsed_time
                            << "transfer_rate " << transfer_rate;
                 }
-                // << "transfer rate" << rate;
             });
 
         //        if (config.next_tr) {
@@ -1592,16 +1628,14 @@ int main(int argc, char* argv[]) {
     TLOG() << "DataFilter" << config.my_id2 << ": "
            << "Configuring IOManager for sending TriggerRecords";
     config.configure_iomanager();
+    dunedaq::datafilter::RunInfo run_info;
 
+    // The BookkeepingReceiver's thread is controlled by the SubscriberTest.
     auto subscriber =
-        std::make_unique<dunedaq::datafilter::SubscriberTest>(config);
+        std::make_unique<dunedaq::datafilter::SubscriberTest>(config, run_info);
     auto trrewriter = std::make_unique<dunedaq::datafilter::TRRewriter>(config);
 
-    // Create BookkeepingReceiver's thread
-    dunedaq::datafilter::RunInfo run_info;
-    dunedaq::datafilter::BookkeepingReceiver receiver(run_info);
-
-    receiver.start();
+    // subscriber->bk_receiver.start();
 
     for (size_t run = 0; run < config.num_runs; ++run) {
         TLOG() << "Subscriber " << config.my_id1 << ": "
@@ -1623,11 +1657,7 @@ int main(int argc, char* argv[]) {
     TLOG() << "Subscriber " << config.my_id1 << ": "
            << "Cleaning up";
 
-    // Wait for the receive_bk thread to finish
-    //    if (bk_thread.joinable()) {
-    //        bk_thread.join();
-    //    }
-    receiver.stop();
+    // subscriber->bk_receiver.stop();
     subscriber.reset(nullptr);
 
     dunedaq::iomanager::IOManager::get()->reset();

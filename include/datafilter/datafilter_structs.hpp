@@ -77,7 +77,7 @@ struct BookKeeping {
     std::vector<std::string> file_send_list{};
     // std::string file_send_fail_list{};
     std::string file_send_status{};  // sended or receive, or transit.
-    size_t transfer_rate;
+    double transfer_rate;
     std::string write_status{};
     unsigned int run_number;
     BookKeeping() = default;

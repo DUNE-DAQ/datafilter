@@ -22,6 +22,7 @@ namespace datafilter {
 struct RunInfo {
     std::atomic<unsigned int> run_number{0};
     std::atomic<unsigned int> file_index{0};
+
     mutable std::mutex mutex;  // mutable allows const methods to lock
 
     // Set the run information
@@ -48,6 +49,10 @@ struct BookkeepingReceiver {
     std::condition_variable queue_cv;
     std::queue<nlohmann::json> bk_queue;
     std::atomic<unsigned int> received_cnt{0};
+
+    // Transfer rate tracking.
+    std::atomic<double> transfer_rate_mbps{0};
+    std::mutex rate_mutex;
 
     explicit BookkeepingReceiver(RunInfo& info) : run_info(info) {
         TLOG() << "BookkeepingReceiver initialized";
@@ -95,11 +100,19 @@ struct BookkeepingReceiver {
         TLOG() << "Bookkeeping receiver fully stopped";
     }
 
+    void set_transfer_rate(double transfer_rate) {
+        std::lock_guard<std::mutex> lock(rate_mutex);
+        transfer_rate_mbps = transfer_rate;
+    }
+
+    double get_transfer_rate() {
+        std::lock_guard<std::mutex> lock(rate_mutex);
+        return transfer_rate_mbps.load();
+    }
+
    private:
     void send_bk(dunedaq::datafilter::BookKeeping bk_info) {
-        TLOG() << "Send bk to "
-                  "FilterResultWriter=========================================="
-                  "=====>";
+        TLOG() << "Send bookkeeping info to FilterResultWriter";
         auto bookkeeping_sender =
             dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
                 "bookkeeping1");
@@ -162,6 +175,10 @@ struct BookkeepingReceiver {
                 TLOG() << "Set initial run info - Run: " << bk.run_number
                        << " File Index: " << file_index;
             }
+
+            auto transfer_rate = get_transfer_rate();
+            TLOG() << "Transfer rate Mbps " << transfer_rate;
+            bk.transfer_rate = transfer_rate;
 
             auto [run, file_idx] = run_info.get();
             {
