@@ -68,7 +68,7 @@ struct BookKeeping {
     std::string entry_id;
     std::string conn_id;
     std::string from_id;
-    std::string data_filter_id;
+    std::string datafilter_id;
     std::vector<std::pair<std::string, std::string>> node{};
     std::vector<std::pair<std::string, std::string>> tr_header_info{};
     std::vector<std::pair<std::string, std::string>> file_attributes_info{};
@@ -82,7 +82,7 @@ struct BookKeeping {
     unsigned int run_number;
     BookKeeping() = default;
     BookKeeping(std::string entry) : entry_id(entry) {}
-    DUNE_DAQ_SERIALIZE(BookKeeping, entry_id, conn_id, from_id, data_filter_id,
+    DUNE_DAQ_SERIALIZE(BookKeeping, entry_id, conn_id, from_id, datafilter_id,
                        node, tr_header_info, file_attributes_info, tr_status,
                        file_send_list, file_send_status, transfer_rate,
                        write_status, run_number);

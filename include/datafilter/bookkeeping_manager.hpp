@@ -53,6 +53,9 @@ struct BookkeepingReceiver {
     // Transfer rate tracking.
     std::atomic<double> transfer_rate_mbps{0};
     std::mutex rate_mutex;
+    // Datafilter ID
+    std::string m_datafilter_id;
+    mutable std::mutex id_mutex;
 
     explicit BookkeepingReceiver(RunInfo& info) : run_info(info) {
         TLOG() << "BookkeepingReceiver initialized";
@@ -108,6 +111,16 @@ struct BookkeepingReceiver {
     double get_transfer_rate() {
         std::lock_guard<std::mutex> lock(rate_mutex);
         return transfer_rate_mbps.load();
+    }
+
+    void set_datafilter_id(const std::string& datafilter_id) {
+        std::lock_guard<std::mutex> lock(id_mutex);
+        m_datafilter_id = datafilter_id;
+    }
+
+    std::string get_datafilter_id() const {
+        std::lock_guard<std::mutex> lock(id_mutex);
+        return m_datafilter_id;
     }
 
    private:
@@ -180,6 +193,9 @@ struct BookkeepingReceiver {
             TLOG() << "Transfer rate " << transfer_rate << " Mbps";
             bk.transfer_rate = transfer_rate;
 
+            auto datafilter_id = get_datafilter_id();
+            bk.datafilter_id = datafilter_id;
+
             auto [run, file_idx] = run_info.get();
             {
                 std::lock_guard<std::mutex> lock(file_mutex);
@@ -231,7 +247,7 @@ struct BookkeepingReceiver {
         return nlohmann::json{{"entry_id", bk.entry_id},
                               {"conn_id", bk.conn_id},
                               {"from_id", bk.from_id},
-                              {"data_filter_id", bk.data_filter_id},
+                              {"datafilter_id", bk.datafilter_id},
                               {"node", bk.node},
                               {"tr_header_info", bk.tr_header_info},
                               {"file_attributes_info", bk.file_attributes_info},

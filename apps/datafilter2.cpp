@@ -1050,6 +1050,7 @@ struct DataFilterReceiver {
     explicit DataFilterReceiver(DataFilterConfig c, RunInfo& run_info)
         : config(c), bk_receiver(run_info) {
         bk_receiver.start();
+        bk_receiver.set_datafilter_id("id_01");
     }
     ~DataFilterReceiver() {
         bk_receiver.stop();  // Auto cleanup
@@ -1447,6 +1448,7 @@ struct DataFilterReceiver {
                                << " bytes, "
                                << "Rate: " << transfer_rate_mbps << " Mbps";
                         bk_receiver.set_transfer_rate(transfer_rate_mbps);
+                        // bk_receiver.set_datafilter_id("datafilter_id_001");
                     }
 
                     if (info->msgs_received == config.num_messages) {
@@ -1636,7 +1638,7 @@ int main(int argc, char* argv[]) {
     // std::make_unique<dunedaq::datafilter::TRRewriter>(config);
 
     for (size_t run = 0; run < config.num_runs; ++run) {
-        TLOG() << "Subscriber " << config.my_id1 << ": "
+        TLOG() << "DataFilterReceiver " << config.my_id1 << ": "
                << "Starting test run " << run;
         if (config.num_apps > 1) {
             df_receiver->init(run);
