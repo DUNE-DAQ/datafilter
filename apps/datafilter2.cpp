@@ -1047,10 +1047,10 @@ struct DataFilterReceiver {
     std::mutex queue_mutex;
     std::condition_variable queue_cv;
 
-    explicit DataFilterReceiver(DataFilterConfig c, RunInfo& run_info)
-        : config(c), bk_receiver(run_info) {
+    explicit DataFilterReceiver(DataFilterConfig c, RunInfo& run_info,
+                                const std::string datafilter_id)
+        : config(c), bk_receiver(run_info, datafilter_id) {
         bk_receiver.start();
-        bk_receiver.set_datafilter_id("id_01");
     }
     ~DataFilterReceiver() {
         bk_receiver.stop();  // Auto cleanup
@@ -1448,7 +1448,6 @@ struct DataFilterReceiver {
                                << " bytes, "
                                << "Rate: " << transfer_rate_mbps << " Mbps";
                         bk_receiver.set_transfer_rate(transfer_rate_mbps);
-                        // bk_receiver.set_datafilter_id("datafilter_id_001");
                     }
 
                     if (info->msgs_received == config.num_messages) {
@@ -1630,10 +1629,10 @@ int main(int argc, char* argv[]) {
            << "Configuring IOManager for sending TriggerRecords";
     config.configure_iomanager();
 
-    // The BookkeepingReceiver's thread is controlled by the DataFilterReceiver.
+    auto datafilter_id = std::to_string(config.my_id1);
     auto df_receiver =
-        std::make_unique<dunedaq::datafilter::DataFilterReceiver>(config,
-                                                                  run_info);
+        std::make_unique<dunedaq::datafilter::DataFilterReceiver>(
+            config, run_info, datafilter_id);
     // auto trrewriter =
     // std::make_unique<dunedaq::datafilter::TRRewriter>(config);
 

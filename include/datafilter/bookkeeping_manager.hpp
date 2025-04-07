@@ -54,10 +54,11 @@ struct BookkeepingReceiver {
     std::atomic<double> transfer_rate_mbps{0};
     std::mutex rate_mutex;
     // Datafilter ID
-    std::string m_datafilter_id;
+    std::string datafilter_id;
     mutable std::mutex id_mutex;
 
-    explicit BookkeepingReceiver(RunInfo& info) : run_info(info) {
+    explicit BookkeepingReceiver(RunInfo& info, std::string id = "")
+        : run_info(info), datafilter_id(std::move(id)) {
         TLOG() << "BookkeepingReceiver initialized";
     }
 
@@ -113,14 +114,9 @@ struct BookkeepingReceiver {
         return transfer_rate_mbps.load();
     }
 
-    void set_datafilter_id(const std::string& datafilter_id) {
-        std::lock_guard<std::mutex> lock(id_mutex);
-        m_datafilter_id = datafilter_id;
-    }
-
     std::string get_datafilter_id() const {
         std::lock_guard<std::mutex> lock(id_mutex);
-        return m_datafilter_id;
+        return datafilter_id;
     }
 
    private:
