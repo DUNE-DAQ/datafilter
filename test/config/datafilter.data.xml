@@ -1,0 +1,273 @@
+<?xml version="1.0" encoding="ASCII"?>
+
+<!-- oks-data version 2.2 -->
+
+
+<!DOCTYPE oks-data [
+  <!ELEMENT oks-data (info, (include)?, (comments)?, (obj)+)>
+  <!ELEMENT info EMPTY>
+  <!ATTLIST info
+      name CDATA #IMPLIED
+      type CDATA #IMPLIED
+      num-of-items CDATA #REQUIRED
+      oks-format CDATA #FIXED "data"
+      oks-version CDATA #REQUIRED
+      created-by CDATA #IMPLIED
+      created-on CDATA #IMPLIED
+      creation-time CDATA #IMPLIED
+      last-modified-by CDATA #IMPLIED
+      last-modified-on CDATA #IMPLIED
+      last-modification-time CDATA #IMPLIED
+  >
+  <!ELEMENT include (file)*>
+  <!ELEMENT file EMPTY>
+  <!ATTLIST file
+      path CDATA #REQUIRED
+  >
+  <!ELEMENT comments (comment)*>
+  <!ELEMENT comment EMPTY>
+  <!ATTLIST comment
+      creation-time CDATA #REQUIRED
+      created-by CDATA #REQUIRED
+      created-on CDATA #REQUIRED
+      author CDATA #REQUIRED
+      text CDATA #REQUIRED
+  >
+  <!ELEMENT obj (attr | rel)*>
+  <!ATTLIST obj
+      class CDATA #REQUIRED
+      id CDATA #REQUIRED
+  >
+  <!ELEMENT attr (data)*>
+  <!ATTLIST attr
+      name CDATA #REQUIRED
+      type (bool|s8|u8|s16|u16|s32|u32|s64|u64|float|double|date|time|string|uid|enum|class|-) "-"
+      val CDATA ""
+  >
+  <!ELEMENT data EMPTY>
+  <!ATTLIST data
+      val CDATA #REQUIRED
+  >
+  <!ELEMENT rel (ref)*>
+  <!ATTLIST rel
+      name CDATA #REQUIRED
+      class CDATA ""
+      id CDATA ""
+  >
+  <!ELEMENT ref EMPTY>
+  <!ATTLIST ref
+      class CDATA #REQUIRED
+      id CDATA #REQUIRED
+  >
+]>
+
+<oks-data>
+
+<info name="" type="" num-of-items="22" oks-format="data" oks-version="862f2957270" created-by="gjc" created-on="thinkpad" creation-time="20231110T143339" last-modified-by="chen" last-modified-on="atlas13.lps.umontreal.ca" last-modification-time="20250909T060917"/>
+
+<include>
+ <file path="schema/confmodel/dunedaq.schema.xml"/>
+ <file path="test/schema/appfwk/appfwk.schema.xml"/>
+</include>
+
+<comments>
+ <comment creation-time="20231110T151441" created-by="gjc" created-on="thinkpad" author="gjc" text="initial version"/>
+ <comment creation-time="20231201T123322" created-by="gjc" created-on="thinkpad" author="gjc" text="h"/>
+ <comment creation-time="20231201T123357" created-by="gjc" created-on="thinkpad" author="gjc" text="j"/>
+ <comment creation-time="20231201T123554" created-by="gjc" created-on="thinkpad" author="gjc" text="h"/>
+ <comment creation-time="20240327T150346" created-by="eflumerf" created-on="ironvirt9.mshome.net" author="eflumerf" text="Fix action"/>
+ <comment creation-time="20240327T150434" created-by="eflumerf" created-on="ironvirt9.mshome.net" author="eflumerf" text="Add plan and step"/>
+ <comment creation-time="20240327T151851" created-by="eflumerf" created-on="ironvirt9.mshome.net" author="eflumerf" text="Add stuff command to TestApp"/>
+ <comment creation-time="20240327T161636" created-by="eflumerf" created-on="ironvirt9.mshome.net" author="eflumerf" text="Reformat"/>
+ <comment creation-time="20250712T154844" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="add network connection to DaqApplication"/>
+ <comment creation-time="20250712T184728" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="update dummyModule"/>
+ <comment creation-time="20250909T060917" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="modified."/>
+</comments>
+
+
+<obj class="ActionPlan" id="bad_action">
+ <attr name="execution_policy" type="enum" val="modules-in-parallel"/>
+ <rel name="command" class="FSMCommand" id="bad_action"/>
+ <rel name="steps">
+  <ref class="DaqModulesGroupByType" id="dummymodules_type_group"/>
+ </rel>
+</obj>
+
+<obj class="ActionPlan" id="bad_stuff">
+ <attr name="execution_policy" type="enum" val="modules-in-parallel"/>
+ <rel name="command" class="FSMCommand" id="bad_stuff"/>
+ <rel name="steps">
+  <ref class="DaqModulesGroupByType" id="dummymodules_type_group"/>
+ </rel>
+</obj>
+
+<obj class="ActionPlan" id="bad_stuff_conflict">
+ <attr name="execution_policy" type="enum" val="modules-in-parallel"/>
+ <rel name="command" class="FSMCommand" id="bad_stuff"/>
+ <rel name="steps">
+  <ref class="DaqModulesGroupByType" id="dummymodules_type_group"/>
+ </rel>
+</obj>
+
+<obj class="ActionPlan" id="stuff">
+ <attr name="execution_policy" type="enum" val="modules-in-parallel"/>
+ <rel name="command" class="FSMCommand" id="stuff"/>
+ <rel name="steps">
+  <ref class="DaqModulesGroupById" id="dummymodules_id_group"/>
+  <ref class="DaqModulesGroupByType" id="dummymodules_type_group"/>
+ </rel>
+</obj>
+
+<obj class="ActionPlan" id="stuff_byid">
+ <attr name="execution_policy" type="enum" val="modules-in-parallel"/>
+ <rel name="command" class="FSMCommand" id="stuff"/>
+ <rel name="steps">
+  <ref class="DaqModulesGroupById" id="dummymodules_id_group"/>
+ </rel>
+</obj>
+
+<obj class="DaqApplication" id="ConflictingActionPlansApp">
+ <attr name="application_name" type="string" val="daq_application"/>
+ <rel name="runs_on" class="VirtualHost" id="vlocalhost"/>
+ <rel name="opmon_conf" class="OpMonConf" id="slow-all-monitoring"/>
+ <rel name="modules">
+  <ref class="DummyModule" id="dummy_module_0"/>
+ </rel>
+ <rel name="action_plans">
+  <ref class="ActionPlan" id="bad_stuff"/>
+  <ref class="ActionPlan" id="bad_stuff_conflict"/>
+ </rel>
+</obj>
+
+<obj class="DaqApplication" id="MissingMethodApp">
+ <attr name="application_name" type="string" val="daq_application"/>
+ <rel name="runs_on" class="VirtualHost" id="vlocalhost"/>
+ <rel name="opmon_conf" class="OpMonConf" id="slow-all-monitoring"/>
+ <rel name="modules">
+  <ref class="DummyModule" id="dummy_module_0"/>
+ </rel>
+ <rel name="action_plans">
+  <ref class="ActionPlan" id="bad_action"/>
+ </rel>
+</obj>
+
+<obj class="DaqApplication" id="MissingModuleApp">
+ <attr name="application_name" type="string" val="daq_application"/>
+ <rel name="runs_on" class="VirtualHost" id="vlocalhost"/>
+ <rel name="opmon_conf" class="OpMonConf" id="slow-all-monitoring"/>
+ <rel name="action_plans">
+  <ref class="ActionPlan" id="stuff"/>
+ </rel>
+</obj>
+
+<obj class="DaqApplication" id="MissingModuleApp_GroupById">
+ <attr name="application_name" type="string" val="daq_application"/>
+ <rel name="runs_on" class="VirtualHost" id="vlocalhost"/>
+ <rel name="opmon_conf" class="OpMonConf" id="slow-all-monitoring"/>
+ <rel name="modules">
+  <ref class="DummyModule" id="dummy_module_0"/>
+ </rel>
+ <rel name="action_plans">
+  <ref class="ActionPlan" id="stuff_byid"/>
+ </rel>
+</obj>
+
+<obj class="DaqApplication" id="TestApp">
+ <attr name="application_name" type="string" val="daq_application"/>
+ <rel name="runs_on" class="VirtualHost" id="vlocalhost"/>
+ <rel name="opmon_conf" class="OpMonConf" id="slow-all-monitoring"/>
+ <rel name="modules">
+  <ref class="DummyModule" id="dummy_module_0"/>
+ </rel>
+ <rel name="action_plans">
+  <ref class="ActionPlan" id="stuff"/>
+  <ref class="ActionPlan" id="bad_stuff"/>
+ </rel>
+</obj>
+
+<obj class="DaqApplication" id="TestApp_ById">
+ <attr name="application_name" type="string" val="daq_application"/>
+ <rel name="runs_on" class="VirtualHost" id="vlocalhost"/>
+ <rel name="opmon_conf" class="OpMonConf" id="slow-all-monitoring"/>
+ <rel name="modules">
+  <ref class="DummyModule" id="dummy_module_0"/>
+  <ref class="DummyModule" id="dummy_module_1"/>
+ </rel>
+ <rel name="action_plans">
+  <ref class="ActionPlan" id="stuff_byid"/>
+  <ref class="ActionPlan" id="bad_stuff"/>
+ </rel>
+</obj>
+
+<obj class="DaqModulesGroupById" id="dummymodules_id_group">
+ <rel name="modules">
+  <ref class="DummyModule" id="dummy_module_0"/>
+  <ref class="DummyModule" id="dummy_module_1"/>
+ </rel>
+</obj>
+
+<obj class="DaqModulesGroupByType" id="dummymodules_type_group">
+ <attr name="modules" type="class">
+  <data val="DummyModule"/>
+ </attr>
+</obj>
+
+<obj class="DummyModule" id="dummy_module_0">
+ <rel name="inputs">
+  <ref class="NetworkConnection" id="TR_tracking0"/>
+  <ref class="NetworkConnection" id="trdispatcher0"/>
+ </rel>
+ <rel name="outputs">
+  <ref class="NetworkConnection" id="conn_A0_G0_C0_"/>
+ </rel>
+ <rel name="used_resources">
+  <ref class="ProcessingResource" id="cpus"/>
+ </rel>
+</obj>
+
+<obj class="DummyModule" id="dummy_module_1">
+</obj>
+
+<obj class="FSMCommand" id="bad_action">
+ <attr name="cmd" type="string" val="bad_action"/>
+ <attr name="optional" type="bool" val="0"/>
+</obj>
+
+<obj class="FSMCommand" id="bad_stuff">
+ <attr name="cmd" type="string" val="bad_stuff"/>
+ <attr name="optional" type="bool" val="0"/>
+</obj>
+
+<obj class="FSMCommand" id="stuff">
+ <attr name="cmd" type="string" val="stuff"/>
+ <attr name="optional" type="bool" val="0"/>
+</obj>
+
+<obj class="OpMonConf" id="slow-all-monitoring">
+ <attr name="level" type="u32" val="4294967295"/>
+ <attr name="interval_s" type="u32" val="10"/>
+</obj>
+
+<obj class="PhysicalHost" id="localhost">
+ <rel name="contains">
+  <ref class="ProcessingResource" id="localhost_cpus"/>
+ </rel>
+</obj>
+
+<obj class="ProcessingResource" id="localhost_cpus">
+ <attr name="cpu_cores" type="u16">
+  <data val="0"/>
+  <data val="1"/>
+  <data val="2"/>
+  <data val="3"/>
+ </attr>
+</obj>
+
+<obj class="VirtualHost" id="vlocalhost">
+ <rel name="uses">
+  <ref class="ProcessingResource" id="localhost_cpus"/>
+ </rel>
+ <rel name="runs_on" class="PhysicalHost" id="localhost"/>
+</obj>
+
+</oks-data>

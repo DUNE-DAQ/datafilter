@@ -10,35 +10,714 @@
 
 #include "TRDispatcher.hpp"
 
-#include "datafilter/opmon/trdispatcher_info.pb.h"
-
-#include <string>
-
 namespace dunedaq::datafilter {
 
-TRDispatcher::TRDispatcher(const std::string& name)
-  : dunedaq::appfwk::DAQModule(name)
-{
+TRDispatcher::TRDispatcher(const std::string &name)
+    : dunedaq::appfwk::DAQModule(name) {
   register_command("conf", &TRDispatcher::do_conf);
+  register_command("start", &TRDispatcher::do_start);
+  register_command("stop", &TRDispatcher::do_stop);
 }
 
-void
-TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> /* mcfg */)
-{}
+void TRDispatcher::init_app(
+    std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
+  auto iom = iomanager::IOManager::get();
+  TLOG() << get_name() << ": Entering init() method";
+  m_mcfg = mcfg;
+  auto mdal = mcfg->get_dal<dunedaq::datafilter::dal::TRDispatcher>(get_name());
+  // auto mdal = mcfg->get_dal<dunedaq::confmodel::Session>("test-session");
 
-void
-TRDispatcher::generate_opmon_data()
-{
-  opmon::TRDispatcherInfo info;
+  if (mdal == nullptr) {
+    throw appfwk::CommandFailed(ERS_HERE, get_name(), "init",
+                                "Unable to load module configuration");
+  }
+
+  for (auto con : mdal->get_inputs()) {
+    TLOG() << "Input connection data_type " << con->get_data_type() << " UID "
+           << con->UID() << " datatype_to_string "
+           << datatype_to_string<Handshake>();
+    if (con->get_data_type() == datatype_to_string<Handshake>()) {
+      TLOG() << "Input found: " << con->get_data_type();
+      m_init_connection = con->UID();
+      iom->get_receiver<Handshake>(m_init_connection);
+    }
+  }
+
+  for (auto con : mdal->get_outputs()) {
+    TLOG() << "Output connection data_type " << con->get_data_type() << " UID "
+           << con->UID() << " datatype_to_string "
+           << datatype_to_string<trigger_record_ptr_t>();
+    if (con->get_data_type() == datatype_to_string<trigger_record_ptr_t>()) {
+      TLOG() << "Output found: " << con->get_data_type();
+      m_trigger_record_connection = con->UID();
+      iom->get_sender<trigger_record_ptr_t>(m_trigger_record_connection);
+    }
+  }
+
+  m_send_timeout_ms = std::chrono::milliseconds(mdal->get_send_timeout_ms());
+  m_recv_timeout_ms = std::chrono::milliseconds(mdal->get_recv_timeout_ms());
+
+  // for test only
+  m_trdispatcher_id = mdal->get_trdispatcher_id();
+  TLOG() << "tridispatcher_id " << m_trdispatcher_id;
+
+  receive(0, 0, 0);
+}
+
+void TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
+  TLOG() << "Module name: " << get_name();
+  std::string appName = "TestApp";
+  std::string connectionName = "trdispatcher0";
+  std::string session_name = "test-session";
+  std::string m_oksConfig = "oksconflibs:test/config/dfSession.data.xml";
+
+  dunedaq::conffwk::Configuration *confdb;
+  try {
+    confdb = new conffwk::Configuration(m_oksConfig);
+
+  } catch (conffwk::Generic &exc) {
+    std::cout << "Failed to load OKS database: " << exc << std::endl;
+  }
+
+  // std::cout << "Attempting to get DAL session..." << std::endl;
+  // auto dal_session =
+  // mcfg->get_dal<dunedaq::confmodel::Session>("test-session");
+
+  try {
+    // m_application = confdb->get<confmodel::Application>(appName);
+    m_application = mcfg->get_dal<confmodel::Application>(appName);
+  } catch (const std::exception &e) {
+    TLOG() << "Failed to get application from config: " << e.what();
+    m_application = nullptr;
+  }
+  auto daq_app = m_application->cast<confmodel::DaqApplication>();
+
+  if (daq_app) {
+    auto modules = daq_app->get_modules();
+    m_modules.assign(modules.begin(), modules.end());
+  }
+
+  std::set<std::string> connectionsAdded;
+
+  TLOG() << "Number of modules: " << m_modules.size();
+  for (auto mod : m_modules) {
+
+    if (mod == nullptr) {
+      TLOG() << "Found null module pointer!";
+      continue;
+    }
+    TLOG() << "initialising " << mod->class_name() << " module " << mod->UID();
+    auto connections = mod->get_inputs();
+    auto outputs = mod->get_outputs();
+    connections.insert(connections.end(), outputs.begin(), outputs.end());
+    for (auto con : connections) {
+      TLOG() << "Application " << con->UID();
+
+      auto [c, inserted] = connectionsAdded.insert(con->UID());
+      if (!inserted) {
+        // Already handled this connection, don't add it
+        continue;
+      }
+      auto queue = confdb->cast<confmodel::Queue>(con);
+      if (queue) {
+        TLOG() << "Adding queue " << queue->UID();
+        m_queues.emplace_back(queue);
+      }
+      auto net_con = confdb->cast<confmodel::NetworkConnection>(con);
+      TLOG() << "Application NetworkConnection: " << net_con->UID();
+      if (net_con) {
+        m_networkconnections.emplace_back(net_con);
+      }
+    }
+  }
+
+  dunedaq::iomanager::ConnectionInfo conn_info;
+  std::vector<dunedaq::iomanager::ConnectionInfo> connection_infos;
+
+  TLOG() << "=== Debugging Network Connections ===";
+  for (const auto &conn : m_networkconnections) {
+
+    std::string conn_id = conn->UID();
+    TLOG() << "Connection: " << conn_id;
+
+    // Get the ConfigObject using the same method as your main code
+    conffwk::ConfigObject config_obj;
+    try {
+      confdb->get("NetworkConnection", conn_id, config_obj);
+
+      // Check what attributes are available
+      TLOG() << "  Available attributes:";
+
+      try {
+        config_obj.get("address", address);
+        TLOG() << "    address: '" << address << "'";
+      } catch (...) {
+        TLOG() << "    address: NOT FOUND";
+      }
+
+      try {
+        config_obj.get("data_type", data_type);
+        TLOG() << "Data type: " << data_type;
+      } catch (...) {
+        TLOG() << "Using default data type";
+        data_type = "init_t";
+      }
+
+      try {
+        config_obj.get("connection_type", conn_type_str);
+        TLOG() << "Connection type: " << conn_type_str;
+      } catch (...) {
+        TLOG() << "Using default connection type";
+        conn_type_str = "kSendRecv";
+      }
+
+      // Create ConnectionInfo for IOManager
+      conn_info.uid = conn_id;
+      conn_info.uri = address; // This is the critical part!
+      conn_info.data_type = data_type;
+
+      // Set connection type
+      if (conn_type_str == "kSendRecv") {
+        conn_info.connection_type =
+            dunedaq::iomanager::ConnectionType::kSendRecv;
+      } else if (conn_type_str == "kPubSub") {
+        conn_info.connection_type = dunedaq::iomanager::ConnectionType::kPubSub;
+      }
+
+      connection_infos.push_back(conn_info);
+
+      TLOG() << "Successfully configured connection: " << conn_id
+             << " with URI: " << address;
+    } catch (const std::exception &e) {
+      TLOG() << "  ERROR getting config object: " << e.what();
+    }
+  }
+
+  TLOG() << "Configured " << connection_infos.size() << " network connections";
+
+  // Process queues (convert to ConnectionInfo if needed)
+  std::vector<dunedaq::iomanager::ConnectionInfo> queue_infos;
+  for (const auto &queue : m_queues) {
+    dunedaq::iomanager::ConnectionInfo queue_info;
+    queue_info.uid = queue->UID();
+    // queue_info.connection_type = dunedaq::iomanager::ConnectionType::kQueue;
+    //  Queues typically don't need URIs as they're internal
+    queue_infos.push_back(queue_info);
+    TLOG() << "Added queue info: " << queue->UID();
+  }
+
+  // Combine all connection infos
+  connection_infos.insert(connection_infos.end(), queue_infos.begin(),
+                          queue_infos.end());
+
+  TLOG() << "Configuring IOManager with " << connection_infos.size()
+         << " connections";
+
+  // Configure IOManager with the properly constructed connection infos
+  dunedaq::opmonlib::TestOpMonManager opmgr;
+
+  try {
+    TLOG() << "Configure IOManager...";
+    get_iomanager()->configure(session_name, m_queues, m_networkconnections,
+                               nullptr, opmgr);
+  } catch (const std::exception &e) {
+    TLOG() << "Method 2 also failed: " << e.what();
+    throw;
+  }
+  TLOG() << "=== End Debug ===";
+
+  // // Create receiver manually (example for Handshake type)
+  // TLOG() << "conn_info.uid " << connection_infos[1].uid;
+  // auto cb_receiver =
+  // dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
+  //     connection_infos[1].uid);
+
+  // std::function<void(const dunedaq::datafilter::Handshake)> str_receiver_cb =
+  //     [&](dunedaq::datafilter::Handshake msg) {
+  //       TLOG() << "Received message: " << msg.msg_id;
+  //     };
+  // // Add callback as you already do
+  // cb_receiver->add_callback(str_receiver_cb);
+  receive(0, 0, 0);
+}
+
+void TRDispatcher::generate_opmon_data() {
+  dunedaq::datafilter::opmon::TRDispatcherInfo info;
   info.set_total_amount(m_total_amount.load());
   info.set_amount_since_last_call(m_amount_since_last_call.exchange(0));
   publish(std::move(info));
 }
 
-void
-TRDispatcher::do_conf(const data_t& /* do not pass an argument*/ )
-{
+// Receive handshake from FilterOrchestrator
+void TRDispatcher::receive(size_t dataflow_run_number1, pid_t subscriber_pid,
+                           bool is_hdf5file) {
+  bool handshake_done = false;
+  std::atomic<unsigned int> received_cnt = 0;
+
+  auto cb_receiver = dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
+      "trdispatcher0");
+  // auto cb_receiver =
+  // dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
+  //     "trdispatcher0");
+  std::function<void(dunedaq::datafilter::Handshake)> str_receiver_cb =
+      [&](dunedaq::datafilter::Handshake msg) {
+        if (msg.msg_id == "trdispatcher0") {
+          // if (msg.msg_id == "trdispatcher0") {
+          ++received_cnt;
+        }
+        TLOG() << "Received next TR instruction from filter "
+                  "orchestrator: "
+               << msg.msg_id;
+      };
+
+  cb_receiver->add_callback(str_receiver_cb);
+  while (!handshake_done) {
+    if (received_cnt == 1)
+      handshake_done = true;
+  }
+
+  cb_receiver->remove_callback();
+
+  if (is_hdf5file) {
+    send_tr_from_hdf5file(dataflow_run_number1, subscriber_pid);
+  } else {
+    send_tr(dataflow_run_number1, subscriber_pid);
+  }
 }
+
+// generate a dummy test trigger record to be send to datafilter
+trigger_record_ptr_t TRDispatcher::create_trigger_record(uint64_t trig_num) {
+  std::vector<char> dummy_vector(fragment_size);
+
+  for (auto &i : dummy_vector) {
+    i = std::rand();
+  }
+  char *dummy_data = dummy_vector.data();
+
+  // generate the timestamp for trigger record
+  int64_t ts = std::chrono::duration_cast<std::chrono::milliseconds>(
+                   system_clock::now().time_since_epoch())
+                   .count();
+
+  // create TriggerRecordHeader
+  dunedaq::daqdataformats::TriggerRecordHeaderData trh_data;
+  trh_data.trigger_number = trig_num;
+  trh_data.trigger_timestamp = ts;
+  trh_data.num_requested_components = components_per_record;
+  trh_data.run_number = run_number;
+  trh_data.sequence_number = 0;
+  trh_data.max_sequence_number = 1;
+  trh_data.element_id = dunedaq::daqdataformats::SourceID(
+      dunedaq::daqdataformats::SourceID::Subsystem::kTRBuilder, 0);
+
+  dunedaq::daqdataformats::TriggerRecordHeader trh(&trh_data);
+
+  // create our TriggerRecord
+  auto tr = std::make_unique<dunedaq::daqdataformats::TriggerRecord>(trh);
+
+  // loop over elements tpc
+  for (size_t ele_num = 0; ele_num < element_count_tpc; ++ele_num) {
+    // create our fragment
+    dunedaq::daqdataformats::FragmentHeader fh;
+    fh.trigger_number = trig_num;
+    fh.trigger_timestamp = ts;
+    fh.window_begin = ts;
+    fh.window_end = ts;
+    fh.run_number = run_number;
+    fh.fragment_type = static_cast<dunedaq::daqdataformats::fragment_type_t>(
+        dunedaq::daqdataformats::FragmentType::kWIB);
+    fh.sequence_number = 0;
+    fh.detector_id = static_cast<uint16_t>(
+        dunedaq::detdataformats::DetID::Subdetector::kHD_TPC);
+    fh.element_id = dunedaq::daqdataformats::SourceID(
+        dunedaq::daqdataformats::SourceID::Subsystem::kDetectorReadout,
+        ele_num);
+
+    std::unique_ptr<dunedaq::daqdataformats::Fragment> frag_ptr(
+        new dunedaq::daqdataformats::Fragment(dummy_data, fragment_size));
+    frag_ptr->set_header_fields(fh);
+
+    // add fragment to TriggerRecord
+    tr->add_fragment(std::move(frag_ptr));
+
+  } // end loop over elements
+
+  // loop over elements pds
+  for (size_t ele_num = 0; ele_num < element_count_pds; ++ele_num) {
+    // create our fragment
+    dunedaq::daqdataformats::FragmentHeader fh;
+    fh.trigger_number = trig_num;
+    fh.trigger_timestamp = ts;
+    fh.window_begin = ts;
+    fh.window_end = ts;
+    fh.run_number = run_number;
+    fh.fragment_type = static_cast<dunedaq::daqdataformats::fragment_type_t>(
+        dunedaq::daqdataformats::FragmentType::kDAPHNE);
+    fh.sequence_number = 0;
+    fh.detector_id = static_cast<uint16_t>(
+        dunedaq::detdataformats::DetID::Subdetector::kHD_PDS);
+    fh.element_id = dunedaq::daqdataformats::SourceID(
+        dunedaq::daqdataformats::SourceID::Subsystem::kDetectorReadout,
+        ele_num + element_count_tpc);
+
+    std::unique_ptr<dunedaq::daqdataformats::Fragment> frag_ptr(
+        new dunedaq::daqdataformats::Fragment(dummy_data, fragment_size));
+    frag_ptr->set_header_fields(fh);
+
+    // add fragment to TriggerRecord
+    // tr.add_fragment(std::move(frag_ptr));
+    tr->add_fragment(std::move(frag_ptr));
+
+  } // end loop over elements
+
+  // loop over TriggerActivity
+  for (size_t ele_num = 0; ele_num < element_count_ta; ++ele_num) {
+    // create our fragment
+    dunedaq::daqdataformats::FragmentHeader fh;
+    fh.trigger_number = trig_num;
+    fh.trigger_timestamp = ts;
+    fh.window_begin = ts - 10;
+    fh.window_end = ts;
+    fh.run_number = run_number;
+    fh.fragment_type = static_cast<dunedaq::daqdataformats::fragment_type_t>(
+        dunedaq::daqdataformats::FragmentType::kTriggerActivity);
+    fh.sequence_number = 0;
+    fh.detector_id = static_cast<uint16_t>(
+        dunedaq::detdataformats::DetID::Subdetector::kDAQ);
+    fh.element_id = dunedaq::daqdataformats::SourceID(
+        dunedaq::daqdataformats::SourceID::Subsystem::kTrigger, ele_num);
+
+    std::unique_ptr<dunedaq::daqdataformats::Fragment> frag_ptr(
+        new dunedaq::daqdataformats::Fragment(dummy_data, fragment_size));
+    frag_ptr->set_header_fields(fh);
+
+    // add fragment to TriggerRecord
+    tr->add_fragment(std::move(frag_ptr));
+
+  } // end loop over elements
+
+  // loop over TriggerCandidate
+  for (size_t ele_num = 0; ele_num < element_count_tc; ++ele_num) {
+    // create our fragment
+    dunedaq::daqdataformats::FragmentHeader fh;
+    fh.trigger_number = trig_num;
+    fh.trigger_timestamp = ts;
+    fh.window_begin = ts;
+    fh.window_end = ts;
+    fh.run_number = run_number;
+    fh.fragment_type = static_cast<dunedaq::daqdataformats::fragment_type_t>(
+        dunedaq::daqdataformats::FragmentType::kTriggerCandidate);
+    fh.sequence_number = 0;
+    fh.detector_id = static_cast<uint16_t>(
+        dunedaq::detdataformats::DetID::Subdetector::kDAQ);
+    fh.element_id = dunedaq::daqdataformats::SourceID(
+        dunedaq::daqdataformats::SourceID::Subsystem::kTrigger,
+        ele_num + element_count_ta);
+
+    std::unique_ptr<dunedaq::daqdataformats::Fragment> frag_ptr(
+        new dunedaq::daqdataformats::Fragment(dummy_data, fragment_size));
+    frag_ptr->set_header_fields(fh);
+
+    // add fragment to TriggerRecord
+    tr->add_fragment(std::move(frag_ptr));
+
+  } // end loop over elements
+
+  trigger_record_ptr_t temp = std::move(tr);
+  return temp;
+}
+
+// send trigger records from self generated TR
+void TRDispatcher::send_tr(size_t dataflow_run_number, pid_t subscriber_pid) {
+  std::ostringstream ss;
+  auto trig_num = dataflow_run_number;
+
+  auto init_sender =
+      dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>("TR_tracking2");
+
+  dunedaq::datafilter::Handshake sent_t1("next_tr");
+  init_sender->send(std::move(sent_t1), Sender::s_block);
+
+  //        if (config.next_tr) {
+  //            auto init_receiver =
+  //                dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
+  //                    "TR_tracking2");
+  //        }
+  std::unordered_map<int, std::set<size_t>> completed_receiver_tracking;
+  std::mutex tracking_mutex;
+
+  //        for (size_t group = 0; group < config.num_groups; ++group)
+  //        {
+  //            for (size_t conn = 0; conn <
+  //            config.num_connections_per_group;
+  //                 ++conn) {
+  //                auto info =
+  //                std::make_shared<TRDispatcherInfo>(group, conn);
+  auto info = std::make_shared<TRDispatcherInfo>(0, 0);
+  trdispatchers.push_back(info);
+  //            }
+  //        }
+
+  TLOG_DEBUG(7) << "Getting publisher objects for each connection";
+  std::for_each(
+      std::execution::par_unseq, std::begin(trdispatchers),
+      std::end(trdispatchers), [=](std::shared_ptr<TRDispatcherInfo> info) {
+        auto before_sender = std::chrono::steady_clock::now();
+
+        info->sender =
+            dunedaq::get_iom_sender<trigger_record_ptr_t>(m_trdispatcher_id);
+        auto after_sender = std::chrono::steady_clock::now();
+        info->get_sender_time =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                after_sender - before_sender);
+      });
+
+  TLOG_DEBUG(7) << "Starting publish threads";
+  std::for_each(
+      std::execution::par_unseq, std::begin(trdispatchers),
+      std::end(trdispatchers),
+      [=, &completed_receiver_tracking,
+       &tracking_mutex](std::shared_ptr<TRDispatcherInfo> info) {
+        info->send_thread.reset(new std::thread(
+            [=, &completed_receiver_tracking, &tracking_mutex]() {
+              bool complete_received = false;
+
+              std::this_thread::sleep_for(100ms);
+              while (!complete_received) {
+                TLOG() << "Sender message: generate trigger "
+                          "record";
+                trigger_record_ptr_t temp_record(
+                    create_trigger_record(trig_num));
+
+                TLOG() << "Start sending  trigger record";
+                info->sender->try_send(
+                    std::move(temp_record),
+                    std::chrono::milliseconds(m_send_timeout_ms));
+                TLOG() << "End sending trigger record";
+                ++info->messages_sent;
+                {
+                  std::lock_guard<std::mutex> lk(tracking_mutex);
+                  if ((completed_receiver_tracking.count(info->group_id) &&
+                       completed_receiver_tracking[info->group_id].count(
+                           info->conn_id)) ||
+                      completed_receiver_tracking.count(-1)) {
+                    TLOG() << "Complete_received";
+                    complete_received = true;
+                  }
+                }
+                complete_received = true;
+                break;
+              } // while loop
+            }));
+      });
+
+  TLOG_DEBUG(7) << "Joining send threads";
+  for (auto &sender : trdispatchers) {
+    sender->send_thread->join();
+    sender->send_thread.reset(nullptr);
+  }
+  trdispatchers.clear();
+  TLOG() << "TR send done; it will start the next send.";
+}
+
+// Send trigger records from generated hdf5 files.
+void TRDispatcher::send_tr_from_hdf5file(size_t dataflow_run_number,
+                                         pid_t subscriber_pid) {
+  std::ostringstream oss;
+
+  HDF5RawDataFile h5_file(m_input_h5_filename);
+  auto records = h5_file.get_all_record_ids();
+  auto records_size = records.size();
+  auto total_tr = *(std::next(records.begin(), records.size() - 1));
+  // oss << "Sending file: " << config.input_h5_filename << "\n";
+  oss << "Last trigger record: " << int(total_tr.first) << ","
+      << total_tr.second << "\n";
+
+  TLOG() << oss.str();
+  oss.str("");
+  dunedaq::datafilter::time_point_to_string time_point_to_string(
+      dunedaq::datafilter::Precision::NANOSECONDS);
+
+  auto t1 = std::chrono::system_clock::now();
+  dunedaq::datafilter::BookKeeping bk_info("bookkeeping0");
+  bk_info.entry_id = time_point_to_string(t1);
+  bk_info.conn_id = m_bk_info_id;
+  bk_info.from_id = "trdispatcher";
+  dunedaq::datafilter::node_info node_info;
+  bk_info.node = node_info.get_node_info();
+
+  bk_info.tr_header_info.push_back({"record size", to_string(records.size())});
+  auto file_index = h5_file.get_attribute<size_t>("file_index");
+  TLOG() << "File index :" << file_index;
+  bk_info.run_number = h5_file.get_attribute<size_t>("run_number");
+  bk_info.file_attributes_info.push_back(
+      {"file_index", std::to_string(file_index)});
+  bk_info.file_send_list.push_back(m_input_h5_filename);
+
+  // Send the file attributes first: file_index, run_number. The
+  // FilterResultWriter needs to know it before receiving the trigger
+  // record.
+  auto bookkeeping_sender =
+      dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>("bookkeeping0");
+  bookkeeping_sender->send(std::move(bk_info), Sender::s_block);
+
+  // Handshake with datafilter.
+  auto init_sender =
+      dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>("TR_tracking2");
+
+  dunedaq::datafilter::Handshake sent_t1("next_tr");
+  sent_t1.total_tr = int(records_size);
+
+  init_sender->send(std::move(sent_t1), Sender::s_block);
+
+  std::unordered_map<int, std::set<size_t>> completed_receiver_tracking;
+  std::mutex tracking_mutex;
+
+  // for (size_t group = 0; group < config.num_groups; ++group) {
+  //     for (size_t conn = 0; conn < config.num_connections_per_group;
+  //          ++conn) {
+
+  // auto info = std::make_shared<TRDispatcherInfo>(group, conn);
+  auto info = std::make_shared<TRDispatcherInfo>(0, 0);
+  trdispatchers.push_back(info);
+  //  }
+  // }
+
+  TLOG_DEBUG(7) << "Getting publisher objects for each connection";
+  std::for_each(
+      std::execution::par_unseq, std::begin(trdispatchers),
+      std::end(trdispatchers), [=](std::shared_ptr<TRDispatcherInfo> info) {
+        auto before_sender = std::chrono::steady_clock::now();
+        info->sender =
+            dunedaq::get_iom_sender<trigger_record_ptr_t>(m_trdispatcher_id);
+        auto after_sender = std::chrono::steady_clock::now();
+        info->get_sender_time =
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                after_sender - before_sender);
+      });
+
+  TLOG_DEBUG(7) << "Starting publish threads";
+  std::for_each(
+      std::execution::par_unseq, std::begin(trdispatchers),
+      std::end(trdispatchers),
+      [=, &bk_info, &h5_file, &completed_receiver_tracking,
+       &tracking_mutex](std::shared_ptr<TRDispatcherInfo> info) {
+        info->send_thread.reset(new std::thread([=, &bk_info, &h5_file,
+                                                 &completed_receiver_tracking,
+                                                 &tracking_mutex]() {
+          bool complete_received = false;
+
+          std::ostringstream oss;
+          std::this_thread::sleep_for(100ms);
+          while (!complete_received) {
+            TLOG() << "Sender message: trigger record";
+
+            // std::string ifilename = config.input_h5_filename;
+            // TLOG() << "Reading " << ifilename;
+
+            // HDF5RawDataFile h5_file(ifilename);
+            auto records = h5_file.get_all_record_ids();
+            oss << "\nNumber of records: " << records.size();
+            if (records.empty()) {
+              oss << "\n\nNO TRIGGER RECORDS FOUND";
+              TLOG() << oss.str();
+              exit(0);
+            }
+            auto first_rec = *(records.begin());
+            auto last_rec = *(std::next(records.begin(), records.size() - 1));
+
+            oss << "\n\tFirst trigger record: " << first_rec.first << ","
+                << first_rec.second;
+            oss << "\n\tLast trigger record: " << last_rec.first << ","
+                << last_rec.second;
+
+            TLOG() << oss.str();
+            oss.str("");
+
+            for (auto const &rid : records) {
+              auto record_header_dataset =
+                  h5_file.get_record_header_dataset_path(rid);
+              auto tr = h5_file.get_trigger_record(rid);
+
+              m_trigger_number =
+                  tr.get_fragments_ref().at(0)->get_trigger_number();
+              m_run_number = tr.get_fragments_ref().at(0)->get_run_number();
+              TLOG() << "Trigger number " << m_trigger_number << " run_number "
+                     << m_run_number;
+              // SERIALIZE
+              auto bytes = dunedaq::serialization::serialize(
+                  tr, dunedaq::serialization::kMsgPack);
+              // DESERIALIZE
+              auto deserialized =
+                  dunedaq::serialization::deserialize<trigger_record_ptr_t>(
+                      bytes);
+
+              info->sender->try_send(std::move(deserialized),
+                                     std::chrono::milliseconds(50));
+            }
+
+            ++info->messages_sent;
+            {
+              std::lock_guard<std::mutex> lk(tracking_mutex);
+              if ((completed_receiver_tracking.count(info->group_id) &&
+                   completed_receiver_tracking[info->group_id].count(
+                       info->conn_id)) ||
+                  completed_receiver_tracking.count(-1)) {
+                TLOG() << "Complete_received";
+                complete_received = true;
+              }
+            }
+            complete_received = true;
+            break;
+          } // while loop
+
+          // Write the transfert file pathname to json file
+          dunedaq::datafilter::HDF5FromStorage s(m_storage_pathname, json_file);
+          s.WriteJSON(m_input_h5_filename);
+
+          // send book keeping info after the TR is tranfered.
+          TLOG() << "Send bookkeeping info to datafilter server";
+          bk_info.file_send_status = "send";
+          bk_info.tr_status = "send";
+          bk_info.run_number = m_run_number;
+          TLOG() << "run number from trdispatcher " << m_run_number;
+          bk_info.tr_header_info.push_back(
+              {"run number", std::to_string(m_run_number)});
+          bk_info.tr_header_info.push_back(
+              {"trigger number", std::to_string(m_trigger_number)});
+          bk_info.file_send_list.push_back(m_input_h5_filename);
+          auto bookkeeping_sender =
+              dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
+                  "bookkeeping0");
+          //// SERIALIZE
+          // auto bk_bytes = dunedaq::serialization::serialize(
+          //     bk_info, dunedaq::serialization::kJSON);
+          //// DESERIALIZE
+          // auto bk_deserialized =
+          //     dunedaq::serialization::deserialize<
+          //         dunedaq::datafilter::BookKeeping_json>(
+          //         bk_bytes);
+
+          bookkeeping_sender->send(std::move(bk_info), Sender::s_block);
+        }));
+      });
+
+  TLOG() << "Joining send threads";
+  for (auto &sender : trdispatchers) {
+    sender->send_thread->join();
+    sender->send_thread.reset(nullptr);
+  }
+}
+
+void TRDispatcher::do_conf(const data_t & /* do not pass an argument*/) {
+  auto iom = iomanager::IOManager::get();
+  TLOG() << get_name() << " do_conf()";
+  // iom->add_callback<Handshake>(m_init_connection);
+  TLOG() << get_name() << ": exist do_conf()";
+}
+
+void TRDispatcher::do_start(const data_t &) {}
+void TRDispatcher::do_stop(const data_t & /* do not pass an argument*/) {}
 
 } // namespace dunedaq::datafilter
 

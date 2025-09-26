@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package dunedaq.datafilter.opmon;
+
+message FilterOrchestratorInfo {
+
+  uint64 total_amount = 1;
+  uint32 amount_since_last_call = 2;
+    
+}
+
