@@ -45,7 +45,7 @@ daq_add_dal_library(datafilter.schema.xml NAMESPACE dunedaq::datafilter::dal DAL
 # daq_add_library (*.cpp LINK_LIBRARIES stdc++fs ers::ers HighFive hdf5libs dfmodules dfmessages::dfmessages daqdataformats::daqdataformats detdataformats::detdataformats \\
                     # fddetdataformats::fddetdataformats detchannelmaps::detchannelmaps  iomanager::iomanager opmonlib::opmonlib logging::logging nlohmann_json::nlohmann_json ${CETLIB} ${CETLIB_EXCEPT})
 
-daq_add_library (*.cpp LINK_LIBRARIES opmonlib::opmonlib stdc++fs ers::ers HighFive hdf5libs daqdataformats::daqdataformats detdataformats::detdataformats \\
+daq_add_library (*.cpp LINK_LIBRARIES opmonlib::opmonlib stdc++fs ers::ers HighFive hdf5libs dfmodules::dfmodules daqdataformats::daqdataformats detdataformats::detdataformats \\
                     fddetdataformats::fddetdataformats detchannelmaps::detchannelmaps iomanager::iomanager logging::logging nlohmann_json::nlohmann_json ${CETLIB} ${CETLIB_EXCEPT})
 ##############################################################################
 # Unit tests

@@ -21,7 +21,9 @@
 #include "datafilter/opmon/filterresultwriter_info.pb.h"
 #include "hdf5libs/HDF5RawDataFile.hpp"
 #include "hdf5libs/test/HDF5TestUtils.hpp"
+#include "opmonlib/TestOpMonManager.hpp"
 #include "serialization/Serialization.hpp"
+#include "utilities/WorkerThread.hpp"
 
 #include <atomic>
 #include <execution>
@@ -97,9 +99,13 @@ public:
   std::string generate_hdf5file_pathname(std::string file_pathname_prefix,
                                          int run_number, int file_index,
                                          int trigger_number);
-  void receive_attrs();
   void receive_tr(size_t run_number1);
   void send_next_tr(size_t run_number, pid_t subscriber_pid);
+  void attrs_test_loop();
+  void start_attrs_test_thread();
+  void stop_attrs_test_thread();
+
+  std::optional<int> extract_file_index(const BookKeeping &bk);
 
   std::vector<std::shared_ptr<SubscriberInfo>> subscribers;
   FilterResultWriter(const FilterResultWriter &) = delete;
@@ -123,6 +129,18 @@ private:
   // configuration passed as an argument and originating from the CCM system.
 
   void do_conf(const data_t &);
+  void do_start(const data_t &);
+  void do_stop(const data_t &);
+  void do_work(std::atomic<bool> &running);
+  // void attrs_thread(std::atomic<bool> &running);
+  void receive_attrs(std::atomic<bool> &running);
+
+  // Threading
+  dunedaq::utilities::WorkerThread m_thread;
+  dunedaq::utilities::WorkerThread m_bk_thread;
+
+  std::vector<const dunedaq::confmodel::Queue *> m_queues;
+  std::vector<const confmodel::NetworkConnection *> m_networkconnections;
 
   // TO dfbackend DEVELOPERS: PLEASE DELETE THIS FOLLOWING COMMENT AFTER READING
   // IT m_total_amount and m_amount_since_last_get_info_call are examples of
@@ -132,6 +150,8 @@ private:
   // FilterResultWriter runs and whose value we'd like to keep track of during
   // running; obviously you'd want to replace this "in real life"
 
+  std::string m_oksConfig = "oksconflibs:test/config/dfSession.data.xml";
+  std::string m_session_name = "test-session";
   size_t m_trigger_timestamp;
   size_t m_trigger_number;
   size_t m_run_number;
@@ -139,7 +159,7 @@ private:
   std::string m_info_file_base = "FilterResultWriter";
   std::string m_odir = "/opt/tmp/chen";
   std::string m_output_h5_filename = "/opt/tmp/chen/h5_test.hdf5";
-  std::string m_session_name = "FilterResultWriter test run";
+  // std::string m_session_name = "FilterResultWriter test run";
   std::string m_ofile_pathname{};
 
   std::string m_init_connection;
@@ -149,6 +169,11 @@ private:
 
   std::atomic<int64_t> m_total_amount{0};
   std::atomic<int> m_amount_since_last_call{0};
+
+  std::thread m_attrs_test_thread;
+  std::atomic<bool> m_attrs_test_running{false};
+  std::mutex m_attrs_test_mtx;
+  std::condition_variable m_attrs_test_cv;
 };
 
 } // namespace dunedaq::datafilter

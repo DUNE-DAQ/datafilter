@@ -63,7 +63,7 @@
 
 <oks-data>
 
-<info name="" type="" num-of-items="60" oks-format="data" oks-version="862f2957270" created-by="gjc" created-on="thinkpad" creation-time="20231116T105446" last-modified-by="chen" last-modified-on="atlas13.lps.umontreal.ca" last-modification-time="20250924T042503"/>
+<info name="" type="" num-of-items="73" oks-format="data" oks-version="862f2957270" created-by="gjc" created-on="thinkpad" creation-time="20231116T105446" last-modified-by="chen" last-modified-on="atlas13.lps.umontreal.ca" last-modification-time="20250930T121019"/>
 
 <include>
  <file path="schema/confmodel/dunedaq.schema.xml"/>
@@ -102,6 +102,26 @@
  <comment creation-time="20250916T113949" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
  <comment creation-time="20250916T144813" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
  <comment creation-time="20250924T042503" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250926T194315" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250928T045537" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250928T050709" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250928T051643" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250928T052121" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250928T164629" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250928T194328" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250929T155308" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250929T155748" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250929T160658" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250929T162740" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250929T183024" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250929T191454" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250929T192834" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250929T205018" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250929T222559" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250929T222641" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250930T120634" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250930T120852" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20250930T121019" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
 </comments>
 
 
@@ -145,6 +165,23 @@
  <attr name="interval_ms" type="u32" val="2000"/>
  <attr name="host" type="string" val="localhost"/>
  <rel name="service" class="Service" id="local-connectivity-service"/>
+</obj>
+
+<obj class="DataFilter" id="DataFilter_0">
+ <attr name="send_timeout_ms" type="bool" val="1"/>
+ <attr name="recv_timeout_ms" type="bool" val="1"/>
+ <rel name="inputs">
+  <ref class="NetworkConnection" id="TR_tracking0"/>
+  <ref class="NetworkConnection" id="bookkeeping0"/>
+  <ref class="NetworkConnection" id="conn_A0_G0_C0_"/>
+ </rel>
+ <rel name="outputs">
+  <ref class="NetworkConnection" id="trdispatcher1"/>
+  <ref class="NetworkConnection" id="conn_A1_G0_C0_"/>
+ </rel>
+ <rel name="used_resources">
+  <ref class="ProcessingResource" id="cpus"/>
+ </rel>
 </obj>
 
 <obj class="DetectorConfig" id="dummy-detector">
@@ -311,6 +348,8 @@
  <attr name="recv_timeout_ms" type="bool" val="0"/>
  <rel name="inputs">
   <ref class="NetworkConnection" id="TR_tracking0"/>
+  <ref class="NetworkConnection" id="TR_tracking2"/>
+  <ref class="NetworkConnection" id="trdispatcher1"/>
  </rel>
  <rel name="outputs">
   <ref class="NetworkConnection" id="trdispatcher0"/>
@@ -326,6 +365,8 @@
  <rel name="inputs">
   <ref class="NetworkConnection" id="TR_tracking0"/>
   <ref class="NetworkConnection" id="conn_A0_G0_C0_"/>
+  <ref class="NetworkConnection" id="conn_A1_G0_C0_"/>
+  <ref class="NetworkConnection" id="bookkeeping1"/>
  </rel>
  <rel name="outputs">
   <ref class="NetworkConnection" id="TR_tracking0"/>
@@ -344,13 +385,40 @@
  <rel name="associated_service" class="Service" id="local-connectivity-service-trk0"/>
 </obj>
 
-<obj class="NetworkConnection" id="bk0">
+<obj class="NetworkConnection" id="TR_tracking1">
  <attr name="data_type" type="string" val="init_t"/>
  <attr name="send_timeout_ms" type="u32" val="1000"/>
  <attr name="recv_timeout_ms" type="u32" val="1000"/>
  <attr name="connection_type" type="enum" val="kSendRecv"/>
- <attr name="address" type="string" val="tcp://10.0.0.13:53000"/>
+ <attr name="address" type="string" val="tcp://10.0.0.13:13001"/>
+ <rel name="associated_service" class="Service" id="local-connectivity-service-trk1"/>
+</obj>
+
+<obj class="NetworkConnection" id="TR_tracking2">
+ <attr name="data_type" type="string" val="init_t"/>
+ <attr name="send_timeout_ms" type="u32" val="1000"/>
+ <attr name="recv_timeout_ms" type="u32" val="1000"/>
+ <attr name="connection_type" type="enum" val="kSendRecv"/>
+ <attr name="address" type="string" val="tcp://10.0.0.13:13002"/>
+ <rel name="associated_service" class="Service" id="local-connectivity-service-trk2"/>
+</obj>
+
+<obj class="NetworkConnection" id="bookkeeping0">
+ <attr name="data_type" type="string" val="bk_t"/>
+ <attr name="send_timeout_ms" type="u32" val="1000"/>
+ <attr name="recv_timeout_ms" type="u32" val="1000"/>
+ <attr name="connection_type" type="enum" val="kSendRecv"/>
+ <attr name="address" type="string" val="tcp://10.0.0.13:33000"/>
  <rel name="associated_service" class="Service" id="local-connectivity-service-bk0"/>
+</obj>
+
+<obj class="NetworkConnection" id="bookkeeping1">
+ <attr name="data_type" type="string" val="bk_t"/>
+ <attr name="send_timeout_ms" type="u32" val="1000"/>
+ <attr name="recv_timeout_ms" type="u32" val="1000"/>
+ <attr name="connection_type" type="enum" val="kSendRecv"/>
+ <attr name="address" type="string" val="tcp://10.0.0.13:33001"/>
+ <rel name="associated_service" class="Service" id="local-connectivity-service-bk1"/>
 </obj>
 
 <obj class="NetworkConnection" id="conn_A0_G0_C0_">
@@ -362,6 +430,15 @@
  <rel name="associated_service" class="Service" id="local-connectivity-service-tr0"/>
 </obj>
 
+<obj class="NetworkConnection" id="conn_A1_G0_C0_">
+ <attr name="data_type" type="string" val="TriggerRecord"/>
+ <attr name="send_timeout_ms" type="u32" val="10"/>
+ <attr name="recv_timeout_ms" type="u32" val="10"/>
+ <attr name="connection_type" type="enum" val="kPubSub"/>
+ <attr name="address" type="string" val="tcp://10.0.0.13:15501"/>
+ <rel name="associated_service" class="Service" id="local-connectivity-service-tr1"/>
+</obj>
+
 <obj class="NetworkConnection" id="trdispatcher0">
  <attr name="data_type" type="string" val="init_t"/>
  <attr name="send_timeout_ms" type="u32" val="1000"/>
@@ -369,6 +446,24 @@
  <attr name="connection_type" type="enum" val="kSendRecv"/>
  <attr name="address" type="string" val="tcp://10.0.0.13:23000"/>
  <rel name="associated_service" class="Service" id="local-connectivity-service-trd0"/>
+</obj>
+
+<obj class="NetworkConnection" id="trdispatcher1">
+ <attr name="data_type" type="string" val="init_t"/>
+ <attr name="send_timeout_ms" type="u32" val="1000"/>
+ <attr name="recv_timeout_ms" type="u32" val="1000"/>
+ <attr name="connection_type" type="enum" val="kSendRecv"/>
+ <attr name="address" type="string" val="tcp://10.0.0.13:23001"/>
+ <rel name="associated_service" class="Service" id="local-connectivity-service-trd1"/>
+</obj>
+
+<obj class="NetworkConnection" id="trwriter0">
+ <attr name="data_type" type="string" val="init_t"/>
+ <attr name="send_timeout_ms" type="u32" val="1000"/>
+ <attr name="recv_timeout_ms" type="u32" val="1000"/>
+ <attr name="connection_type" type="enum" val="kSendRecv"/>
+ <attr name="address" type="string" val="tcp://10.0.0.13:24000"/>
+ <rel name="associated_service" class="Service" id="local-connectivity-service-trw0"/>
 </obj>
 
 <obj class="OpMonURI" id="local-opmon-uri">
@@ -417,7 +512,12 @@
 
 <obj class="Service" id="local-connectivity-service-bk0">
  <attr name="protocol" type="string" val="tcp"/>
- <attr name="port" type="u16" val="53000"/>
+ <attr name="port" type="u16" val="33000"/>
+</obj>
+
+<obj class="Service" id="local-connectivity-service-bk1">
+ <attr name="protocol" type="string" val="tcp"/>
+ <attr name="port" type="u16" val="33001"/>
 </obj>
 
 <obj class="Service" id="local-connectivity-service-tr0">
@@ -425,14 +525,39 @@
  <attr name="port" type="u16" val="15500"/>
 </obj>
 
+<obj class="Service" id="local-connectivity-service-tr1">
+ <attr name="protocol" type="string" val="tcp"/>
+ <attr name="port" type="u16" val="15501"/>
+</obj>
+
 <obj class="Service" id="local-connectivity-service-trd0">
  <attr name="protocol" type="string" val="tcp"/>
  <attr name="port" type="u16" val="23000"/>
 </obj>
 
+<obj class="Service" id="local-connectivity-service-trd1">
+ <attr name="protocol" type="string" val="tcp"/>
+ <attr name="port" type="u16" val="23001"/>
+</obj>
+
 <obj class="Service" id="local-connectivity-service-trk0">
  <attr name="protocol" type="string" val="tcp"/>
  <attr name="port" type="u16" val="13000"/>
+</obj>
+
+<obj class="Service" id="local-connectivity-service-trk1">
+ <attr name="protocol" type="string" val="tcp"/>
+ <attr name="port" type="u16" val="13001"/>
+</obj>
+
+<obj class="Service" id="local-connectivity-service-trk2">
+ <attr name="protocol" type="string" val="tcp"/>
+ <attr name="port" type="u16" val="13002"/>
+</obj>
+
+<obj class="Service" id="local-connectivity-service-trw0">
+ <attr name="protocol" type="string" val="tcp"/>
+ <attr name="port" type="u16" val="24000"/>
 </obj>
 
 <obj class="Service" id="my-controller_control">
@@ -460,9 +585,12 @@
  <rel name="inputs">
   <ref class="NetworkConnection" id="TR_tracking0"/>
   <ref class="NetworkConnection" id="trdispatcher0"/>
+  <ref class="NetworkConnection" id="TR_tracking1"/>
+  <ref class="NetworkConnection" id="TR_tracking2"/>
  </rel>
  <rel name="outputs">
   <ref class="NetworkConnection" id="conn_A0_G0_C0_"/>
+  <ref class="NetworkConnection" id="bookkeeping0"/>
  </rel>
  <rel name="used_resources">
   <ref class="ProcessingResource" id="cpus"/>

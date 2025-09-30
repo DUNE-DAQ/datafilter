@@ -9,8 +9,8 @@
  * received with this code.
  */
 
-#ifndef DFBACKEND_PLUGINS_TRDISPATCHER_HPP_
-#define DFBACKEND_PLUGINS_TRDISPATCHER_HPP_
+#ifndef DATAFILTER_PLUGINS_TRDISPATCHER_HPP_
+#define DATAFILTER_PLUGINS_TRDISPATCHER_HPP_
 
 #include <atomic>
 #include <execution>
@@ -75,7 +75,7 @@ public:
   explicit TRDispatcher(const std::string &name);
 
   void init(std::shared_ptr<appfwk::ConfigurationManager>) override;
-  void init_app(std::shared_ptr<appfwk::ConfigurationManager>);
+  void init2(std::shared_ptr<appfwk::ConfigurationManager>);
   void receive(size_t dataflow_run_number1, pid_t subscriber, bool is_hdf5file);
 
   void send_tr_from_hdf5file(size_t dataflow_run_number1, pid_t subscriber);
@@ -87,7 +87,6 @@ public:
   TRDispatcher &operator=(const TRDispatcher &) = delete;
   TRDispatcher(TRDispatcher &&) = delete;
   TRDispatcher &operator=(TRDispatcher &&) = delete;
-
   ~TRDispatcher() = default;
 
 protected:
@@ -107,6 +106,7 @@ private:
   void do_conf(const data_t &);
   void do_start(const data_t &);
   void do_stop(const data_t &);
+  void do_work(std::atomic<bool> &running_flag);
 
   // Threading
   // dunedaq::utilities::WorkerThread m_thread;
@@ -120,6 +120,8 @@ private:
   std::string data_type;
   std::string conn_type_str;
 
+  // std::unique_ptr<dunedaq::utilities::WorkerThread> m_thread_ptr = nullptr;
+  dunedaq::utilities::WorkerThread m_thread;
   std::string m_init_connection;
   std::string m_trigger_record_connection;
   std::chrono::milliseconds m_send_timeout_ms{100};
@@ -146,6 +148,7 @@ private:
       "/lcg/storage19/test-area/dune-v4-spack-integration2/sourcecode/"
       "daqconf/config/";
 
+  std::string m_oksConfig = "oksconflibs:test/config/dfSession.data.xml";
   // Configuration
   std::shared_ptr<appfwk::ConfigurationManager> m_mcfg;
 
@@ -153,6 +156,7 @@ private:
   std::shared_ptr<dunedaq::iomanager::SenderConcept<trigger_record_ptr_t>>
       sender;
 
+  std::string m_session_name = "test-session";
   // TO dfbackend DEVELOPERS: PLEASE DELETE THIS FOLLOWING COMMENT AFTER
   // READING IT m_total_amount and m_amount_since_last_get_info_call are
   // examples of variables whose values get reported to OpMon
@@ -166,4 +170,4 @@ private:
 };
 
 } // namespace dunedaq::datafilter
-#endif // DFBACKEND_PLUGINS_TRDISPATCHER_HPP_
+#endif // DATAFILTER_PLUGINS_TRDISPATCHER_HPP_

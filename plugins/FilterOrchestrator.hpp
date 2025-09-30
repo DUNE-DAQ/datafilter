@@ -58,7 +58,7 @@ public:
   explicit FilterOrchestrator(const std::string &name);
 
   void init(std::shared_ptr<appfwk::ConfigurationManager>) override;
-  void init_app(std::shared_ptr<appfwk::ConfigurationManager>);
+  void init2(std::shared_ptr<appfwk::ConfigurationManager>);
   void send(size_t run_number, pid_t subscriber_pid);
   void request_next_tr(size_t run_number, pid_t subscriber_pid);
   void receive(size_t dataflow_run_number1, pid_t subscriber_pid);
@@ -93,6 +93,8 @@ private:
   std::string address;
   std::string data_type;
   std::string conn_type_str;
+
+  std::string m_oksConfig = "oksconflibs:test/config/dfSession.data.xml";
 
   // Configuration
   std::shared_ptr<appfwk::ConfigurationManager> m_mcfg;

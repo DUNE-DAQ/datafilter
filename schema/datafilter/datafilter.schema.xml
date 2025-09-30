@@ -80,12 +80,29 @@
 
 <oks-schema>
 
-<info name="" type="" num-of-items="3" oks-format="schema" oks-version="862f2957270" created-by="gjc" created-on="thinkpad" creation-time="20231110T125843" last-modified-by="chen" last-modified-on="atlas13.lps.umontreal.ca" last-modification-time="20250915T042210"/>
+<info name="" type="" num-of-items="5" oks-format="schema" oks-version="862f2957270" created-by="gjc" created-on="thinkpad" creation-time="20231110T125843" last-modified-by="chen" last-modified-on="atlas13.lps.umontreal.ca" last-modification-time="20250926T153341"/>
 
 <include>
  <file path="schema/confmodel/dunedaq.schema.xml"/>
 </include>
 
+
+ <class name="DataFilter">
+  <superclass name="DaqModule"/>
+  <attribute name="send_timeout_ms" type="bool" init-value="1000" is-not-null="yes"/>
+  <attribute name="recv_timeout_ms" type="bool" init-value="1000" is-not-null="yes"/>
+ </class>
+
+ <class name="DataFilterConfig">
+  <attribute name="seq_number" type="u32" init-value="0" is-not-null="yes"/>
+  <attribute name="trigger_number" type="u32" init-value="1" is-not-null="yes"/>
+  <attribute name="trigger_timestamp" type="u64" init-value="0" is-not-null="yes"/>
+  <attribute name="file_index" type="u32" init-value="0" is-not-null="yes"/>
+  <attribute name="element_id" type="u32" init-value="0" is-not-null="yes"/>
+  <attribute name="detector_id" type="u32" init-value="0" is-not-null="yes"/>
+  <attribute name="error_bits" type="u32" init-value="0" is-not-null="yes"/>
+  <attribute name="fragment_type" type="u32" init-value="0" is-not-null="yes"/>
+ </class>
 
  <class name="FilterOrchestrator">
   <superclass name="DaqModule"/>

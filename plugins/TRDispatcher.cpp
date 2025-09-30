@@ -13,14 +13,14 @@
 namespace dunedaq::datafilter {
 
 TRDispatcher::TRDispatcher(const std::string &name)
-    : dunedaq::appfwk::DAQModule(name) {
+    : dunedaq::appfwk::DAQModule(name),
+      m_thread(std::bind(&TRDispatcher::do_work, this, std::placeholders::_1)) {
   register_command("conf", &TRDispatcher::do_conf);
   register_command("start", &TRDispatcher::do_start);
   register_command("stop", &TRDispatcher::do_stop);
 }
 
-void TRDispatcher::init_app(
-    std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
+void TRDispatcher::init2(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
   auto iom = iomanager::IOManager::get();
   TLOG() << get_name() << ": Entering init() method";
   m_mcfg = mcfg;
@@ -66,12 +66,9 @@ void TRDispatcher::init_app(
 
 void TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
   TLOG() << "Module name: " << get_name();
-  std::string appName = "TestApp";
-  std::string connectionName = "trdispatcher0";
-  std::string session_name = "test-session";
-  std::string m_oksConfig = "oksconflibs:test/config/dfSession.data.xml";
 
   dunedaq::conffwk::Configuration *confdb;
+
   try {
     confdb = new conffwk::Configuration(m_oksConfig);
 
@@ -79,166 +76,49 @@ void TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
     std::cout << "Failed to load OKS database: " << exc << std::endl;
   }
 
-  // std::cout << "Attempting to get DAL session..." << std::endl;
-  // auto dal_session =
-  // mcfg->get_dal<dunedaq::confmodel::Session>("test-session");
+  confdb->get<dunedaq::confmodel::Queue>(m_queues);
+  confdb->get<dunedaq::confmodel::NetworkConnection>(m_networkconnections);
+}
 
-  try {
-    // m_application = confdb->get<confmodel::Application>(appName);
-    m_application = mcfg->get_dal<confmodel::Application>(appName);
-  } catch (const std::exception &e) {
-    TLOG() << "Failed to get application from config: " << e.what();
-    m_application = nullptr;
-  }
-  auto daq_app = m_application->cast<confmodel::DaqApplication>();
-
-  if (daq_app) {
-    auto modules = daq_app->get_modules();
-    m_modules.assign(modules.begin(), modules.end());
-  }
-
-  std::set<std::string> connectionsAdded;
-
-  TLOG() << "Number of modules: " << m_modules.size();
-  for (auto mod : m_modules) {
-
-    if (mod == nullptr) {
-      TLOG() << "Found null module pointer!";
-      continue;
-    }
-    TLOG() << "initialising " << mod->class_name() << " module " << mod->UID();
-    auto connections = mod->get_inputs();
-    auto outputs = mod->get_outputs();
-    connections.insert(connections.end(), outputs.begin(), outputs.end());
-    for (auto con : connections) {
-      TLOG() << "Application " << con->UID();
-
-      auto [c, inserted] = connectionsAdded.insert(con->UID());
-      if (!inserted) {
-        // Already handled this connection, don't add it
-        continue;
-      }
-      auto queue = confdb->cast<confmodel::Queue>(con);
-      if (queue) {
-        TLOG() << "Adding queue " << queue->UID();
-        m_queues.emplace_back(queue);
-      }
-      auto net_con = confdb->cast<confmodel::NetworkConnection>(con);
-      TLOG() << "Application NetworkConnection: " << net_con->UID();
-      if (net_con) {
-        m_networkconnections.emplace_back(net_con);
-      }
-    }
-  }
-
-  dunedaq::iomanager::ConnectionInfo conn_info;
-  std::vector<dunedaq::iomanager::ConnectionInfo> connection_infos;
-
-  TLOG() << "=== Debugging Network Connections ===";
-  for (const auto &conn : m_networkconnections) {
-
-    std::string conn_id = conn->UID();
-    TLOG() << "Connection: " << conn_id;
-
-    // Get the ConfigObject using the same method as your main code
-    conffwk::ConfigObject config_obj;
-    try {
-      confdb->get("NetworkConnection", conn_id, config_obj);
-
-      // Check what attributes are available
-      TLOG() << "  Available attributes:";
-
-      try {
-        config_obj.get("address", address);
-        TLOG() << "    address: '" << address << "'";
-      } catch (...) {
-        TLOG() << "    address: NOT FOUND";
-      }
-
-      try {
-        config_obj.get("data_type", data_type);
-        TLOG() << "Data type: " << data_type;
-      } catch (...) {
-        TLOG() << "Using default data type";
-        data_type = "init_t";
-      }
-
-      try {
-        config_obj.get("connection_type", conn_type_str);
-        TLOG() << "Connection type: " << conn_type_str;
-      } catch (...) {
-        TLOG() << "Using default connection type";
-        conn_type_str = "kSendRecv";
-      }
-
-      // Create ConnectionInfo for IOManager
-      conn_info.uid = conn_id;
-      conn_info.uri = address; // This is the critical part!
-      conn_info.data_type = data_type;
-
-      // Set connection type
-      if (conn_type_str == "kSendRecv") {
-        conn_info.connection_type =
-            dunedaq::iomanager::ConnectionType::kSendRecv;
-      } else if (conn_type_str == "kPubSub") {
-        conn_info.connection_type = dunedaq::iomanager::ConnectionType::kPubSub;
-      }
-
-      connection_infos.push_back(conn_info);
-
-      TLOG() << "Successfully configured connection: " << conn_id
-             << " with URI: " << address;
-    } catch (const std::exception &e) {
-      TLOG() << "  ERROR getting config object: " << e.what();
-    }
-  }
-
-  TLOG() << "Configured " << connection_infos.size() << " network connections";
-
-  // Process queues (convert to ConnectionInfo if needed)
-  std::vector<dunedaq::iomanager::ConnectionInfo> queue_infos;
-  for (const auto &queue : m_queues) {
-    dunedaq::iomanager::ConnectionInfo queue_info;
-    queue_info.uid = queue->UID();
-    // queue_info.connection_type = dunedaq::iomanager::ConnectionType::kQueue;
-    //  Queues typically don't need URIs as they're internal
-    queue_infos.push_back(queue_info);
-    TLOG() << "Added queue info: " << queue->UID();
-  }
-
-  // Combine all connection infos
-  connection_infos.insert(connection_infos.end(), queue_infos.begin(),
-                          queue_infos.end());
-
-  TLOG() << "Configuring IOManager with " << connection_infos.size()
-         << " connections";
-
-  // Configure IOManager with the properly constructed connection infos
+void TRDispatcher::do_conf(const data_t &) {
+  // auto iom = iomanager::IOManager::get();
+  TLOG() << get_name() << " do_conf()";
   dunedaq::opmonlib::TestOpMonManager opmgr;
-
   try {
     TLOG() << "Configure IOManager...";
-    get_iomanager()->configure(session_name, m_queues, m_networkconnections,
+    get_iomanager()->configure(m_session_name, m_queues, m_networkconnections,
                                nullptr, opmgr);
   } catch (const std::exception &e) {
-    TLOG() << "Method 2 also failed: " << e.what();
+    TLOG() << "Failed to configure IOManager. " << e.what();
     throw;
   }
-  TLOG() << "=== End Debug ===";
 
-  // // Create receiver manually (example for Handshake type)
-  // TLOG() << "conn_info.uid " << connection_infos[1].uid;
-  // auto cb_receiver =
-  // dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
-  //     connection_infos[1].uid);
+  TLOG() << get_name() << ": exist do_conf()";
+}
 
-  // std::function<void(const dunedaq::datafilter::Handshake)> str_receiver_cb =
-  //     [&](dunedaq::datafilter::Handshake msg) {
-  //       TLOG() << "Received message: " << msg.msg_id;
-  //     };
-  // // Add callback as you already do
-  // cb_receiver->add_callback(str_receiver_cb);
-  receive(0, 0, 0);
+void TRDispatcher::do_start(const data_t &) {
+
+  // TLOG() << get_name() << " do_start()";
+  // m_thread_ptr = std::make_unique<dunedaq::utilities::WorkerThread>(do_work);
+  // m_thread.start_working_thread();
+  receive(0, 0, 1);
+  // TLOG() << get_name() << ": exist do_start()";
+}
+void TRDispatcher::do_stop(const data_t & /* do not pass an argument*/) {
+
+  TLOG() << get_name() << " do_stop()";
+  // m_thread.stop_working_thread();
+
+  TLOG() << get_name() << ": exist do_stop()";
+}
+
+void TRDispatcher::do_work(std::atomic<bool> &running_flag) {
+
+  // TLOG() << get_name() << " do_work()";
+  // while (running_flag.load()) {
+  // receive(0, 0, 0);
+  // }
+  // TLOG() << get_name() << ": exist do_work()";
 }
 
 void TRDispatcher::generate_opmon_data() {
@@ -256,9 +136,7 @@ void TRDispatcher::receive(size_t dataflow_run_number1, pid_t subscriber_pid,
 
   auto cb_receiver = dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
       "trdispatcher0");
-  // auto cb_receiver =
-  // dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
-  //     "trdispatcher0");
+
   std::function<void(dunedaq::datafilter::Handshake)> str_receiver_cb =
       [&](dunedaq::datafilter::Handshake msg) {
         if (msg.msg_id == "trdispatcher0") {
@@ -464,6 +342,7 @@ void TRDispatcher::send_tr(size_t dataflow_run_number, pid_t subscriber_pid) {
       std::end(trdispatchers), [=](std::shared_ptr<TRDispatcherInfo> info) {
         auto before_sender = std::chrono::steady_clock::now();
 
+        m_trdispatcher_id = "conn_A0_G0_C0_"; // to get it from config.
         info->sender =
             dunedaq::get_iom_sender<trigger_record_ptr_t>(m_trdispatcher_id);
         auto after_sender = std::chrono::steady_clock::now();
@@ -708,16 +587,6 @@ void TRDispatcher::send_tr_from_hdf5file(size_t dataflow_run_number,
     sender->send_thread.reset(nullptr);
   }
 }
-
-void TRDispatcher::do_conf(const data_t & /* do not pass an argument*/) {
-  auto iom = iomanager::IOManager::get();
-  TLOG() << get_name() << " do_conf()";
-  // iom->add_callback<Handshake>(m_init_connection);
-  TLOG() << get_name() << ": exist do_conf()";
-}
-
-void TRDispatcher::do_start(const data_t &) {}
-void TRDispatcher::do_stop(const data_t & /* do not pass an argument*/) {}
 
 } // namespace dunedaq::datafilter
 

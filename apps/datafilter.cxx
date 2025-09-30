@@ -13,6 +13,7 @@
 #include "appfwk/ConfigurationManager.hpp" // Needed for get_dal
 #include "appfwk/DAQModule.hpp"
 #include "datafilter/commandline_args.hpp"
+#include "datafilter/dal/DataFilterConfig.hpp"
 #include "datafilter/make_config_mgr.hpp"
 #include "ers/ers.hpp"
 
@@ -21,6 +22,9 @@ using data_t = nlohmann::json;
 
 int main(int argc, char *argv[]) {
 
+  // dunedaq::datafilter::dal::DataFilterConfig::DataFilterConfig
+  // datafilter_cfg;
+
   dunedaq::datafilter::CommandLineArgs args;
   int result =
       dunedaq::datafilter::parseCommandLine(argc, argv, args, "Data Filter");
@@ -28,19 +32,20 @@ int main(int argc, char *argv[]) {
   if (result != 2)
     return result;
 
-  // data_t trdispatcher_cfg = { { "app_name", args.appName }, { "sessionName",
-  // args.sessionName } };
+  data_t datafilter_cfg = {{"app_name", args.appName},
+                           {"sessionName", args.sessionName}};
 
-  // auto mgr1 = dunedaq::datafilter::make_config_mgr(args.appName,
-  // args.sessionName, args.oksConfig);
+  auto mgr1 = dunedaq::datafilter::make_config_mgr(
+      args.appName, args.sessionName, args.oksConfig);
 
-  // TLOG() << "Creating Module instances for TRDispatcher...";
-  // std::shared_ptr<dunedaq::appfwk::DAQModule> trdispatcher1 =
-  // make_module("TRDispatcher", "TRDispatcher_0"); TLOG() << "Calling init on
-  // modules..."; trdispatcher1->init(mgr1);
-  // trdispatcher1->execute_command("conf", trdispatcher_cfg);
-  // trdispatcher1->execute_command("start", trdispatcher_cfg);
-  // trdispatcher1->execute_command("stop", trdispatcher_cfg);
+  TLOG() << "Creating Module instances for DataFilter...";
+  std::shared_ptr<dunedaq::appfwk::DAQModule> datafilter1 =
+      make_module("DataFilter", "DataFilter_0");
+  TLOG() << "Calling init on modules... ";
+  datafilter1->init(mgr1);
+  datafilter1->execute_command("conf", datafilter_cfg);
+  datafilter1->execute_command("start", datafilter_cfg);
+  datafilter1->execute_command("stop", datafilter_cfg);
 
   return 0;
 }

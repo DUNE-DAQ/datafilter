@@ -10,17 +10,155 @@
 
 #include "FilterResultWriter.hpp"
 
+#include <optional>
+
 using dunedaq::datafilter::FilterResultWriter;
 
 namespace dunedaq::datafilter {
 
 FilterResultWriter::FilterResultWriter(const std::string &name)
-    : dunedaq::appfwk::DAQModule(name) {
+    : dunedaq::appfwk::DAQModule(name),
+      m_thread(
+          std::bind(&FilterResultWriter::do_work, this, std::placeholders::_1)),
+      m_bk_thread(std::bind(&FilterResultWriter::receive_attrs, this,
+                            std::placeholders::_1)) {
   register_command("conf", &FilterResultWriter::do_conf);
+  register_command("start", &FilterResultWriter::do_start);
+  register_command("stop", &FilterResultWriter::do_stop);
 }
 
 void FilterResultWriter::FilterResultWriter::init(
-    std::shared_ptr<appfwk::ConfigurationManager> /* mcfg */) {}
+    std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
+  TLOG() << "Module name: " << get_name();
+
+  dunedaq::conffwk::Configuration *confdb;
+
+  try {
+    confdb = new conffwk::Configuration(m_oksConfig);
+
+  } catch (conffwk::Generic &exc) {
+    std::cout << "Failed to load OKS database: " << exc << std::endl;
+  }
+
+  confdb->get<dunedaq::confmodel::Queue>(m_queues);
+  confdb->get<dunedaq::confmodel::NetworkConnection>(m_networkconnections);
+}
+
+void FilterResultWriter::do_conf(const data_t &) {
+  // auto iom = iomanager::IOManager::get();
+  TLOG() << get_name() << " do_conf()";
+  dunedaq::opmonlib::TestOpMonManager opmgr;
+  try {
+    TLOG() << "Configure IOManager...";
+    get_iomanager()->configure(m_session_name, m_queues, m_networkconnections,
+                               nullptr, opmgr);
+  } catch (const std::exception &e) {
+    TLOG() << "Failed to configure IOManager. " << e.what();
+    throw;
+  }
+
+  TLOG() << get_name() << ": exist do_conf()";
+}
+
+void FilterResultWriter::do_start(const data_t &) {
+  // TLOG() << get_name() << " do_start()";
+  // m_bk_thread.start_working_thread();
+  // m_thread.start_working_thread();
+  // TLOG() << get_name() << ": exist do_start()";
+
+  start_attrs_test_thread();
+  //  receive_tr(0);
+}
+void FilterResultWriter::do_stop(const data_t & /* do not pass an argument*/) {
+  TLOG() << get_name() << " do_stop()";
+  stop_attrs_test_thread();
+  // m_thread.stop_working_thread();
+  // m_bk_thread.start_working_thread();
+
+  TLOG() << get_name() << ": exist do_stop()";
+}
+
+void FilterResultWriter::do_work(std::atomic<bool> &running) {
+  while (1) {
+    receive_tr(0);
+  }
+}
+// void FilterResultWriter::attrs_thread(std::atomic<bool> &running) {
+//   while (1) {
+//     receive_attrs();
+//   }
+// }
+void FilterResultWriter::attrs_test_loop() {
+  using BK = dunedaq::datafilter::BookKeeping;
+
+  TLOG() << "attrs_test_loop: starting std::thread receiver";
+
+  auto receiver = dunedaq::get_iom_receiver<BK>("bookkeeping1");
+  // auto receiver = dunedaq::get_iom_receiver<Handshake>("trdispatcher0");
+  if (!receiver) {
+    TLOG() << "attrs_test_loop: failed to get 'bookkeeping1' receiver";
+    m_attrs_test_running.store(false, std::memory_order_release);
+    return;
+  }
+
+  std::function<void(BK &)> cb = [&](BK bk) {
+    // Extract "file_index"
+    for (const auto &kv : bk.file_attributes_info) {
+      if (kv.first == "file_index") {
+        try {
+          const int idx = std::stoi(kv.second);
+          // Ensure these are thread-safe (atomic or mutex-protected)
+          FilterResultWriter::set_file_index(idx);
+        } catch (const std::exception &e) {
+          TLOG() << "attrs_test_loop: invalid file_index '" << kv.second
+                 << "' (" << e.what() << ")";
+        }
+        break;
+      }
+    }
+
+    TLOG_DEBUG(1) << "BookKeeping from " << bk.from_id
+                  << " run=" << bk.run_number
+                  << " file_index=" << FilterResultWriter::get_file_index();
+  };
+
+  TLOG() << "attrs_test_loop: registering callback";
+  receiver->add_callback(cb);
+
+  // Keep callback alive for entire run; block here until stop requested
+  {
+    std::unique_lock<std::mutex> lk(m_attrs_test_mtx);
+    m_attrs_test_cv.wait(lk, [this] {
+      return !m_attrs_test_running.load(std::memory_order_relaxed);
+    });
+  }
+
+  TLOG() << "attrs_test_loop: removing callback and exiting";
+  receiver->remove_callback();
+}
+
+void FilterResultWriter::start_attrs_test_thread() {
+  // prevent double-start
+  bool was_running =
+      m_attrs_test_running.exchange(true, std::memory_order_acq_rel);
+  if (was_running)
+    return;
+
+  m_attrs_test_thread = std::thread(&FilterResultWriter::attrs_test_loop, this);
+}
+
+void FilterResultWriter::stop_attrs_test_thread() {
+  bool was_running =
+      m_attrs_test_running.exchange(false, std::memory_order_acq_rel);
+  if (!was_running)
+    return;
+
+  // Wake the thread if it's waiting
+  m_attrs_test_cv.notify_all();
+
+  if (m_attrs_test_thread.joinable())
+    m_attrs_test_thread.join();
+}
 
 std::string
 FilterResultWriter::generate_hdf5file_pathname(std::string file_pathname_prefix,
@@ -54,49 +192,164 @@ dunedaq::hdf5libs::HDF5FileLayoutParameters create_file_layout_params() {
   return layout_params;
 }
 
-void FilterResultWriter::receive_attrs() {
-  TLOG() << "Receive attrs==================================";
-  std::atomic<unsigned int> received_cnt{0};
-  std::atomic<bool> is_done{false};
+// void FilterResultWriter::receive_attrs(std::atomic<bool> &running) {
+//   TLOG() << "Receive attrs==================================";
+//   std::atomic<unsigned int> received_cnt{0};
+//   std::atomic<bool> is_done{false};
 
-  auto cb_receiver =
-      dunedaq::get_iom_receiver<dunedaq::datafilter::BookKeeping>(
-          "bookkeeping1");
-  if (!cb_receiver) {
-    TLOG() << "Failed to get bookkeeping receiver";
+//   auto cb_receiver =
+//       dunedaq::get_iom_receiver<dunedaq::datafilter::BookKeeping>(
+//           "bookkeeping1");
+//   if (!cb_receiver) {
+//     TLOG() << "Failed to get bookkeeping receiver";
+//     return;
+//   }
+
+//   std::function<void(dunedaq::datafilter::BookKeeping)> str_receiver_cb =
+//       [&](dunedaq::datafilter::BookKeeping bk) {
+//         ++received_cnt;
+//         if (received_cnt == 1) {
+//           if (auto it = std::find_if(
+//                   bk.file_attributes_info.begin(),
+//                   bk.file_attributes_info.end(),
+//                   [](const auto &p) { return p.first == "file_index"; });
+//               it != bk.file_attributes_info.end()) {
+//             // m_file_index = it->second;
+//             dunedaq::datafilter::FilterResultWriter::set_file_index(
+//                 std::stoi(it->second));
+//           }
+//         }
+//         TLOG() << "Processing bookkeeping attributes # " << received_cnt
+//                << " from " << bk.from_id << " (Run: " << bk.run_number
+//                << " file index: " << get_file_index() << ")";
+//       };
+
+//   TLOG() << "Registering callback...";
+//   cb_receiver->add_callback(str_receiver_cb);
+//   TLOG() << "Callback registered, entering main loop";
+//   while (!is_done) {
+//     if (received_cnt == 1) {
+//       TLOG() << "Check received_cnt" << received_cnt;
+//       is_done = true;
+//     }
+//   }
+//   TLOG() << "Cleaning up receiver";
+//   cb_receiver->remove_callback();
+// }
+
+// void FilterResultWriter::receive_attrs(std::atomic<bool> &running) {
+//   TLOG() << "BookKeeping attrs_thread starting";
+
+//   auto cb_receiver =
+//       dunedaq::get_iom_receiver<dunedaq::datafilter::BookKeeping>(
+//           "bookkeeping1");
+//   if (!cb_receiver) {
+//     TLOG() << "Failed to get bookkeeping receiver";
+//     return;
+//   }
+
+//   // Keep the callback tiny: parse + store
+//   auto cb =
+//       [this](dunedaq::datafilter::BookKeeping bkex(bk)) {
+//         // If you have set_file_index()/get_file_index() methods, ensure
+//         they
+//         // use atomics internally.
+//         s_file_index.store(*idx, std::memory_order_release);
+//       }
+
+//       TLOG_DEBUG(1)
+//       << "BookKeeping from " << bk.from_id << " run=" << bk.run_number
+//       << " file_index=" << s_file_index.load(std::memory_order_acquire);
+// };
+
+// TLOG() << "Registering bookkeeping callback";
+// cb_receiver->add_callback(cb);
+
+// // Stay alive for the entire run; don’t spin—sleep a little and check
+// 'running' while (running.load(std::memory_order_relaxed)) {
+//   std::this_thread::sleep_for(std::chrono::milliseconds(200));
+// }
+
+// TLOG() << "Removing bookkeeping callback";
+// cb_receiver->remove_callback();
+
+// TLOG() << "BookKeeping receive_attrs exiting";
+// }
+
+// If your set/get are not already thread-safe, back them with an atomic.
+// (Comment this out if you already have thread-safe
+// set_file_index/get_file_index.)
+// static std::atomic<int> g_file_index_atomic{0};
+// inline void set_file_index_atomic(int v) {
+//   g_file_index_atomic.store(v, std::memory_order_release);
+// }
+// inline int get_file_index_atomic() {
+//   return g_file_index_atomic.load(std::memory_order_acquire);
+// }
+
+void FilterResultWriter::receive_attrs(std::atomic<bool> &running) {
+  TLOG() << "BookKeeping receive_attrs starting";
+
+  auto receiver = dunedaq::get_iom_receiver<dunedaq::datafilter::BookKeeping>(
+      "bookkeeping1");
+  if (!receiver) {
+    TLOG() << "Failed to get BookKeeping receiver 'bookkeeping1'";
     return;
   }
 
-  std::function<void(dunedaq::datafilter::BookKeeping)> str_receiver_cb =
+  std::function<void(dunedaq::datafilter::BookKeeping &)> cb =
       [&](dunedaq::datafilter::BookKeeping bk) {
-        ++received_cnt;
-        if (received_cnt == 1) {
-          if (auto it = std::find_if(
-                  bk.file_attributes_info.begin(),
-                  bk.file_attributes_info.end(),
-                  [](const auto &p) { return p.first == "file_index"; });
-              it != bk.file_attributes_info.end()) {
-            // m_file_index = it->second;
-            dunedaq::datafilter::FilterResultWriter::set_file_index(
-                std::stoi(it->second));
+        // Find "file_index" and update (keep this fast)
+        for (const auto &kv : bk.file_attributes_info) {
+          if (kv.first == "file_index") {
+            try {
+              const int idx = std::stoi(kv.second);
+              FilterResultWriter::set_file_index(
+                  idx); // <-- ensure this is thread-safe
+            } catch (const std::exception &e) {
+              TLOG() << "Invalid file_index value: '" << kv.second << "' ("
+                     << e.what() << ")";
+            }
+            break;
           }
         }
-        TLOG() << "Processing bookkeeping attributes # " << received_cnt
-               << " from " << bk.from_id << " (Run: " << bk.run_number
-               << " file index: " << get_file_index() << ")";
+
+        TLOG_DEBUG(1) << "BookKeeping from " << bk.from_id
+                      << " run=" << bk.run_number
+                      << " file_index=" << FilterResultWriter::get_file_index();
       };
 
-  TLOG() << "Registering callback...";
-  cb_receiver->add_callback(str_receiver_cb);
-  TLOG() << "Callback registered, entering main loop";
-  while (!is_done) {
-    if (received_cnt == 1) {
-      TLOG() << "Check received_cnt" << received_cnt;
-      is_done = true;
-    }
+  // std::function<void(dunedaq::datafilter::BookKeeping)> str_receiver_cb =
+  //     [&](dunedaq::datafilter::BookKeeping bk) {
+  //       ++received_cnt;
+  //       if (received_cnt == 1) {
+  //         if (auto it = std::find_if(
+  //                 bk.file_attributes_info.begin(),
+  //                 bk.file_attributes_info.end(),
+  //                 [](const auto &p) { return p.first == "file_index"; });
+  //             it != bk.file_attributes_info.end()) {
+  //           // m_file_index = it->second;
+  //           dunedaq::datafilter::FilterResultWriter::set_file_index(
+  //               std::stoi(it->second));
+  //         }
+  //       }
+  //       TLOG() << "Processing bookkeeping attributes # " << received_cnt
+  //              << " from " << bk.from_id << " (Run: " << bk.run_number
+  //              << " file index: " << get_file_index() << ")";
+  //     };
+
+  TLOG() << "Registering BookKeeping callback";
+  receiver->add_callback(cb);
+
+  // Keep callback alive for the entire run
+  while (running.load(std::memory_order_relaxed)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
   }
-  TLOG() << "Cleaning up receiver";
-  cb_receiver->remove_callback();
+
+  TLOG() << "Removing BookKeeping callback";
+  receiver->remove_callback();
+
+  TLOG() << "BookKeeping attrs_thread exiting";
 }
 
 void FilterResultWriter::receive_tr(size_t run_number1) {
@@ -195,7 +448,8 @@ void FilterResultWriter::receive_tr(size_t run_number1) {
             TLOG() << "Writing the TR to " << m_ofile_pathname;
 
             // create the file
-            // std::unique_ptr<HDF5RawDataFile> h5file_ptr(new HDF5RawDataFile(
+            // std::unique_ptr<HDF5RawDataFile> h5file_ptr(new
+            // HDF5RawDataFile(
             //     m_ofile_pathname, m_run_number, m_file_index, app_name,
             //     fl_pars, srcid_geoid_map, ".writing",
             //     HighFive::File::Overwrite));
@@ -299,8 +553,6 @@ void FilterResultWriter::generate_opmon_data() {
   info.set_amount_since_last_call(m_amount_since_last_call.exchange(0));
   publish(std::move(info));
 }
-
-void FilterResultWriter::do_conf(const data_t & /* do not pass an argument*/) {}
 
 } // namespace dunedaq::datafilter
 
