@@ -62,18 +62,18 @@ void FilterResultWriter::do_conf(const data_t &) {
 
 void FilterResultWriter::do_start(const data_t &) {
   // TLOG() << get_name() << " do_start()";
-  // m_bk_thread.start_working_thread();
-  // m_thread.start_working_thread();
+  m_bk_thread.start_working_thread();
+  m_thread.start_working_thread();
   // TLOG() << get_name() << ": exist do_start()";
 
-  start_attrs_test_thread();
+  // start_attrs_test_thread();
   //  receive_tr(0);
 }
 void FilterResultWriter::do_stop(const data_t & /* do not pass an argument*/) {
   TLOG() << get_name() << " do_stop()";
-  stop_attrs_test_thread();
-  // m_thread.stop_working_thread();
-  // m_bk_thread.start_working_thread();
+  // stop_attrs_test_thread();
+  m_thread.stop_working_thread();
+  m_bk_thread.start_working_thread();
 
   TLOG() << get_name() << ": exist do_stop()";
 }
@@ -83,18 +83,13 @@ void FilterResultWriter::do_work(std::atomic<bool> &running) {
     receive_tr(0);
   }
 }
-// void FilterResultWriter::attrs_thread(std::atomic<bool> &running) {
-//   while (1) {
-//     receive_attrs();
-//   }
-// }
+
 void FilterResultWriter::attrs_test_loop() {
   using BK = dunedaq::datafilter::BookKeeping;
 
   TLOG() << "attrs_test_loop: starting std::thread receiver";
 
   auto receiver = dunedaq::get_iom_receiver<BK>("bookkeeping1");
-  // auto receiver = dunedaq::get_iom_receiver<Handshake>("trdispatcher0");
   if (!receiver) {
     TLOG() << "attrs_test_loop: failed to get 'bookkeeping1' receiver";
     m_attrs_test_running.store(false, std::memory_order_release);
@@ -319,25 +314,6 @@ void FilterResultWriter::receive_attrs(std::atomic<bool> &running) {
                       << " file_index=" << FilterResultWriter::get_file_index();
       };
 
-  // std::function<void(dunedaq::datafilter::BookKeeping)> str_receiver_cb =
-  //     [&](dunedaq::datafilter::BookKeeping bk) {
-  //       ++received_cnt;
-  //       if (received_cnt == 1) {
-  //         if (auto it = std::find_if(
-  //                 bk.file_attributes_info.begin(),
-  //                 bk.file_attributes_info.end(),
-  //                 [](const auto &p) { return p.first == "file_index"; });
-  //             it != bk.file_attributes_info.end()) {
-  //           // m_file_index = it->second;
-  //           dunedaq::datafilter::FilterResultWriter::set_file_index(
-  //               std::stoi(it->second));
-  //         }
-  //       }
-  //       TLOG() << "Processing bookkeeping attributes # " << received_cnt
-  //              << " from " << bk.from_id << " (Run: " << bk.run_number
-  //              << " file index: " << get_file_index() << ")";
-  //     };
-
   TLOG() << "Registering BookKeeping callback";
   receiver->add_callback(cb);
 
@@ -412,6 +388,9 @@ void FilterResultWriter::receive_tr(size_t run_number1) {
   std::atomic<std::chrono::steady_clock::time_point> last_received =
       std::chrono::steady_clock::now();
   TLOG_DEBUG(5) << "Adding callbacks for each subscriber";
+  for (auto subscriber : subscribers) {
+    TLOG() << "subscriber ====> " << subscriber;
+  }
   std::for_each(
       std::execution::par_unseq, std::begin(subscribers), std::end(subscribers),
       [=, &last_received](std::shared_ptr<SubscriberInfo> info) {
@@ -466,6 +445,7 @@ void FilterResultWriter::receive_tr(size_t run_number1) {
           }
         };
 
+        m_init_connection = "conn_A1_G0_C0_";
         auto before_receiver = std::chrono::steady_clock::now();
         auto receiver = dunedaq::get_iom_receiver<
             std::unique_ptr<dunedaq::daqdataformats::TriggerRecord>>(

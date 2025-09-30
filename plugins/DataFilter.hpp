@@ -272,7 +272,7 @@ struct DataFilterConfig {
 
 struct TRRewriter {
   TRRewriter() {
-    setenv("DUNEDAQ_PARTITION", "IOManager_t", 0);
+    setenv("DUNEDAQ_PARTITION", "test-session", 0);
 
     std::cout << "from TRRewriter";
   }
@@ -1328,7 +1328,7 @@ struct DataFilterReceiver {
         std::chrono::steady_clock::now();
     TLOG() << "DataFilter::receive_tr: adding callbacks for each subscriber";
     for (auto r : receivers) {
-      TLOG() << "receivers " << r;
+      TLOG() << "receivers =======> " << r;
     }
     std::for_each(
         std::execution::par_unseq, std::begin(receivers), std::end(receivers),
@@ -1417,8 +1417,10 @@ struct DataFilterReceiver {
           TLOG() << "Using connection: " << info->get_connection_name(config);
 
           auto before_receiver = std::chrono::steady_clock::now();
-          auto receiver = dunedaq::get_iom_receiver<trigger_record_ptr_t>(
-              info->get_connection_name(config));
+          // auto receiver = dunedaq::get_iom_receiver<trigger_record_ptr_t>(
+          //     info->get_connection_name(config));
+          auto receiver =
+              dunedaq::get_iom_receiver<trigger_record_ptr_t>("conn_A0_G0_C0_");
           auto after_receiver = std::chrono::steady_clock::now();
           receiver->add_callback(recv_proc);
           auto after_callback = std::chrono::steady_clock::now();

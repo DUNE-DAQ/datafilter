@@ -310,6 +310,7 @@ void TRDispatcher::send_tr(size_t dataflow_run_number, pid_t subscriber_pid) {
   std::ostringstream ss;
   auto trig_num = dataflow_run_number;
 
+  m_trdispatcher_id = "conn_A0_G0_C0_"; // to get it from config.
   auto init_sender =
       dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>("TR_tracking2");
 
@@ -342,7 +343,6 @@ void TRDispatcher::send_tr(size_t dataflow_run_number, pid_t subscriber_pid) {
       std::end(trdispatchers), [=](std::shared_ptr<TRDispatcherInfo> info) {
         auto before_sender = std::chrono::steady_clock::now();
 
-        m_trdispatcher_id = "conn_A0_G0_C0_"; // to get it from config.
         info->sender =
             dunedaq::get_iom_sender<trigger_record_ptr_t>(m_trdispatcher_id);
         auto after_sender = std::chrono::steady_clock::now();
@@ -404,6 +404,7 @@ void TRDispatcher::send_tr_from_hdf5file(size_t dataflow_run_number,
                                          pid_t subscriber_pid) {
   std::ostringstream oss;
 
+  m_trdispatcher_id = "conn_A0_G0_C0_"; // to get it from config.
   HDF5RawDataFile h5_file(m_input_h5_filename);
   auto records = h5_file.get_all_record_ids();
   auto records_size = records.size();

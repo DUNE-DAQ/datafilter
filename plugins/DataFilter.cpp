@@ -109,14 +109,14 @@ void DataFilter::do_stop(const data_t &) {
   TLOG() << get_name() << ": exist do_stop()";
 }
 
-void DataFilter::do_work(std::atomic<bool> &) {
+void DataFilter::do_work(std::atomic<bool> &running) {
 
   dunedaq::datafilter::DataFilterConfig config;
   dunedaq::datafilter::RunInfo run_info;
   auto datafilter_id = std::to_string(config.my_id1);
   auto df_receiver = std::make_unique<dunedaq::datafilter::DataFilterReceiver>(
       config, run_info, datafilter_id);
-  while (true) {
+  while (1) {
     TLOG() << "Request next tr";
     df_receiver->organiser.request_next_tr();
     df_receiver->receive_tr(0);
