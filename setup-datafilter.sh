@@ -12,24 +12,26 @@ hn=`hostname -s`
 if [[ $hn == *"np02"* || $hn == *"np04"*  ]]; then
         echo "setup datafilter for np02 or np04"
         source ~np04daq/bin/web_proxy.sh
-	cd $HOME
+    	cd $HOME
         mkdir -p test-area
         INSTALL_DIR=$HOME/test-area/dune-v5-spack-datafilter-integration-test
 else
-        INSTALL_DIR=/lcg/storage19/test-area/dune-v5-spack-datafilter-integration-test
+        HOME=/lcg/storage19
+        INSTALL_DIR=/lcg/storage19/test-area/dune-v5-spack-datafilter-integration-test6
 fi
 
 # we take the second last tag 
-#NFD_PROD4_V=`ls -d /cvmfs/dunedaq-development.opensciencegrid.org/nightly/NFD_PROD4_*|sort|tail -2|head -1|cut -f5 -d "/"`
-#echo $NFD_PROD4_V
-DUNE_DAQ_release="fddaq-v5.3.2-rc3-a9" 
+#NFD_PROD5_V=`ls -d /cvmfs/dunedaq-development.opensciencegrid.org/nightly/NFD_PROD4_*|sort|tail -2|head -1|cut -f5 -d "/"`
+# temporary use the fddaq-v5.3.2-rc3
+NFD_PROD5_V="fddaq-v5.3.2-rc3-a9"
+DUNE_DAQ_release=$NFD_PROD5_V 
 echo $DUNE_DAQ_release
 
-if [ -d $HOME/test-area ]; then
+if [ -d /lcg/storage19/test-area ]; then
         source `realpath /cvmfs/dunedaq.opensciencegrid.org/spack-externals/spack-installation/share/spack/setup-env.sh`
         source /cvmfs/dunedaq.opensciencegrid.org/setup_dunedaq.sh
 
-        #v4 
+        #v5 
         setup_dbt latest
         dbt-create -b candidate $DUNE_DAQ_release $INSTALL_DIR/ 
 	if [ -d $INSTALL_DIR ]; then
@@ -37,25 +39,25 @@ if [ -d $HOME/test-area ]; then
                 source env.sh
                 cd sourcecode
                 
-                git clone https://github.com/DUNE-DAQ/daqconf.git -b production/v4
-                git clone https://github.com/DUNE-DAQ/daqsystemtest.git -b production/v4
-                git clone https://github.com/DUNE-DAQ/dfmodules.git -b production/v4
-                git clone https://github.com/DUNE-DAQ/fddaqconf.git -b production/v4
-                
-                cd daqconf ; git checkout 397b444b78; cd ..
-                cd daqsystemtest ; git checkout 695dfa94c56; cd ..
-                cd dfmodules ; git checkout bd61f366c; cd ..
-                cd fddaqconf ; git checkout 0575bb1ade; cd ..
-                
-                git clone https://github.com/DUNE-DAQ/hdf5libs.git -b fddaq-v4.1.0
-                git clone https://github.com/DUNE-DAQ/detchannelmaps.git
+                git clone https://github.com/DUNE-DAQ/daqsystemtest.git 
+                git clone https://github.com/DUNE-DAQ/fddaqconf.git -b coredaq-v5.4.3
+               
+                git clone https://github.com/DUNE-DAQ/hdf5libs.git -b develop
                 git clone https://github.com/DUNE-DAQ/detdataformats.git
                 git clone https://github.com/DUNE-DAQ/fddetdataformats.git 
                 git clone https://github.com/DUNE-DAQ/datafilter.git  -b develop
-                git clone https://github.com/wchen2013a/dfbackend.git
+                git clone https://github.com/DUNE-DAQ/appfwk.git
                 
+                cd appfwk
+                git checkout 1f8ce77ccdf23b8e068b8096218cfb26dd87d80e
+                cd ..
+                cd hdf5libs
+                git checkout e1dc1f0b19bd64dbae5a36f5f525d70d4de4f6cb
+                cd ..
+                cd fddetdataformats
+                git checkout 240f71fe8391a7d04db048f111e182ee8313de34
+
                 cd datafilter
-                git clone https://github.com/pybind/pybind11_json.git
                 
                 cd ../..
                 source dbt-env.sh
