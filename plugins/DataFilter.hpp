@@ -625,7 +625,97 @@ struct TRRewriter {
     return temp;
   }
 
-  void send_tr(trigger_record_ptr_t &trp) {
+  // void send_tr(trigger_record_ptr_t &trp) {
+  //   std::stringstream ss;
+  //   ss << "datafilter: ->accepted_trigger_record2->send_tr :Sending TR to "
+  //         "FilterResultWriter";
+  //   TLOG() << ss.str();
+  //   ss.str("");
+
+  //   auto init_sender =
+  //       dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>("trwriter0");
+  //   dunedaq::datafilter::Handshake q("write_tr");
+  //   init_sender->send(std::move(q), Sender::s_block);
+
+  //   std::unordered_map<int, std::set<size_t>> completed_receiver_tracking;
+  //   std::mutex tracking_mutex;
+
+  //   //    for (size_t group = 0; group < config.num_groups; ++group) {
+  //   //      for (size_t conn = 0; conn < config.num_connections_per_group;
+  //   //      ++conn) {
+  //   // auto info = std::make_shared<TRWriterInfo>(group, conn);
+  //   auto info = std::make_shared<TRWriterInfo>(0, 0);
+  //   trwriters.push_back(info);
+  //   //      }
+  //   //    }
+  //   auto trigger_timestamp =
+  //       trp->get_fragments_ref().at(0)->get_trigger_timestamp();
+  //   auto trigger_number =
+  //   trp->get_fragments_ref().at(0)->get_trigger_number(); auto run_number =
+  //   trp->get_fragments_ref().at(0)->get_run_number();
+
+  //   TLOG() << "datafilter->send_tr: run_number: " << run_number
+  //          << ", trigger number: " << trigger_number;
+
+  //   TLOG_DEBUG(7) << "Getting publisher objects for each connection";
+  //   std::for_each(std::execution::par_unseq, std::begin(trwriters),
+  //                 std::end(trwriters), [=](std::shared_ptr<TRWriterInfo>
+  //                 info) {
+  //                   auto before_sender = std::chrono::steady_clock::now();
+  //                   info->sender =
+  //                       dunedaq::get_iom_sender<trigger_record_ptr_t>(
+  //                           config.get_connection_name(
+  //                               config.my_id2, info->group_id,
+  //                               info->conn_id));
+  //                   auto after_sender = std::chrono::steady_clock::now();
+  //                   info->get_sender_time =
+  //                       std::chrono::duration_cast<std::chrono::milliseconds>(
+  //                           after_sender - before_sender);
+  //                 });
+
+  //   TLOG() << "Starting publish threads to connect with FilterResultWriter";
+  //   std::for_each(
+  //       std::execution::par_unseq, std::begin(trwriters),
+  //       std::end(trwriters),
+  //       [=, &completed_receiver_tracking, &tracking_mutex,
+  //        &trp](std::shared_ptr<TRWriterInfo> info) {
+  //         info->send_thread.reset(new std::thread(
+  //             [=, &completed_receiver_tracking, &tracking_mutex, &trp]() {
+  //               bool complete_received = false;
+
+  //               std::this_thread::sleep_for(100ms);
+  //               while (!complete_received) {
+  //                 info->sender->try_send(
+  //                     std::move(trp),
+  //                     std::chrono::milliseconds(config.send_interval_ms));
+
+  //                 ++info->messages_sent;
+  //                 {
+  //                   std::lock_guard<std::mutex> lk(tracking_mutex);
+  //                   if ((completed_receiver_tracking.count(info->group_id) &&
+  //                        completed_receiver_tracking[info->group_id].count(
+  //                            info->conn_id)) ||
+  //                       completed_receiver_tracking.count(-1)) {
+  //                     TLOG() << "Complete_received";
+  //                     complete_received = true;
+  //                   }
+  //                 }
+
+  //                 std::this_thread::sleep_for(500ms);
+  //                 complete_received = true;
+  //                 break;
+  //               } // while loop
+  //             }));
+  //       });
+
+  //   TLOG() << "datafilter send_tr: Joining send threads";
+  //   for (auto &sender : trwriters) {
+  //     sender->send_thread->join();
+  //     sender->send_thread.reset(nullptr);
+  //   }
+  // }
+
+  void send_tr(trigger_record_ptr_t &trp, size_t total_tr) {
     std::stringstream ss;
     ss << "datafilter: ->accepted_trigger_record2->send_tr :Sending TR to "
           "FilterResultWriter";
@@ -635,19 +725,17 @@ struct TRRewriter {
     auto init_sender =
         dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>("trwriter0");
     dunedaq::datafilter::Handshake q("write_tr");
+    q.total_tr = total_tr;
+    TLOG() << "total_tr ==> " << total_tr;
+
     init_sender->send(std::move(q), Sender::s_block);
 
     std::unordered_map<int, std::set<size_t>> completed_receiver_tracking;
     std::mutex tracking_mutex;
 
-    //    for (size_t group = 0; group < config.num_groups; ++group) {
-    //      for (size_t conn = 0; conn < config.num_connections_per_group;
-    //      ++conn) {
-    // auto info = std::make_shared<TRWriterInfo>(group, conn);
     auto info = std::make_shared<TRWriterInfo>(0, 0);
     trwriters.push_back(info);
-    //      }
-    //    }
+
     auto trigger_timestamp =
         trp->get_fragments_ref().at(0)->get_trigger_timestamp();
     auto trigger_number = trp->get_fragments_ref().at(0)->get_trigger_number();
@@ -670,38 +758,70 @@ struct TRRewriter {
                             after_sender - before_sender);
                   });
 
-    TLOG() << "Starting publish threads to connect with FilterResultWriter";
+    TLOG() << "Sending TR to FilterResultWriter on connection: "
+           << config.get_connection_name(config.my_id2, 0, 0);
+
     std::for_each(
         std::execution::par_unseq, std::begin(trwriters), std::end(trwriters),
         [=, &completed_receiver_tracking, &tracking_mutex,
          &trp](std::shared_ptr<TRWriterInfo> info) {
-          info->send_thread.reset(new std::thread(
-              [=, &completed_receiver_tracking, &tracking_mutex, &trp]() {
-                bool complete_received = false;
+          info->send_thread.reset(new std::thread([=,
+                                                   &completed_receiver_tracking,
+                                                   &tracking_mutex, &trp]() {
+            bool complete_received = false;
+            bool send_successful = false;
 
-                std::this_thread::sleep_for(100ms);
-                while (!complete_received) {
-                  info->sender->try_send(
-                      std::move(trp),
-                      std::chrono::milliseconds(config.send_interval_ms));
+            std::this_thread::sleep_for(100ms);
 
-                  ++info->messages_sent;
-                  {
-                    std::lock_guard<std::mutex> lk(tracking_mutex);
-                    if ((completed_receiver_tracking.count(info->group_id) &&
-                         completed_receiver_tracking[info->group_id].count(
-                             info->conn_id)) ||
-                        completed_receiver_tracking.count(-1)) {
-                      TLOG() << "Complete_received";
-                      complete_received = true;
-                    }
-                  }
+            // Keep trying until send succeeds
+            int retry_count = 0;
+            const int max_retries = 10; // Prevent infinite loop
 
-                  std::this_thread::sleep_for(500ms);
+            while (!complete_received && !send_successful &&
+                   retry_count < max_retries) {
+              // Use send() with blocking instead of try_send() to ensure
+              // delivery
+              try {
+                // FIXED: Don't use std::move on trp since it's a reference
+                // The sender should handle copying/moving internally
+                info->sender->send(std::move(trp), Sender::s_block);
+                send_successful = true;
+                ++info->messages_sent;
+
+                TLOG() << "Successfully sent TR (trigger="
+                       << trp->get_fragments_ref().at(0)->get_trigger_number()
+                       << ") to FilterResultWriter";
+
+              } catch (const std::exception &e) {
+                TLOG() << "Send failed (attempt " << (retry_count + 1) << "/"
+                       << max_retries << "): " << e.what();
+                ++retry_count;
+                std::this_thread::sleep_for(500ms);
+              }
+
+              // Check if receiver signaled completion
+              {
+                std::lock_guard<std::mutex> lk(tracking_mutex);
+                if ((completed_receiver_tracking.count(info->group_id) &&
+                     completed_receiver_tracking[info->group_id].count(
+                         info->conn_id)) ||
+                    completed_receiver_tracking.count(-1)) {
+                  TLOG() << "Complete_received signal from FilterResultWriter";
                   complete_received = true;
-                  break;
-                } // while loop
-              }));
+                }
+              }
+
+              // Exit if send was successful
+              if (send_successful) {
+                break;
+              }
+            }
+
+            if (!send_successful) {
+              TLOG() << "ERROR: Failed to send TR after " << max_retries
+                     << " attempts!";
+            }
+          }));
         });
 
     TLOG() << "datafilter send_tr: Joining send threads";
@@ -709,8 +829,11 @@ struct TRRewriter {
       sender->send_thread->join();
       sender->send_thread.reset(nullptr);
     }
-  }
 
+    trwriters.clear(); // Clean up for next TR
+    TLOG() << "datafilter send_tr: Done sending TR (trigger=" << trigger_number
+           << ")";
+  }
   void send_tr2() {
     std::stringstream ss;
 
@@ -1003,7 +1126,7 @@ struct DataFilterOrganiser {
     //  rewriter.send_trigger_record();
   }
 
-  void accepted_trigger_record2(trigger_record_ptr_t &trp) {
+  void accepted_trigger_record2(trigger_record_ptr_t &trp, size_t total_tr) {
     TLOG() << "====>accepted_trigger_record2 single-event per file";
     //        hdf5datastore::ConfParams conf;
     //        conf.name = "tempWriter";
@@ -1030,7 +1153,7 @@ struct DataFilterOrganiser {
     // rewriter.send_tr(rebuild_trigger_record(
     //    trigger_number, trigger_timestamp, run_number, seq_number,
     //    n_frames, element_id, detector_id, contents));
-    rewriter.send_tr(trp);
+    rewriter.send_tr(trp, total_tr);
   }
 
   void request_next_tr() {
@@ -1087,8 +1210,6 @@ struct DataFilterReceiver {
   ~DataFilterReceiver() {
     bk_receiver.stop(); // Auto cleanup
   }
-  uint16_t data3[200000000];
-  std::string path_header1;
 
   void init(size_t datafilter_run_number) {
     TLOG_DEBUG(5) << "Getting init sender";
@@ -1290,6 +1411,7 @@ struct DataFilterReceiver {
         [&](dunedaq::datafilter::Handshake msg) {
           if (msg.msg_id == "next_tr") {
             config.num_messages = msg.total_tr;
+            TLOG() << "num_messages ==> " << config.num_messages;
             ++received_cnt;
           }
           TLOG_DEBUG(5) << "datafilter: TR receiver callback: " << msg.msg_id;
@@ -1365,7 +1487,7 @@ struct DataFilterReceiver {
             info->last_received_time = now;
             last_received = std::chrono::steady_clock::now();
 
-            organiser.accepted_trigger_record2(tr);
+            organiser.accepted_trigger_record2(tr, config.num_messages);
             TLOG() << "After organiser.accepted_trigger_record2 "
                    << info->msgs_received << " num_messages "
                    << config.num_messages;
@@ -1395,17 +1517,17 @@ struct DataFilterReceiver {
                   // std::to_string(info->msgs_received.load()) +
                   std::to_string(trigger_number) + ".hdf5";
 
-              TLOG() << "ofile_name " << ofile_name;
+              // TLOG() << "ofile_name " << ofile_name;
 
-              //  create the file to write the TriggerRecords
-              int file_index = 0;
-              unsigned compression_level = 0;
-              std::unique_ptr<dunedaq::hdf5libs::HDF5RawDataFile> h5file_ptr(
-                  new dunedaq::hdf5libs::HDF5RawDataFile(
-                      ofile_name, run_number, file_index, app_name, flp_json_in,
-                      srcid_geoid_map, compression_level));
-              h5file_ptr->write(*tr);
-              h5file_ptr.reset();
+              // //  create the file to write the TriggerRecords
+              // int file_index = 0;
+              // unsigned compression_level = 0;
+              // std::unique_ptr<dunedaq::hdf5libs::HDF5RawDataFile> h5file_ptr(
+              //     new dunedaq::hdf5libs::HDF5RawDataFile(
+              //         ofile_name, run_number, file_index, app_name,
+              //         flp_json_in, srcid_geoid_map, compression_level));
+              // h5file_ptr->write(*tr);
+              // h5file_ptr.reset();
 
               // organiser.rewriter.send_tr(tr);
               // organiser.accepted_trigger_record2(tr);

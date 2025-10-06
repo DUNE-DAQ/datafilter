@@ -14,6 +14,8 @@ namespace dunedaq::datafilter {
 
 TRDispatcher::TRDispatcher(const std::string &name)
     : dunedaq::appfwk::DAQModule(name),
+      m_h5file_thread(std::bind(&TRDispatcher::do_h5file_work, this,
+                                std::placeholders::_1)),
       m_thread(std::bind(&TRDispatcher::do_work, this, std::placeholders::_1)) {
   register_command("conf", &TRDispatcher::do_conf);
   register_command("start", &TRDispatcher::do_start);
@@ -67,6 +69,8 @@ void TRDispatcher::init2(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
 void TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
   TLOG() << "Module name: " << get_name();
 
+  m_mcfg = mcfg;
+
   dunedaq::conffwk::Configuration *confdb;
 
   try {
@@ -78,6 +82,23 @@ void TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
 
   confdb->get<dunedaq::confmodel::Queue>(m_queues);
   confdb->get<dunedaq::confmodel::NetworkConnection>(m_networkconnections);
+
+  // get TRDispatcher attributes.
+  auto mdal = mcfg->get_dal<dunedaq::datafilter::dal::TRDispatcher>(get_name());
+
+  if (mdal == nullptr) {
+    throw appfwk::CommandFailed(ERS_HERE, get_name(), "init",
+                                "Unable to load module configuration");
+  }
+  m_storage_pathname = mdal->get_storage_pathname();
+  m_is_from_storage = mdal->get_is_from_storage();
+  m_input_h5_filename = mdal->get_input_h5_filename();
+
+  if (!m_is_from_storage)
+    m_input_h5_filename = m_storage_pathname + "/" + m_input_h5_filename;
+
+  TLOG() << "The storage for the HDF5 files is set to " << m_storage_pathname
+         << " input h5 filename " << m_input_h5_filename;
 }
 
 void TRDispatcher::do_conf(const data_t &) {
@@ -98,27 +119,46 @@ void TRDispatcher::do_conf(const data_t &) {
 
 void TRDispatcher::do_start(const data_t &) {
 
-  // TLOG() << get_name() << " do_start()";
-  // m_thread_ptr = std::make_unique<dunedaq::utilities::WorkerThread>(do_work);
+  // m_h5file_thread.start_working_thread();
   // m_thread.start_working_thread();
   receive(0, 0, 1);
-  // TLOG() << get_name() << ": exist do_start()";
 }
-void TRDispatcher::do_stop(const data_t & /* do not pass an argument*/) {
 
-  TLOG() << get_name() << " do_stop()";
+void TRDispatcher::do_stop(const data_t &) {
+
+  // m_h5file_thread.stop_working_thread();
   // m_thread.stop_working_thread();
-
-  TLOG() << get_name() << ": exist do_stop()";
 }
 
-void TRDispatcher::do_work(std::atomic<bool> &running_flag) {
+void TRDispatcher::do_work(std::atomic<bool> &running) {
 
-  // TLOG() << get_name() << " do_work()";
-  // while (running_flag.load()) {
-  // receive(0, 0, 0);
-  // }
-  // TLOG() << get_name() << ": exist do_work()";
+  std::mutex work_mutex;
+  std::condition_variable work_cv;
+  std::vector<std::filesystem::path> files;
+
+  while (running.load()) {
+    files = get_hdf5files_from_storage();
+    receive(0, 0, 1);
+
+    std::unique_lock<std::mutex> lock(work_mutex);
+    work_cv.wait_for(lock, std::chrono::seconds(1), [&]() {
+      return !running.load(); // check for new do_work availability
+    });
+  }
+}
+
+void TRDispatcher::do_h5file_work(std::atomic<bool> &running) {
+  std::mutex work_mutex;
+  std::condition_variable work_cv;
+
+  while (running.load()) {
+    // get_hdf5files_from_storage();
+
+    std::unique_lock<std::mutex> lock(work_mutex);
+    work_cv.wait_for(lock, std::chrono::seconds(1), [&]() {
+      return !running.load(); // check for new do_work availability
+    });
+  }
 }
 
 void TRDispatcher::generate_opmon_data() {
@@ -587,6 +627,18 @@ void TRDispatcher::send_tr_from_hdf5file(size_t dataflow_run_number,
     sender->send_thread->join();
     sender->send_thread.reset(nullptr);
   }
+}
+
+std::vector<std::filesystem::path> TRDispatcher::get_hdf5files_from_storage() {
+  TLOG_DEBUG(7) << "I am in get_hdf5files_from_storage";
+
+  dunedaq::datafilter::HDF5FromStorage s(m_storage_pathname, json_file);
+  // s.print();
+
+  // for (auto file : s.hdf5_files_to_transfer) {
+  //     std::cout << "main: files to transfer" << file << "\n";
+  // }
+  return s.hdf5_files_to_transfer;
 }
 
 } // namespace dunedaq::datafilter

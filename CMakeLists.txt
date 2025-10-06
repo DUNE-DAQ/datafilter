@@ -89,7 +89,7 @@ daq_add_plugin(DummyModule2    duneDAQModule LINK_LIBRARIES  datafilter appfwk::
 #
 #daq_add_application(datafilter_config_test ../../apps/datafilter_config_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 
-daq_add_application(trdispatcher trdispatcher.cxx LINK_LIBRARIES  appfwk::appfwk okssystem::okssystem conffwk::conffwk iomanager::iomanager dfmessages::dfmessages rcif::rcif hdf5libs::hdf5libs logging::logging nlohmann_json::nlohmann_json) 
+daq_add_application(trdispatcher trdispatcher.cxx             LINK_LIBRARIES  appfwk::appfwk okssystem::okssystem conffwk::conffwk iomanager::iomanager dfmessages::dfmessages rcif::rcif hdf5libs::hdf5libs logging::logging nlohmann_json::nlohmann_json) 
 daq_add_application(filterorchestrator filterorchestrator.cxx LINK_LIBRARIES  appfwk::appfwk okssystem::okssystem conffwk::conffwk iomanager::iomanager hdf5libs::hdf5libs logging::logging nlohmann_json::nlohmann_json) 
 daq_add_application(filterresultwriter filterresultwriter.cxx LINK_LIBRARIES  appfwk::appfwk okssystem::okssystem conffwk::conffwk iomanager::iomanager dfmessages::dfmessages rcif::rcif hdf5libs::hdf5libs logging::logging nlohmann_json::nlohmann_json) 
 daq_add_application(datafilter2 datafilter.cxx LINK_LIBRARIES  appfwk::appfwk okssystem::okssystem conffwk::conffwk iomanager::iomanager dfmessages::dfmessages rcif::rcif hdf5libs::hdf5libs logging::logging nlohmann_json::nlohmann_json) 

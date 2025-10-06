@@ -17,12 +17,16 @@
 #include "iomanager/IOManager.hpp"
 #include "logging/Logging.hpp"
 
+#include "daqdataformats/TriggerRecord.hpp"
+#include "daqdataformats/TriggerRecordHeaderData.hpp"
+#include "datafilter/dal/FilterResultWriter.hpp"
 #include "datafilter/datafilter_structs.hpp"
 #include "datafilter/opmon/filterresultwriter_info.pb.h"
+#include "dfmessages/TriggerRecord_serialization.hpp"
 #include "hdf5libs/HDF5RawDataFile.hpp"
 #include "hdf5libs/test/HDF5TestUtils.hpp"
 #include "opmonlib/TestOpMonManager.hpp"
-#include "serialization/Serialization.hpp"
+// #include "serialization/Serialization.hpp"
 #include "utilities/WorkerThread.hpp"
 
 #include <atomic>
@@ -100,12 +104,11 @@ public:
                                          int run_number, int file_index,
                                          int trigger_number);
   void receive_tr(size_t run_number1);
+  void receive_tr_single_connection(size_t run_number1);
   void send_next_tr(size_t run_number, pid_t subscriber_pid);
-  void attrs_test_loop();
-  void start_attrs_test_thread();
-  void stop_attrs_test_thread();
-
-  std::optional<int> extract_file_index(const BookKeeping &bk);
+  void receive_attrs_test();
+  void start_receive_attrs_test_thread();
+  void stop_receive_attrs_test_thread();
 
   std::vector<std::shared_ptr<SubscriberInfo>> subscribers;
   FilterResultWriter(const FilterResultWriter &) = delete;
@@ -150,26 +153,30 @@ private:
   // FilterResultWriter runs and whose value we'd like to keep track of during
   // running; obviously you'd want to replace this "in real life"
 
+  // Configuration
+  std::shared_ptr<appfwk::ConfigurationManager> m_mcfg;
+
   std::string m_oksConfig = "oksconflibs:test/config/dfSession.data.xml";
   std::string m_session_name = "test-session";
   size_t m_trigger_timestamp;
   size_t m_trigger_number;
   size_t m_run_number;
-  size_t m_num_messages;
+  std::atomic<size_t> m_num_messages{1};
   std::string m_info_file_base = "FilterResultWriter";
   std::string m_odir = "/opt/tmp/chen";
-  std::string m_output_h5_filename = "/opt/tmp/chen/h5_test.hdf5";
+  std::string m_output_h5_filename = "h5_test";
   // std::string m_session_name = "FilterResultWriter test run";
   std::string m_ofile_pathname{};
 
   std::string m_init_connection;
-  std::atomic<int> m_num_groups{0};
-  std::atomic<int> m_num_connections_per_group{0};
+  std::atomic<int> m_num_groups{1};
+  std::atomic<int> m_num_connections_per_group{5};
   std::atomic<size_t> m_file_index{0};
 
   std::atomic<int64_t> m_total_amount{0};
   std::atomic<int> m_amount_since_last_call{0};
 
+  // for testing only, not used and to be removed.
   std::thread m_attrs_test_thread;
   std::atomic<bool> m_attrs_test_running{false};
   std::mutex m_attrs_test_mtx;

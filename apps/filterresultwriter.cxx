@@ -21,7 +21,6 @@ using namespace dunedaq::appfwk;
 using data_t = nlohmann::json;
 
 int main(int argc, char *argv[]) {
-
   dunedaq::datafilter::CommandLineArgs args;
   int result = dunedaq::datafilter::parseCommandLine(argc, argv, args,
                                                      "Filter Result Writer");

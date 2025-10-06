@@ -23,12 +23,6 @@ FilterOrchestrator::FilterOrchestrator(const std::string &name)
 
 void FilterOrchestrator::init2(
     std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
-
-  // const std::string session_name = "test-session";
-  // std::vector<dunedaq::iomanager::ConnectionRef> m_networkconnections;
-
-  // std::vector<dunedaq::iomanager::QueueSpec> m_queues;
-
   auto iom = iomanager::IOManager::get();
   TLOG() << get_name() << ": Entering init() method";
   m_mcfg = mcfg;

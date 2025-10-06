@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <execution>
+#include <functional>
 #include <limits>
 #include <string>
 
@@ -34,7 +35,6 @@
 #include "datafilter/dal/TRDispatcher.hpp"
 #include "datafilter/opmon/trdispatcher_info.pb.h"
 #include "detdataformats/DetID.hpp"
-// #include "dfmessages/TriggerRecord_serialization.hpp"
 #include "hdf5libs/HDF5RawDataFile.hpp"
 
 using trigger_record_ptr_t =
@@ -81,6 +81,7 @@ public:
   void send_tr_from_hdf5file(size_t dataflow_run_number1, pid_t subscriber);
   void send_tr(size_t dataflow_run_number1, pid_t subscriber);
   trigger_record_ptr_t create_trigger_record(uint64_t trig_num);
+  std::vector<std::filesystem::path> get_hdf5files_from_storage();
 
   std::vector<std::shared_ptr<TRDispatcherInfo>> trdispatchers;
   TRDispatcher(const TRDispatcher &) = delete;
@@ -106,11 +107,12 @@ private:
   void do_conf(const data_t &);
   void do_start(const data_t &);
   void do_stop(const data_t &);
-  void do_work(std::atomic<bool> &running_flag);
+  void do_work(std::atomic<bool> &running);
+  void do_h5file_work(std::atomic<bool> &running);
 
   // Threading
-  // dunedaq::utilities::WorkerThread m_thread;
-  // void do_work(std::atomic<bool>&);
+  dunedaq::utilities::WorkerThread m_thread;
+  dunedaq::utilities::WorkerThread m_h5file_thread;
 
   const confmodel::Application *m_application;
   std::vector<const confmodel::DaqModule *> m_modules;
@@ -120,8 +122,6 @@ private:
   std::string data_type;
   std::string conn_type_str;
 
-  // std::unique_ptr<dunedaq::utilities::WorkerThread> m_thread_ptr = nullptr;
-  dunedaq::utilities::WorkerThread m_thread;
   std::string m_init_connection;
   std::string m_trigger_record_connection;
   std::chrono::milliseconds m_send_timeout_ms{100};
@@ -139,6 +139,7 @@ private:
   const size_t components_per_record = element_count_tpc + element_count_pds +
                                        element_count_ta + element_count_tc;
 
+  bool m_is_from_storage = false;
   std::string json_file = "hdf5_files_list.json";
   std::string m_input_h5_filename =
       "/lcg/storage19/test-area/dune/trigger_records/"
@@ -170,4 +171,5 @@ private:
 };
 
 } // namespace dunedaq::datafilter
+
 #endif // DATAFILTER_PLUGINS_TRDISPATCHER_HPP_
