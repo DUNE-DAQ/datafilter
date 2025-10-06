@@ -49,8 +49,7 @@ void TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
 
   for (auto con : mdal->get_outputs()) {
     TLOG() << "Output connection data_type " << con->get_data_type() << " UID "
-           << con->UID() << " datatype_to_string "
-           << datatype_to_string<trigger_record_ptr_t>();
+           << con->UID() << " datatype_to_string";
     if (con->get_data_type() == datatype_to_string<trigger_record_ptr_t>()) {
       m_tr_connections_o.push_back(con->UID());
       TLOG() << "Output found: " << con->get_data_type();
@@ -68,6 +67,7 @@ void TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
   m_storage_pathname = mdal->get_storage_pathname();
   m_is_from_storage = mdal->get_is_from_storage();
   m_input_h5_filename = mdal->get_input_h5_filename();
+  m_json_file = mdal->get_json_file();
 
   m_send_timeout_ms = std::chrono::milliseconds(mdal->get_send_timeout_ms());
   m_recv_timeout_ms = std::chrono::milliseconds(mdal->get_recv_timeout_ms());
@@ -564,7 +564,8 @@ void TRDispatcher::send_tr_from_hdf5file() {
           } // while loop
 
           // Write the transfert file pathname to json file
-          dunedaq::datafilter::HDF5FromStorage s(m_storage_pathname, json_file);
+          dunedaq::datafilter::HDF5FromStorage s(m_storage_pathname,
+                                                 m_json_file);
           s.WriteJSON(m_input_h5_filename);
 
           // send book keeping info after the TR is tranfered.
@@ -604,7 +605,7 @@ void TRDispatcher::send_tr_from_hdf5file() {
 std::vector<std::filesystem::path> TRDispatcher::get_hdf5files_from_storage() {
   TLOG_DEBUG(7) << "I am in get_hdf5files_from_storage";
 
-  dunedaq::datafilter::HDF5FromStorage s(m_storage_pathname, json_file);
+  dunedaq::datafilter::HDF5FromStorage s(m_storage_pathname, m_json_file);
   // s.print();
 
   // for (auto file : s.hdf5_files_to_transfer) {

@@ -63,7 +63,7 @@ daq_add_plugin(DataFilter duneDAQModule LINK_LIBRARIES  dfmessages::dfmessages d
 daq_add_plugin(TRDispatcher duneDAQModule LINK_LIBRARIES  dfmessages::dfmessages datafilter datafilter_dal appfwk::appfwk hdf5libs::hdf5libs) # The appfwk library is needed for DAQModule base class
 daq_add_plugin(FilterOrchestrator duneDAQModule LINK_LIBRARIES  datafilter datafilter_dal appfwk::appfwk) # The appfwk library is needed for DAQModule base class
 daq_add_plugin(FilterResultWriter duneDAQModule LINK_LIBRARIES  datafilter datafilter_dal appfwk::appfwk) # The appfwk library is needed for DAQModule base class
-daq_add_plugin(DummyModule2    duneDAQModule LINK_LIBRARIES  datafilter appfwk::appfwk  )
+#daq_add_plugin(DummyModule2    duneDAQModule LINK_LIBRARIES  datafilter appfwk::appfwk  )
 
 ##############################################################################
 # Applications

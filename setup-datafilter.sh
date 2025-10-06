@@ -14,15 +14,15 @@ if [[ $hn == *"np02"* || $hn == *"np04"*  ]]; then
         source ~np04daq/bin/web_proxy.sh
 	cd $HOME
         mkdir -p test-area
-        INSTALL_DIR=$HOME/test-area/dune-v4-spack-datafilter-integration-test
+        INSTALL_DIR=$HOME/test-area/dune-v5-spack-datafilter-integration-test
 else
-        INSTALL_DIR=/lcg/storage19/test-area/dune-v4-spack-datafilter-integration-test
+        INSTALL_DIR=/lcg/storage19/test-area/dune-v5-spack-datafilter-integration-test
 fi
 
 # we take the second last tag 
-NFD_PROD4_V=`ls -d /cvmfs/dunedaq-development.opensciencegrid.org/nightly/NFD_PROD4_*|sort|tail -2|head -1|cut -f5 -d "/"`
-echo $NFD_PROD4_V
-DUNE_DAQ_release=$NFD_PROD4_V 
+#NFD_PROD4_V=`ls -d /cvmfs/dunedaq-development.opensciencegrid.org/nightly/NFD_PROD4_*|sort|tail -2|head -1|cut -f5 -d "/"`
+#echo $NFD_PROD4_V
+DUNE_DAQ_release="fddaq-v5.3.2-rc3-a9" 
 echo $DUNE_DAQ_release
 
 if [ -d $HOME/test-area ]; then
@@ -31,7 +31,7 @@ if [ -d $HOME/test-area ]; then
 
         #v4 
         setup_dbt latest
-        dbt-create -n $DUNE_DAQ_release $INSTALL_DIR/ 
+        dbt-create -b candidate $DUNE_DAQ_release $INSTALL_DIR/ 
 	if [ -d $INSTALL_DIR ]; then
                 cd $INSTALL_DIR
                 source env.sh

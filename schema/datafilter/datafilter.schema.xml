@@ -80,7 +80,7 @@
 
 <oks-schema>
 
-<info name="" type="" num-of-items="5" oks-format="schema" oks-version="862f2957270" created-by="gjc" created-on="thinkpad" creation-time="20231110T125843" last-modified-by="chen" last-modified-on="atlas13.lps.umontreal.ca" last-modification-time="20251006T041455"/>
+<info name="" type="" num-of-items="5" oks-format="schema" oks-version="862f2957270" created-by="gjc" created-on="thinkpad" creation-time="20231110T125843" last-modified-by="chen" last-modified-on="atlas13.lps.umontreal.ca" last-modification-time="20251006T221930"/>
 
 <include>
  <file path="schema/confmodel/dunedaq.schema.xml"/>
@@ -128,6 +128,7 @@
   <attribute name="storage_pathname" type="string" is-not-null="yes"/>
   <attribute name="is_from_storage" type="bool" init-value="false" is-not-null="yes"/>
   <attribute name="input_h5_filename" type="string" is-not-null="yes"/>
+  <attribute name="json_file" type="string" is-not-null="yes"/>
  </class>
 
 </oks-schema>

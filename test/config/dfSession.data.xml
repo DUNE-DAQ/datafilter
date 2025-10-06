@@ -63,7 +63,7 @@
 
 <oks-data>
 
-<info name="" type="" num-of-items="73" oks-format="data" oks-version="862f2957270" created-by="gjc" created-on="thinkpad" creation-time="20231116T105446" last-modified-by="chen" last-modified-on="atlas13.lps.umontreal.ca" last-modification-time="20251006T041651"/>
+<info name="" type="" num-of-items="73" oks-format="data" oks-version="862f2957270" created-by="gjc" created-on="thinkpad" creation-time="20231116T105446" last-modified-by="chen" last-modified-on="atlas13.lps.umontreal.ca" last-modification-time="20251006T222105"/>
 
 <include>
  <file path="schema/confmodel/dunedaq.schema.xml"/>
@@ -125,6 +125,9 @@
  <comment creation-time="20251006T023108" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
  <comment creation-time="20251006T032246" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
  <comment creation-time="20251006T041651" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20251006T221121" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20251006T221834" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20251006T222105" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
 </comments>
 
 
@@ -590,6 +593,7 @@
  <attr name="storage_pathname" type="string" val="/lcg/storage19/test-area/dune/trigger_records"/>
  <attr name="is_from_storage" type="bool" val="0"/>
  <attr name="input_h5_filename" type="string" val="swtest_run001039_0000_dataflow0_datawriter_0_20231103T121050.hdf5"/>
+ <attr name="json_file" type="string" val="hdf5_files_list.json"/>
  <rel name="inputs">
   <ref class="NetworkConnection" id="TR_tracking0"/>
   <ref class="NetworkConnection" id="trdispatcher0"/>

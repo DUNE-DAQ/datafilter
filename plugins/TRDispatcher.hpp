@@ -117,6 +117,8 @@ private:
   std::vector<const confmodel::DaqModule *> m_modules;
   std::vector<const dunedaq::confmodel::Queue *> m_queues;
   std::vector<const confmodel::NetworkConnection *> m_networkconnections;
+
+  // unused to be removed
   std::string address;
   std::string data_type;
   std::string conn_type_str;
@@ -124,6 +126,7 @@ private:
   std::string m_init_connection;
   std::vector<std::string> m_tr_connections_o;
   std::string m_bk_connection_o;
+
   std::chrono::milliseconds m_send_timeout_ms{100};
   std::chrono::milliseconds m_recv_timeout_ms{100};
   std::string m_trdispatcher_id;
@@ -140,14 +143,14 @@ private:
                                        element_count_ta + element_count_tc;
 
   bool m_is_from_storage = false;
-  std::string json_file = "hdf5_files_list.json";
+  std::string m_json_file;
   std::string m_input_h5_filename;
   std::string m_output_h5_filename;
-  std::string m_storage_pathname =
-      "/lcg/storage19/test-area/dune-v4-spack-integration2/sourcecode/"
-      "daqconf/config/";
+  std::string m_storage_pathname;
 
+  // oks
   std::string m_oksConfig = "oksconflibs:test/config/dfSession.data.xml";
+
   // Configuration
   std::shared_ptr<appfwk::ConfigurationManager> m_mcfg;
 
