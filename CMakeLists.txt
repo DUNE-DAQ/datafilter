@@ -77,22 +77,12 @@ daq_add_plugin(DummyModule2    duneDAQModule LINK_LIBRARIES  datafilter appfwk::
 # daq_add_application(dataflow_emu2 ../../apps/dataflow_emu2.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 # daq_add_application(datafilter2 ../../apps/datafilter2.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
 #daq_add_application(get_header_size get_header_size.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-#daq_add_application(dataflow_emu3 ../../apps/dataflow_emu3.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-#daq_add_application(datafilter3 ../../apps/datafilter3.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-#daq_add_application(dataflow_emu4 ../../apps/dataflow_emu4.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-#daq_add_application(datafilter4 ../../apps/datafilter4.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-#daq_add_application(iom_send_test iom_send_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-#daq_add_application(iom_receive_test iom_receive_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-#daq_add_application(iom_receive_test2 iom_receive_test2.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-#daq_add_application(queues_vs_threads_iomanager queues_vs_threads_iomanager.cxx TEST LINK_LIBRARIES ${PROJECT_NAME})
-#
-#
-#daq_add_application(datafilter_config_test ../../apps/datafilter_config_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
+
 
 daq_add_application(trdispatcher trdispatcher.cxx             LINK_LIBRARIES  appfwk::appfwk okssystem::okssystem conffwk::conffwk iomanager::iomanager dfmessages::dfmessages rcif::rcif hdf5libs::hdf5libs logging::logging nlohmann_json::nlohmann_json) 
 daq_add_application(filterorchestrator filterorchestrator.cxx LINK_LIBRARIES  appfwk::appfwk okssystem::okssystem conffwk::conffwk iomanager::iomanager hdf5libs::hdf5libs logging::logging nlohmann_json::nlohmann_json) 
 daq_add_application(filterresultwriter filterresultwriter.cxx LINK_LIBRARIES  appfwk::appfwk okssystem::okssystem conffwk::conffwk iomanager::iomanager dfmessages::dfmessages rcif::rcif hdf5libs::hdf5libs logging::logging nlohmann_json::nlohmann_json) 
 daq_add_application(datafilter2 datafilter.cxx LINK_LIBRARIES  appfwk::appfwk okssystem::okssystem conffwk::conffwk iomanager::iomanager dfmessages::dfmessages rcif::rcif hdf5libs::hdf5libs logging::logging nlohmann_json::nlohmann_json) 
-daq_add_application(test_oks test_oks.cxx LINK_LIBRARIES appfwk::appfwk okssystem::okssystem conffwk::conffwk iomanager::iomanager dfmessages::dfmessages rcif::rcif hdf5libs::hdf5libs logging::logging nlohmann_json::nlohmann_json) 
+# daq_add_application(test_oks test_oks.cxx LINK_LIBRARIES appfwk::appfwk okssystem::okssystem conffwk::conffwk iomanager::iomanager dfmessages::dfmessages rcif::rcif hdf5libs::hdf5libs logging::logging nlohmann_json::nlohmann_json) 
 
 daq_install()

@@ -75,11 +75,10 @@ public:
   explicit TRDispatcher(const std::string &name);
 
   void init(std::shared_ptr<appfwk::ConfigurationManager>) override;
-  void init2(std::shared_ptr<appfwk::ConfigurationManager>);
-  void receive(size_t dataflow_run_number1, pid_t subscriber, bool is_hdf5file);
+  void receive(bool is_hdf5file);
 
-  void send_tr_from_hdf5file(size_t dataflow_run_number1, pid_t subscriber);
-  void send_tr(size_t dataflow_run_number1, pid_t subscriber);
+  void send_tr_from_hdf5file();
+  void send_tr();
   trigger_record_ptr_t create_trigger_record(uint64_t trig_num);
   std::vector<std::filesystem::path> get_hdf5files_from_storage();
 
@@ -123,7 +122,8 @@ private:
   std::string conn_type_str;
 
   std::string m_init_connection;
-  std::string m_trigger_record_connection;
+  std::vector<std::string> m_tr_connections_o;
+  std::string m_bk_connection_o;
   std::chrono::milliseconds m_send_timeout_ms{100};
   std::chrono::milliseconds m_recv_timeout_ms{100};
   std::string m_trdispatcher_id;
@@ -141,10 +141,8 @@ private:
 
   bool m_is_from_storage = false;
   std::string json_file = "hdf5_files_list.json";
-  std::string m_input_h5_filename =
-      "/lcg/storage19/test-area/dune/trigger_records/"
-      "swtest_run001039_0000_dataflow0_datawriter_0_20231103T121050.hdf5";
-  std::string m_output_h5_filename = "/opt/tmp/chen/h5_test.hdf5";
+  std::string m_input_h5_filename;
+  std::string m_output_h5_filename;
   std::string m_storage_pathname =
       "/lcg/storage19/test-area/dune-v4-spack-integration2/sourcecode/"
       "daqconf/config/";

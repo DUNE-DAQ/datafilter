@@ -40,7 +40,7 @@ int main(int argc, char *argv[]) {
   trdispatcher1->init(mgr1);
   trdispatcher1->execute_command("conf", trdispatcher_cfg);
   trdispatcher1->execute_command("start", trdispatcher_cfg);
-  // trdispatcher1->execute_command("stop", trdispatcher_cfg);
+  trdispatcher1->execute_command("stop", trdispatcher_cfg);
 
   return 0;
 }

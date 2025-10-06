@@ -22,50 +22,6 @@ TRDispatcher::TRDispatcher(const std::string &name)
   register_command("stop", &TRDispatcher::do_stop);
 }
 
-void TRDispatcher::init2(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
-  auto iom = iomanager::IOManager::get();
-  TLOG() << get_name() << ": Entering init() method";
-  m_mcfg = mcfg;
-  auto mdal = mcfg->get_dal<dunedaq::datafilter::dal::TRDispatcher>(get_name());
-  // auto mdal = mcfg->get_dal<dunedaq::confmodel::Session>("test-session");
-
-  if (mdal == nullptr) {
-    throw appfwk::CommandFailed(ERS_HERE, get_name(), "init",
-                                "Unable to load module configuration");
-  }
-
-  for (auto con : mdal->get_inputs()) {
-    TLOG() << "Input connection data_type " << con->get_data_type() << " UID "
-           << con->UID() << " datatype_to_string "
-           << datatype_to_string<Handshake>();
-    if (con->get_data_type() == datatype_to_string<Handshake>()) {
-      TLOG() << "Input found: " << con->get_data_type();
-      m_init_connection = con->UID();
-      iom->get_receiver<Handshake>(m_init_connection);
-    }
-  }
-
-  for (auto con : mdal->get_outputs()) {
-    TLOG() << "Output connection data_type " << con->get_data_type() << " UID "
-           << con->UID() << " datatype_to_string "
-           << datatype_to_string<trigger_record_ptr_t>();
-    if (con->get_data_type() == datatype_to_string<trigger_record_ptr_t>()) {
-      TLOG() << "Output found: " << con->get_data_type();
-      m_trigger_record_connection = con->UID();
-      iom->get_sender<trigger_record_ptr_t>(m_trigger_record_connection);
-    }
-  }
-
-  m_send_timeout_ms = std::chrono::milliseconds(mdal->get_send_timeout_ms());
-  m_recv_timeout_ms = std::chrono::milliseconds(mdal->get_recv_timeout_ms());
-
-  // for test only
-  m_trdispatcher_id = mdal->get_trdispatcher_id();
-  TLOG() << "tridispatcher_id " << m_trdispatcher_id;
-
-  receive(0, 0, 0);
-}
-
 void TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
   TLOG() << "Module name: " << get_name();
 
@@ -90,15 +46,40 @@ void TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
     throw appfwk::CommandFailed(ERS_HERE, get_name(), "init",
                                 "Unable to load module configuration");
   }
+
+  for (auto con : mdal->get_outputs()) {
+    TLOG() << "Output connection data_type " << con->get_data_type() << " UID "
+           << con->UID() << " datatype_to_string "
+           << datatype_to_string<trigger_record_ptr_t>();
+    if (con->get_data_type() == datatype_to_string<trigger_record_ptr_t>()) {
+      m_tr_connections_o.push_back(con->UID());
+      TLOG() << "Output found: " << con->get_data_type();
+    }
+    if (con->get_data_type() ==
+        datatype_to_string<dunedaq::datafilter::BookKeeping>()) {
+      m_bk_connection_o = con->UID(); // this will work for one bk output
+    }
+  }
+
+  for (auto tr_conn : m_tr_connections_o) {
+    TLOG() << "output TR connections " << tr_conn;
+  }
+
   m_storage_pathname = mdal->get_storage_pathname();
   m_is_from_storage = mdal->get_is_from_storage();
   m_input_h5_filename = mdal->get_input_h5_filename();
+
+  m_send_timeout_ms = std::chrono::milliseconds(mdal->get_send_timeout_ms());
+  m_recv_timeout_ms = std::chrono::milliseconds(mdal->get_recv_timeout_ms());
 
   if (!m_is_from_storage)
     m_input_h5_filename = m_storage_pathname + "/" + m_input_h5_filename;
 
   TLOG() << "The storage for the HDF5 files is set to " << m_storage_pathname
          << " input h5 filename " << m_input_h5_filename;
+  // for test only
+  // m_trdispatcher_id = mdal->get_trdispatcher_id();
+  // TLOG() << "tridispatcher_id " << m_trdispatcher_id;
 }
 
 void TRDispatcher::do_conf(const data_t &) {
@@ -119,9 +100,11 @@ void TRDispatcher::do_conf(const data_t &) {
 
 void TRDispatcher::do_start(const data_t &) {
 
+  // temporary no thread. Will be backe later.
   // m_h5file_thread.start_working_thread();
   // m_thread.start_working_thread();
-  receive(0, 0, 1);
+  bool is_hdf5file = true;
+  receive(is_hdf5file);
 }
 
 void TRDispatcher::do_stop(const data_t &) {
@@ -138,7 +121,8 @@ void TRDispatcher::do_work(std::atomic<bool> &running) {
 
   while (running.load()) {
     files = get_hdf5files_from_storage();
-    receive(0, 0, 1);
+    bool is_hdf5file = true;
+    receive(is_hdf5file);
 
     std::unique_lock<std::mutex> lock(work_mutex);
     work_cv.wait_for(lock, std::chrono::seconds(1), [&]() {
@@ -169,8 +153,7 @@ void TRDispatcher::generate_opmon_data() {
 }
 
 // Receive handshake from FilterOrchestrator
-void TRDispatcher::receive(size_t dataflow_run_number1, pid_t subscriber_pid,
-                           bool is_hdf5file) {
+void TRDispatcher::receive(bool is_hdf5file) {
   bool handshake_done = false;
   std::atomic<unsigned int> received_cnt = 0;
 
@@ -197,9 +180,9 @@ void TRDispatcher::receive(size_t dataflow_run_number1, pid_t subscriber_pid,
   cb_receiver->remove_callback();
 
   if (is_hdf5file) {
-    send_tr_from_hdf5file(dataflow_run_number1, subscriber_pid);
+    send_tr_from_hdf5file();
   } else {
-    send_tr(dataflow_run_number1, subscriber_pid);
+    send_tr();
   }
 }
 
@@ -346,36 +329,23 @@ trigger_record_ptr_t TRDispatcher::create_trigger_record(uint64_t trig_num) {
 }
 
 // send trigger records from self generated TR
-void TRDispatcher::send_tr(size_t dataflow_run_number, pid_t subscriber_pid) {
+void TRDispatcher::send_tr() {
   std::ostringstream ss;
-  auto trig_num = dataflow_run_number;
+  auto trig_num = 9999; // fake trigger number for generating TR
 
-  m_trdispatcher_id = "conn_A0_G0_C0_"; // to get it from config.
+  // m_trdispatcher_id = "conn_A0_G0_C0_"; // to get it from config.
+  m_trdispatcher_id = m_tr_connections_o[0];
   auto init_sender =
       dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>("TR_tracking2");
 
   dunedaq::datafilter::Handshake sent_t1("next_tr");
   init_sender->send(std::move(sent_t1), Sender::s_block);
 
-  //        if (config.next_tr) {
-  //            auto init_receiver =
-  //                dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
-  //                    "TR_tracking2");
-  //        }
   std::unordered_map<int, std::set<size_t>> completed_receiver_tracking;
   std::mutex tracking_mutex;
 
-  //        for (size_t group = 0; group < config.num_groups; ++group)
-  //        {
-  //            for (size_t conn = 0; conn <
-  //            config.num_connections_per_group;
-  //                 ++conn) {
-  //                auto info =
-  //                std::make_shared<TRDispatcherInfo>(group, conn);
   auto info = std::make_shared<TRDispatcherInfo>(0, 0);
   trdispatchers.push_back(info);
-  //            }
-  //        }
 
   TLOG_DEBUG(7) << "Getting publisher objects for each connection";
   std::for_each(
@@ -440,8 +410,7 @@ void TRDispatcher::send_tr(size_t dataflow_run_number, pid_t subscriber_pid) {
 }
 
 // Send trigger records from generated hdf5 files.
-void TRDispatcher::send_tr_from_hdf5file(size_t dataflow_run_number,
-                                         pid_t subscriber_pid) {
+void TRDispatcher::send_tr_from_hdf5file() {
   std::ostringstream oss;
 
   m_trdispatcher_id = "conn_A0_G0_C0_"; // to get it from config.
@@ -459,7 +428,7 @@ void TRDispatcher::send_tr_from_hdf5file(size_t dataflow_run_number,
       dunedaq::datafilter::Precision::NANOSECONDS);
 
   auto t1 = std::chrono::system_clock::now();
-  dunedaq::datafilter::BookKeeping bk_info("bookkeeping0");
+  dunedaq::datafilter::BookKeeping bk_info(m_bk_connection_o);
   bk_info.entry_id = time_point_to_string(t1);
   bk_info.conn_id = m_bk_info_id;
   bk_info.from_id = "trdispatcher";
@@ -478,7 +447,8 @@ void TRDispatcher::send_tr_from_hdf5file(size_t dataflow_run_number,
   // FilterResultWriter needs to know it before receiving the trigger
   // record.
   auto bookkeeping_sender =
-      dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>("bookkeeping0");
+      dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
+          m_bk_connection_o);
   bookkeeping_sender->send(std::move(bk_info), Sender::s_block);
 
   // Handshake with datafilter.
@@ -486,6 +456,8 @@ void TRDispatcher::send_tr_from_hdf5file(size_t dataflow_run_number,
       dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>("TR_tracking2");
 
   dunedaq::datafilter::Handshake sent_t1("next_tr");
+  // send total trigger number to datafilter then datafilter to
+  // FilterResultWriter
   sent_t1.total_tr = int(records_size);
 
   init_sender->send(std::move(sent_t1), Sender::s_block);
