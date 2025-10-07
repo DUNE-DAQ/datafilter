@@ -163,8 +163,8 @@ private:
   size_t m_run_number;
   std::atomic<size_t> m_num_messages{1};
   std::string m_info_file_base = "FilterResultWriter";
-  std::string m_odir = "/opt/tmp/chen";
-  std::string m_output_h5_filename = "h5_test";
+  std::string m_odir;
+  std::string m_output_h5_filename;
   // std::string m_session_name = "FilterResultWriter test run";
   std::string m_ofile_pathname{};
 

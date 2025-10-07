@@ -66,17 +66,23 @@ void TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
 
   m_storage_pathname = mdal->get_storage_pathname();
   m_is_from_storage = mdal->get_is_from_storage();
+
   m_input_h5_filename = mdal->get_input_h5_filename();
+  if (!m_is_from_storage)
+    m_input_h5_filename = m_storage_pathname + "/" + m_input_h5_filename;
+
   m_json_file = mdal->get_json_file();
+  m_generate_trigger_record = mdal->get_generate_trigger_record();
+  if (m_generate_trigger_record)
+    TLOG() << "You select to generate trigger record instead of get it from "
+              "storage or a specific file!";
 
   m_send_timeout_ms = std::chrono::milliseconds(mdal->get_send_timeout_ms());
   m_recv_timeout_ms = std::chrono::milliseconds(mdal->get_recv_timeout_ms());
 
-  if (!m_is_from_storage)
-    m_input_h5_filename = m_storage_pathname + "/" + m_input_h5_filename;
-
   TLOG() << "The storage for the HDF5 files is set to " << m_storage_pathname
-         << " input h5 filename " << m_input_h5_filename;
+         << " input_h5_filename " << m_input_h5_filename
+         << "  m_is_from_storage " << m_is_from_storage;
   // for test only
   // m_trdispatcher_id = mdal->get_trdispatcher_id();
   // TLOG() << "tridispatcher_id " << m_trdispatcher_id;
@@ -103,8 +109,41 @@ void TRDispatcher::do_start(const data_t &) {
   // temporary no thread. Will be backe later.
   // m_h5file_thread.start_working_thread();
   // m_thread.start_working_thread();
-  bool is_hdf5file = true;
-  receive(is_hdf5file);
+  // bool is_hdf5file = true;
+  // receive(is_hdf5file);
+
+  std::vector<std::filesystem::path> files;
+  size_t cnt = 0;
+
+  TLOG() << "m_is_from_storage " << m_is_from_storage;
+
+  if (!m_generate_trigger_record) {
+
+    bool is_hdf5file = true;
+    if (!m_is_from_storage) {
+      receive(is_hdf5file);
+    } else {
+      while (true) {
+
+        files = get_hdf5files_from_storage();
+
+        if (cnt % 10000000 == 0) {
+          TLOG() << "IDLE: No new HDF5 files after " << cnt << " checks.";
+        }
+        if (files.size() > 0) {
+          for (auto file : files) {
+            m_input_h5_filename = file;
+            TLOG() << "Sending from " << m_storage_pathname << "file "
+                   << m_input_h5_filename;
+            receive(is_hdf5file);
+          }
+        }
+      }
+    }
+  } else {
+    bool is_hdf5file = false;
+    receive(is_hdf5file);
+  }
 }
 
 void TRDispatcher::do_stop(const data_t &) {
@@ -118,11 +157,33 @@ void TRDispatcher::do_work(std::atomic<bool> &running) {
   std::mutex work_mutex;
   std::condition_variable work_cv;
   std::vector<std::filesystem::path> files;
+  size_t cnt = 0;
+
+  TLOG() << "m_is_from_storage " << m_is_from_storage;
 
   while (running.load()) {
-    files = get_hdf5files_from_storage();
-    bool is_hdf5file = true;
-    receive(is_hdf5file);
+    if (m_is_from_storage) {
+      while (true) {
+
+        files = get_hdf5files_from_storage();
+
+        if (cnt % 1000000 == 0) {
+          TLOG() << "IDLE: No new HDF5 files after " << cnt << " checks.";
+        }
+        if (files.size() > 0) {
+          for (auto file : files) {
+            m_input_h5_filename = file;
+            TLOG() << "Sending " << m_input_h5_filename;
+
+            bool is_hdf5file = true;
+            receive(is_hdf5file);
+          }
+        }
+      }
+    } else {
+      bool is_hdf5file = false;
+      receive(is_hdf5file);
+    }
 
     std::unique_lock<std::mutex> lock(work_mutex);
     work_cv.wait_for(lock, std::chrono::seconds(1), [&]() {
@@ -603,7 +664,8 @@ void TRDispatcher::send_tr_from_hdf5file() {
 }
 
 std::vector<std::filesystem::path> TRDispatcher::get_hdf5files_from_storage() {
-  TLOG_DEBUG(7) << "I am in get_hdf5files_from_storage";
+  TLOG_DEBUG(7) << "I am in get_hdf5files_from_storage : storage_pathname"
+                << m_storage_pathname << " json_file " << m_json_file;
 
   dunedaq::datafilter::HDF5FromStorage s(m_storage_pathname, m_json_file);
   // s.print();

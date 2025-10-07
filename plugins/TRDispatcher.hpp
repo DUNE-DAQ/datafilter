@@ -143,6 +143,7 @@ private:
                                        element_count_ta + element_count_tc;
 
   bool m_is_from_storage = false;
+  bool m_generate_trigger_record = false;
   std::string m_json_file;
   std::string m_input_h5_filename;
   std::string m_output_h5_filename;
