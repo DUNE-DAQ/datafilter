@@ -27,17 +27,14 @@ void TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
 
   m_mcfg = mcfg;
 
-  dunedaq::conffwk::Configuration *confdb;
-
   try {
-    confdb = new conffwk::Configuration(m_oksConfig);
-
+    m_confdb = std::make_shared<dunedaq::conffwk::Configuration>(m_oksConfig);
   } catch (conffwk::Generic &exc) {
     std::cout << "Failed to load OKS database: " << exc << std::endl;
   }
 
-  confdb->get<dunedaq::confmodel::Queue>(m_queues);
-  confdb->get<dunedaq::confmodel::NetworkConnection>(m_networkconnections);
+  m_confdb->get<dunedaq::confmodel::Queue>(m_queues);
+  m_confdb->get<dunedaq::confmodel::NetworkConnection>(m_networkconnections);
 
   // get TRDispatcher attributes.
   auto mdal = mcfg->get_dal<dunedaq::datafilter::dal::TRDispatcher>(get_name());

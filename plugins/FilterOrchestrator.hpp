@@ -86,6 +86,7 @@ private:
 
   void do_conf(const data_t &);
 
+  std::shared_ptr<dunedaq::conffwk::Configuration> m_confdb;
   const confmodel::Application *m_application;
   std::vector<const confmodel::DaqModule *> m_modules;
   std::vector<const dunedaq::confmodel::Queue *> m_queues;

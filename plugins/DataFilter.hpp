@@ -74,8 +74,11 @@ private:
   void do_stop(const data_t &);
   void do_work(std::atomic<bool> &);
 
+  void print_attrs();
+
   std::vector<const dunedaq::confmodel::Queue *> m_queues;
   std::vector<const confmodel::NetworkConnection *> m_networkconnections;
+  std::shared_ptr<dunedaq::conffwk::Configuration> m_confdb;
 
   dunedaq::utilities::WorkerThread m_thread;
   // TO datafilter DEVELOPERS: PLEASE DELETE THIS FOLLOWING COMMENT AFTER

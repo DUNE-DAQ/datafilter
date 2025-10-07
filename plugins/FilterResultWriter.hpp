@@ -142,6 +142,7 @@ private:
   dunedaq::utilities::WorkerThread m_thread;
   dunedaq::utilities::WorkerThread m_bk_thread;
 
+  std::shared_ptr<dunedaq::conffwk::Configuration> m_confdb;
   std::vector<const dunedaq::confmodel::Queue *> m_queues;
   std::vector<const confmodel::NetworkConnection *> m_networkconnections;
 

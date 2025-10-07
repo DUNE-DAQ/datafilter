@@ -31,16 +31,14 @@ void FilterResultWriter::FilterResultWriter::init(
   TLOG() << "Module name: " << get_name();
   m_mcfg = mcfg;
 
-  dunedaq::conffwk::Configuration *confdb;
   try {
-    confdb = new conffwk::Configuration(m_oksConfig);
-
+    m_confdb = std::make_shared<dunedaq::conffwk::Configuration>(m_oksConfig);
   } catch (conffwk::Generic &exc) {
     std::cout << "Failed to load OKS database: " << exc << std::endl;
   }
 
-  confdb->get<dunedaq::confmodel::Queue>(m_queues);
-  confdb->get<dunedaq::confmodel::NetworkConnection>(m_networkconnections);
+  m_confdb->get<dunedaq::confmodel::Queue>(m_queues);
+  m_confdb->get<dunedaq::confmodel::NetworkConnection>(m_networkconnections);
 
   // get TRDispatcher attributes.
   auto mdal =

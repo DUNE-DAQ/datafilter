@@ -25,17 +25,19 @@ DataFilter::DataFilter(const std::string &name)
 void DataFilter::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
   TLOG() << "Module name: " << get_name();
 
-  dunedaq::conffwk::Configuration *confdb;
-
   try {
-    confdb = new conffwk::Configuration(m_oksConfig);
-
+    m_confdb = std::make_shared<dunedaq::conffwk::Configuration>(m_oksConfig);
   } catch (conffwk::Generic &exc) {
     std::cout << "Failed to load OKS database: " << exc << std::endl;
   }
 
-  confdb->get<dunedaq::confmodel::Queue>(m_queues);
-  confdb->get<dunedaq::confmodel::NetworkConnection>(m_networkconnections);
+  m_confdb->get<dunedaq::confmodel::Queue>(m_queues);
+  m_confdb->get<dunedaq::confmodel::NetworkConnection>(m_networkconnections);
+
+  print_attrs();
+}
+
+void DataFilter::print_attrs() {
 
   TLOG() << "=== Debugging Network Connections ===";
   for (const auto &conn : m_networkconnections) {
@@ -45,7 +47,7 @@ void DataFilter::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
 
     conffwk::ConfigObject config_obj;
     try {
-      confdb->get("NetworkConnection", conn_id, config_obj);
+      m_confdb->get("NetworkConnection", conn_id, config_obj);
 
       // Check what attributes are available
       TLOG() << "  Available attributes:";
