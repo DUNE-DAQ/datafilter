@@ -45,6 +45,8 @@ int main(int argc, char *argv[]) {
   datafilter1->init(mgr1);
   datafilter1->execute_command("conf", datafilter_cfg);
   datafilter1->execute_command("start", datafilter_cfg);
+  // allow enough time for worker to enter loop at least once
+  std::this_thread::sleep_for(1s);
   datafilter1->execute_command("stop", datafilter_cfg);
 
   return 0;
