@@ -80,9 +80,6 @@ void TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
   TLOG() << "The storage for the HDF5 files is set to " << m_storage_pathname
          << " input_h5_filename " << m_input_h5_filename
          << "  m_is_from_storage " << m_is_from_storage;
-  // for test only
-  // m_trdispatcher_id = mdal->get_trdispatcher_id();
-  // TLOG() << "tridispatcher_id " << m_trdispatcher_id;
 }
 
 void TRDispatcher::do_conf(const data_t &) {
@@ -106,8 +103,6 @@ void TRDispatcher::do_start(const data_t &) {
   // temporary no thread. Will be backe later.
   // m_h5file_thread.start_working_thread();
   // m_thread.start_working_thread();
-  // bool is_hdf5file = true;
-  // receive(is_hdf5file);
 
   std::vector<std::filesystem::path> files;
   size_t cnt = 0;
@@ -121,18 +116,24 @@ void TRDispatcher::do_start(const data_t &) {
       receive(is_hdf5file);
     } else {
       while (true) {
-
         files = get_hdf5files_from_storage();
 
-        if (cnt % 10000000 == 0) {
-          TLOG() << "IDLE: No new HDF5 files after " << cnt << " checks.";
-        }
         if (files.size() > 0) {
           for (auto file : files) {
             m_input_h5_filename = file;
             TLOG() << "Sending from " << m_storage_pathname << "file "
                    << m_input_h5_filename;
             receive(is_hdf5file);
+          }
+          // Short sleep after processing files in case they come in bursts
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        } else {
+          // Longer sleep when no files found
+          std::this_thread::sleep_for(std::chrono::milliseconds(500));
+          cnt++;
+          if (cnt % 120 == 0) { // Log every minute (120 * 500ms = 60s)
+            TLOG() << "IDLE: No new HDF5 files after " << (cnt * 500 / 1000)
+                   << " seconds.";
           }
         }
       }
@@ -159,34 +160,45 @@ void TRDispatcher::do_work(std::atomic<bool> &running) {
   TLOG() << "m_is_from_storage " << m_is_from_storage;
 
   while (running.load()) {
-    if (m_is_from_storage) {
-      while (true) {
 
+    bool is_hdf5file = true;
+    if (!m_is_from_storage) {
+      receive(is_hdf5file);
+    } else {
+      while (true) {
         files = get_hdf5files_from_storage();
 
-        if (cnt % 1000000 == 0) {
-          TLOG() << "IDLE: No new HDF5 files after " << cnt << " checks.";
-        }
         if (files.size() > 0) {
           for (auto file : files) {
             m_input_h5_filename = file;
-            TLOG() << "Sending " << m_input_h5_filename;
-
-            bool is_hdf5file = true;
+            TLOG() << "Sending from " << m_storage_pathname << "file "
+                   << m_input_h5_filename;
             receive(is_hdf5file);
+          }
+          // Short sleep after processing files in case they come in bursts
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        } else {
+          // Longer sleep when no files found
+          std::this_thread::sleep_for(std::chrono::milliseconds(500));
+          cnt++;
+          if (cnt % 120 == 0) { // Log every minute (120 * 500ms = 60s)
+            TLOG() << "IDLE: No new HDF5 files after " << (cnt * 500 / 1000)
+                   << " seconds.";
           }
         }
       }
-    } else {
-      bool is_hdf5file = false;
-      receive(is_hdf5file);
     }
-
-    std::unique_lock<std::mutex> lock(work_mutex);
-    work_cv.wait_for(lock, std::chrono::seconds(1), [&]() {
-      return !running.load(); // check for new do_work availability
-    });
   }
+  else {
+    bool is_hdf5file = false;
+    receive(is_hdf5file);
+  }
+
+  std::unique_lock<std::mutex> lock(work_mutex);
+  work_cv.wait_for(lock, std::chrono::seconds(1), [&]() {
+    return !running.load(); // check for new do_work availability
+  });
+}
 }
 
 void TRDispatcher::do_h5file_work(std::atomic<bool> &running) {
