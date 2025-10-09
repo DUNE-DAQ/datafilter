@@ -1,4 +1,4 @@
-me: build-dunedaq-datafilter-v5
+name: build-dunedaq-datafilter-v5
 
 on:
   push:
@@ -15,7 +15,7 @@ on:
       - patch/*
       - prep-release/*
   schedule:
-    - cron: "0 9 * * *"
+    - cron: "37 19 * * *"
   workflow_dispatch:
 
 jobs:
