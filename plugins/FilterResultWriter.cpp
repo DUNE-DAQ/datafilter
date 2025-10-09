@@ -951,6 +951,8 @@ void FilterResultWriter::receive_tr_single_connection() {
   receiver->remove_callback();
   cb_receiver->remove_callback();
 
+  // reset total_expected with m_num_messsages
+  m_num_messages = 0;
   TLOG_DEBUG(5) << "receive_tr_single_connection() done";
 }
 

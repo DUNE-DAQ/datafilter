@@ -81,13 +81,6 @@ public:
         : group_id(group), conn_id(conn), is_group_subscriber(false) {}
     SubscriberInfo(size_t group)
         : group_id(group), conn_id(0), is_group_subscriber(true) {}
-
-    // std::string get_connection_name(FilterResultWriterConfig &config) {
-    //   if (is_group_subscriber) {
-    //     return config.get_group_connection_name(config.my_id, group_id);
-    //   }
-    //   return config.get_connection_name(config.my_id, group_id, conn_id);
-    // }
   };
 
   explicit FilterResultWriter(const std::string &name);
@@ -135,7 +128,6 @@ private:
   void do_start(const data_t &);
   void do_stop(const data_t &);
   void do_work(std::atomic<bool> &running);
-  // void attrs_thread(std::atomic<bool> &running);
   void receive_attrs(std::atomic<bool> &running);
 
   // Threading
@@ -162,7 +154,7 @@ private:
   size_t m_trigger_timestamp;
   size_t m_trigger_number;
   size_t m_run_number;
-  std::atomic<size_t> m_num_messages{1};
+  std::atomic<size_t> m_num_messages{0};
   std::string m_info_file_base = "FilterResultWriter";
   std::string m_odir;
   std::string m_output_h5_filename;
