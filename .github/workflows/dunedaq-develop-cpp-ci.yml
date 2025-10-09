@@ -15,7 +15,7 @@ on:
       - patch/*
       - prep-release/*
   schedule:
-    - cron: "37 19 * * *"
+    - cron: "50 19 * * *"
   workflow_dispatch:
 
 jobs:
@@ -45,6 +45,9 @@ jobs:
       
       - name: Checkout specific commits
         run: |
+          cd fddaqconf
+          git checkout 0575bb1ade1632c2679f4c33ca499a1dbf8175a1
+          cd ..
           cd appfwk
           git checkout 1f8ce77ccdf23b8e068b8096218cfb26dd87d80e
           cd ..
