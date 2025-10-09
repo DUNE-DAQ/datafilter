@@ -59,7 +59,6 @@ public:
     size_t element_id;
     size_t detector_id;
     size_t error_bits;
-    // dunedaq::daqdataformats::Fragment fragment_type;
     size_t fragment_type;
     std::string path_header;
     int n_frames;
@@ -79,6 +78,7 @@ public:
 
   void send_tr_from_hdf5file();
   void send_tr();
+  void get_from_storage();
   trigger_record_ptr_t create_trigger_record(uint64_t trig_num);
   std::vector<std::filesystem::path> get_hdf5files_from_storage();
 

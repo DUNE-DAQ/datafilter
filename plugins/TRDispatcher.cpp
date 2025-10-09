@@ -97,9 +97,12 @@ void TRDispatcher::do_conf(const data_t &) {
 }
 
 void TRDispatcher::do_start(const data_t &) {
-
   // temporary no thread. Will be backe later.
   // m_thread.start_working_thread();
+  get_from_storage();
+}
+
+void TRDispatcher::get_from_storage() {
 
   std::vector<std::filesystem::path> files;
   size_t cnt = 0;
@@ -155,39 +158,7 @@ void TRDispatcher::do_work(std::atomic<bool> &running_flag) {
 
   TLOG() << "m_is_from_storage " << m_is_from_storage;
   while (running_flag.load()) {
-    if (!m_generate_trigger_record) {
-
-      bool is_hdf5file = true;
-      if (!m_is_from_storage) {
-        receive(is_hdf5file);
-      } else {
-        while (true) {
-          files = get_hdf5files_from_storage();
-
-          if (files.size() > 0) {
-            for (auto file : files) {
-              m_input_h5_filename = file;
-              TLOG() << "Sending from " << m_storage_pathname << "file "
-                     << m_input_h5_filename;
-              receive(is_hdf5file);
-            }
-            // Short sleep after processing files in case they come in bursts
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-          } else {
-            // Longer sleep when no files found
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            cnt++;
-            if (cnt % 120 == 0) { // Log every minute (120 * 500ms = 60s)
-              TLOG() << "IDLE: No new HDF5 files after " << (cnt * 500 / 1000)
-                     << " seconds.";
-            }
-          }
-        }
-      }
-    } else {
-      bool is_hdf5file = false;
-      receive(is_hdf5file);
-    }
+    get_from_storage();
 
     std::unique_lock<std::mutex> lock(work_mutex);
     work_cv.wait_for(lock, std::chrono::seconds(1), [&]() {
@@ -214,7 +185,6 @@ void TRDispatcher::receive(bool is_hdf5file) {
   std::function<void(dunedaq::datafilter::Handshake)> str_receiver_cb =
       [&](dunedaq::datafilter::Handshake msg) {
         if (msg.msg_id == "trdispatcher0") {
-          // if (msg.msg_id == "trdispatcher0") {
           ++received_cnt;
         }
         TLOG() << "Received next TR instruction from filter "
