@@ -1,4 +1,5 @@
 * For old V4
+
 https://github.com/DUNE-DAQ/datafilter/tree/dunedaq-v4.1.1/
 https://github.com/wchen2013a/dfbackend/tree/dunedaq-v4.1.1
 
@@ -11,7 +12,7 @@ This suppose that you are already run the Data Filter setup script.
 Open 4 terminals and run the following apps (trdispatcher, filterorchestrator,
 filterresultwriter, datafilter2) in a separate terminal.
 
-* First provide the following inputs variables in the dfSession.xml to TRDispatcher object.
+* First provide the following inputs variables in the dfSession.data.xml to TRDispatcher object.
   * is_from_storage, the default value is true.
   * storage_pathname, where are the HDF5 files
   * json_file, for storing a list of files already transfered. The default value is hdf5_files_list.json
