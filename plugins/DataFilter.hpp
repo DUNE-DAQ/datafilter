@@ -659,11 +659,7 @@ struct TRRewriter {
 
             while (!complete_received && !send_successful &&
                    retry_count < max_retries) {
-              // Use send() with blocking instead of try_send() to ensure
-              // delivery
               try {
-                // FIXED: Don't use std::move on trp since it's a reference
-                // The sender should handle copying/moving internally
                 info->sender->send(std::move(trp), Sender::s_block);
                 send_successful = true;
                 ++info->messages_sent;
