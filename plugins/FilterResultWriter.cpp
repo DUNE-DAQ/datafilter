@@ -72,10 +72,13 @@ void FilterResultWriter::do_conf(const data_t &) {
 
 void FilterResultWriter::do_start(const data_t &) {
   m_bk_thread.start_working_thread();
-  m_thread.start_working_thread();
+  // m_thread.start_working_thread();
+  while (true) {
+    receive_tr_single_connection();
+  }
 }
 void FilterResultWriter::do_stop(const data_t &) {
-  m_thread.stop_working_thread();
+  // m_thread.stop_working_thread();
   m_bk_thread.stop_working_thread();
 }
 
@@ -84,8 +87,8 @@ void FilterResultWriter::do_work(std::atomic<bool> &running) {
   std::condition_variable work_cv;
 
   while (running.load()) {
-    // receive_tr(0);
-    receive_tr_single_connection(0);
+    // receive_tr();
+    receive_tr_single_connection();
 
     std::unique_lock<std::mutex> lock(work_mutex);
     work_cv.wait_for(lock, std::chrono::seconds(1), [&]() {
@@ -264,7 +267,7 @@ void FilterResultWriter::receive_attrs(std::atomic<bool> &running) {
   TLOG() << "Removing BookKeeping callback";
   receiver->remove_callback();
 
-  TLOG() << "BookKeeping attrs_thread exiting";
+  TLOG() << "BookKeeping receive_attrs exiting";
 }
 
 // void FilterResultWriter::receive_tr(size_t run_number1) {
@@ -460,7 +463,7 @@ void FilterResultWriter::receive_attrs(std::atomic<bool> &running) {
 //   TLOG_DEBUG(5) << "receive() done";
 // }
 
-void FilterResultWriter::receive_tr(size_t run_number1) {
+void FilterResultWriter::receive_tr() {
   // Use condition variable instead of busy-wait
   std::mutex cv_mutex;
   std::condition_variable cv;
@@ -740,7 +743,7 @@ void FilterResultWriter::receive_tr(size_t run_number1) {
   TLOG_DEBUG(5) << "receive() done";
 }
 
-void FilterResultWriter::receive_tr_single_connection(size_t run_number1) {
+void FilterResultWriter::receive_tr_single_connection() {
   std::mutex cv_mutex;
   std::condition_variable cv;
   bool handshake_done = false;
@@ -951,7 +954,7 @@ void FilterResultWriter::receive_tr_single_connection(size_t run_number1) {
   TLOG_DEBUG(5) << "receive_tr_single_connection() done";
 }
 
-void FilterResultWriter::send_next_tr(size_t run_number, pid_t subscriber_pid) {
+void FilterResultWriter::send_next_tr() {
   bool handshake_done = false;
 
   std::atomic<unsigned int> sent_cnt = 0;
@@ -960,7 +963,7 @@ void FilterResultWriter::send_next_tr(size_t run_number, pid_t subscriber_pid) {
       dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>("trdispatcher1");
 
   // std::chrono::milliseconds timeout(100);
-  dunedaq::datafilter::Handshake sent_t1("trdispatcher1");
+  dunedaq::datafilter::Handshake sent_t1("next_tr");
   // sender_next_tr->send(std::move(sent_t1), timeout);
   sender_next_tr->send(std::move(sent_t1), Sender::s_block);
 }

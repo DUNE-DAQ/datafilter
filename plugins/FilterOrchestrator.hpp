@@ -58,10 +58,9 @@ public:
   explicit FilterOrchestrator(const std::string &name);
 
   void init(std::shared_ptr<appfwk::ConfigurationManager>) override;
-  void init2(std::shared_ptr<appfwk::ConfigurationManager>);
-  void send(size_t run_number, pid_t subscriber_pid);
-  void request_next_tr(size_t run_number, pid_t subscriber_pid);
-  void receive(size_t dataflow_run_number1, pid_t subscriber_pid);
+  void send();
+  void request_next_tr();
+  void receive();
 
   std::vector<std::shared_ptr<FilterOrchestratorInfo>> filterorchestrators;
   FilterOrchestrator(const FilterOrchestrator &) = delete;
@@ -85,17 +84,21 @@ private:
   // configuration passed as an argument and originating from the CCM system.
 
   void do_conf(const data_t &);
+  void do_start(const data_t &);
+  void do_stop(const data_t &);
+  void do_work(std::atomic<bool> &);
+
+  // Threading
+  dunedaq::utilities::WorkerThread m_thread;
 
   std::shared_ptr<dunedaq::conffwk::Configuration> m_confdb;
   const confmodel::Application *m_application;
   std::vector<const confmodel::DaqModule *> m_modules;
   std::vector<const dunedaq::confmodel::Queue *> m_queues;
   std::vector<const confmodel::NetworkConnection *> m_networkconnections;
-  std::string address;
-  std::string data_type;
-  std::string conn_type_str;
 
   std::string m_oksConfig = "oksconflibs:test/config/dfSession.data.xml";
+  std::string m_session_name = "test-session";
 
   // Configuration
   std::shared_ptr<appfwk::ConfigurationManager> m_mcfg;
@@ -108,6 +111,7 @@ private:
   // FilterOrchestrator runs and whose value we'd like to keep track of during
   // running; obviously you'd want to replace this "in real life"
 
+  std::atomic<bool> *m_running_flag;
   std::string m_init_connection;
   std::string m_filter_orchestrator_id;
   std::chrono::milliseconds m_send_timeout_ms{100};

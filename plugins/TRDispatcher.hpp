@@ -106,12 +106,10 @@ private:
   void do_conf(const data_t &);
   void do_start(const data_t &);
   void do_stop(const data_t &);
-  void do_work(std::atomic<bool> &running);
-  void do_h5file_work(std::atomic<bool> &running);
+  void do_work(std::atomic<bool> &running_flag);
 
   // Threading
   dunedaq::utilities::WorkerThread m_thread;
-  dunedaq::utilities::WorkerThread m_h5file_thread;
 
   std::shared_ptr<dunedaq::conffwk::Configuration> m_confdb;
   const confmodel::Application *m_application;

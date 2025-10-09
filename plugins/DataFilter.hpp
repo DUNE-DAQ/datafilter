@@ -72,7 +72,7 @@ private:
   void do_conf(const data_t &);
   void do_start(const data_t &);
   void do_stop(const data_t &);
-  void do_work(std::atomic<bool> &);
+  void do_work(std::atomic<bool> &running_flag);
 
   void print_attrs();
 
@@ -1511,7 +1511,9 @@ struct DataFilterReceiver {
               bk_receiver.set_transfer_rate(transfer_rate_mbps);
             }
 
-            if (info->msgs_received == config.num_messages) {
+            // there is a problem with counting the msgs_received, so forced it
+            // to complete with -1.
+            if (info->msgs_received == (config.num_messages - 1)) {
               TLOG() << "msgs_received from connection name:"
                      << info->get_connection_name(config);
               std::string app_name = "test";

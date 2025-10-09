@@ -89,10 +89,11 @@ struct BookKeeping {
 struct Handshake {
   std::string msg_id;
   int total_tr;
+  uint64_t ack_id;
   Handshake() = default;
   Handshake(std::string msg) : msg_id(msg) {}
 
-  DUNE_DAQ_SERIALIZE(Handshake, msg_id, total_tr);
+  DUNE_DAQ_SERIALIZE(Handshake, msg_id, total_tr, ack_id);
 };
 
 struct time_point_to_string {

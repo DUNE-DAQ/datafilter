@@ -14,8 +14,6 @@ namespace dunedaq::datafilter {
 
 TRDispatcher::TRDispatcher(const std::string &name)
     : dunedaq::appfwk::DAQModule(name),
-      m_h5file_thread(std::bind(&TRDispatcher::do_h5file_work, this,
-                                std::placeholders::_1)),
       m_thread(std::bind(&TRDispatcher::do_work, this, std::placeholders::_1)) {
   register_command("conf", &TRDispatcher::do_conf);
   register_command("start", &TRDispatcher::do_start);
@@ -101,7 +99,6 @@ void TRDispatcher::do_conf(const data_t &) {
 void TRDispatcher::do_start(const data_t &) {
 
   // temporary no thread. Will be backe later.
-  // m_h5file_thread.start_working_thread();
   // m_thread.start_working_thread();
 
   std::vector<std::filesystem::path> files;
@@ -146,11 +143,10 @@ void TRDispatcher::do_start(const data_t &) {
 
 void TRDispatcher::do_stop(const data_t &) {
 
-  // m_h5file_thread.stop_working_thread();
   // m_thread.stop_working_thread();
 }
 
-void TRDispatcher::do_work(std::atomic<bool> &running) {
+void TRDispatcher::do_work(std::atomic<bool> &running_flag) {
 
   std::mutex work_mutex;
   std::condition_variable work_cv;
@@ -158,59 +154,44 @@ void TRDispatcher::do_work(std::atomic<bool> &running) {
   size_t cnt = 0;
 
   TLOG() << "m_is_from_storage " << m_is_from_storage;
+  while (running_flag.load()) {
+    if (!m_generate_trigger_record) {
 
-  while (running.load()) {
+      bool is_hdf5file = true;
+      if (!m_is_from_storage) {
+        receive(is_hdf5file);
+      } else {
+        while (true) {
+          files = get_hdf5files_from_storage();
 
-    bool is_hdf5file = true;
-    if (!m_is_from_storage) {
-      receive(is_hdf5file);
-    } else {
-      while (true) {
-        files = get_hdf5files_from_storage();
-
-        if (files.size() > 0) {
-          for (auto file : files) {
-            m_input_h5_filename = file;
-            TLOG() << "Sending from " << m_storage_pathname << "file "
-                   << m_input_h5_filename;
-            receive(is_hdf5file);
-          }
-          // Short sleep after processing files in case they come in bursts
-          std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        } else {
-          // Longer sleep when no files found
-          std::this_thread::sleep_for(std::chrono::milliseconds(500));
-          cnt++;
-          if (cnt % 120 == 0) { // Log every minute (120 * 500ms = 60s)
-            TLOG() << "IDLE: No new HDF5 files after " << (cnt * 500 / 1000)
-                   << " seconds.";
+          if (files.size() > 0) {
+            for (auto file : files) {
+              m_input_h5_filename = file;
+              TLOG() << "Sending from " << m_storage_pathname << "file "
+                     << m_input_h5_filename;
+              receive(is_hdf5file);
+            }
+            // Short sleep after processing files in case they come in bursts
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+          } else {
+            // Longer sleep when no files found
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            cnt++;
+            if (cnt % 120 == 0) { // Log every minute (120 * 500ms = 60s)
+              TLOG() << "IDLE: No new HDF5 files after " << (cnt * 500 / 1000)
+                     << " seconds.";
+            }
           }
         }
       }
+    } else {
+      bool is_hdf5file = false;
+      receive(is_hdf5file);
     }
-  }
-  else {
-    bool is_hdf5file = false;
-    receive(is_hdf5file);
-  }
-
-  std::unique_lock<std::mutex> lock(work_mutex);
-  work_cv.wait_for(lock, std::chrono::seconds(1), [&]() {
-    return !running.load(); // check for new do_work availability
-  });
-}
-}
-
-void TRDispatcher::do_h5file_work(std::atomic<bool> &running) {
-  std::mutex work_mutex;
-  std::condition_variable work_cv;
-
-  while (running.load()) {
-    // get_hdf5files_from_storage();
 
     std::unique_lock<std::mutex> lock(work_mutex);
     work_cv.wait_for(lock, std::chrono::seconds(1), [&]() {
-      return !running.load(); // check for new do_work availability
+      return !running_flag.load(); // check for new do_work availability
     });
   }
 }

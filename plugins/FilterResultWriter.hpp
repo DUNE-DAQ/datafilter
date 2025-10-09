@@ -103,9 +103,9 @@ public:
   std::string generate_hdf5file_pathname(std::string file_pathname_prefix,
                                          int run_number, int file_index,
                                          int trigger_number);
-  void receive_tr(size_t run_number1);
-  void receive_tr_single_connection(size_t run_number1);
-  void send_next_tr(size_t run_number, pid_t subscriber_pid);
+  void receive_tr();
+  void receive_tr_single_connection();
+  void send_next_tr();
   void receive_attrs_test();
   void start_receive_attrs_test_thread();
   void stop_receive_attrs_test_thread();

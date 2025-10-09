@@ -102,26 +102,47 @@ void DataFilter::do_conf(const data_t &) {
   TLOG() << get_name() << ": exist do_conf()";
 }
 
-void DataFilter::do_start(const data_t &) { m_thread.start_working_thread(); }
-
-void DataFilter::do_stop(const data_t &) {
-  TLOG() << get_name() << " do_stop()";
-  m_thread.stop_working_thread();
-
-  TLOG() << get_name() << ": exist do_stop()";
-}
-
-void DataFilter::do_work(std::atomic<bool> &running) {
+void DataFilter::do_start(const data_t &) {
+  TLOG() << get_name() << " do_start()";
+  // m_thread.start_working_thread();
 
   dunedaq::datafilter::DataFilterConfig config;
   dunedaq::datafilter::RunInfo run_info;
   auto datafilter_id = std::to_string(config.my_id1);
   auto df_receiver = std::make_unique<dunedaq::datafilter::DataFilterReceiver>(
       config, run_info, datafilter_id);
-  while (1) {
+  while (true) {
+
     TLOG() << "Request next tr";
     df_receiver->organiser.request_next_tr();
     df_receiver->receive_tr(0);
+  }
+}
+
+void DataFilter::do_stop(const data_t &) {
+  TLOG() << get_name() << " do_stop()";
+  // m_thread.stop_working_thread();
+}
+
+void DataFilter::do_work(std::atomic<bool> &running_flag) {
+
+  std::mutex work_mutex;
+  std::condition_variable work_cv;
+
+  dunedaq::datafilter::DataFilterConfig config;
+  dunedaq::datafilter::RunInfo run_info;
+  auto datafilter_id = std::to_string(config.my_id1);
+  auto df_receiver = std::make_unique<dunedaq::datafilter::DataFilterReceiver>(
+      config, run_info, datafilter_id);
+  while (running_flag.load()) {
+    TLOG() << "Request next tr";
+    df_receiver->organiser.request_next_tr();
+    df_receiver->receive_tr(0);
+
+    std::unique_lock<std::mutex> lock(work_mutex);
+    work_cv.wait_for(lock, std::chrono::seconds(1), [&]() {
+      return !running_flag.load(); // check for new work availability
+    });
   }
 }
 
