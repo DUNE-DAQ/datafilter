@@ -48,14 +48,6 @@ daq_add_dal_library(datafilter.schema.xml NAMESPACE dunedaq::datafilter::dal DAL
 daq_add_library (*.cpp LINK_LIBRARIES opmonlib::opmonlib stdc++fs ers::ers HighFive hdf5libs dfmodules::dfmodules daqdataformats::daqdataformats detdataformats::detdataformats \\
                     fddetdataformats::fddetdataformats detchannelmaps::detchannelmaps iomanager::iomanager logging::logging nlohmann_json::nlohmann_json ${CETLIB} ${CETLIB_EXCEPT})
 ##############################################################################
-# Unit tests
-#daq_add_unit_test( HDF5WriteReadTriggerRecord_test LINK_LIBRARIES hdf5libs )
-#daq_add_unit_test( HDF5WriteReadTimeSlice_test LINK_LIBRARIES hdf5libs )
-
-##############################################################################
-# Python bindings
-# daq_add_python_bindings(*.cpp LINK_LIBRARIES ${PROJECT_NAME} hdf5libs::hdf5libs opmonlib::opmonlib dfmessages::dfmessages dfmodules::dfmodules daqdataformats::daqdataformats fddetdataformats::fddetdataformats)
-
 
 ##############################################################################
 # See https://dune-daq-sw.readthedocs.io/en/latest/packages/daq-cmake/#daq_add_plugin
@@ -67,18 +59,6 @@ daq_add_plugin(FilterResultWriter duneDAQModule LINK_LIBRARIES  datafilter dataf
 
 ##############################################################################
 # Applications
-# daq_add_application(hdf5libs_datafilter_writer_test hdf5libs_datafilter_writer_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-# daq_add_application(datafilter_tr_send_test datafilter_tr_send_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-#daq_add_application(datafilter_tr_send_test-modified2 datafilter_tr_send_test-modified2.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-# daq_add_application(datafilter_tr_receive_test datafilter_tr_receive_test.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-# daq_add_application(datafilter_tr_receive_test3 datafilter_tr_receive_test-modified2.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-#daq_add_application(datafilter_tr_receive_writer datafilter_tr_receive_writer.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-#daq_add_application(dataflow_emu ../../apps/dataflow_emu.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-# daq_add_application(dataflow_emu2 ../../apps/dataflow_emu2.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-# daq_add_application(datafilter2 ../../apps/datafilter2.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-#daq_add_application(get_header_size get_header_size.cpp TEST LINK_LIBRARIES ${PROJECT_NAME})
-
-
 daq_add_application(trdispatcher trdispatcher.cxx             LINK_LIBRARIES  appfwk::appfwk okssystem::okssystem conffwk::conffwk iomanager::iomanager dfmessages::dfmessages rcif::rcif hdf5libs::hdf5libs logging::logging nlohmann_json::nlohmann_json) 
 daq_add_application(filterorchestrator filterorchestrator.cxx LINK_LIBRARIES  appfwk::appfwk okssystem::okssystem conffwk::conffwk iomanager::iomanager hdf5libs::hdf5libs logging::logging nlohmann_json::nlohmann_json) 
 daq_add_application(filterresultwriter filterresultwriter.cxx LINK_LIBRARIES  appfwk::appfwk okssystem::okssystem conffwk::conffwk iomanager::iomanager dfmessages::dfmessages rcif::rcif hdf5libs::hdf5libs logging::logging nlohmann_json::nlohmann_json) 
