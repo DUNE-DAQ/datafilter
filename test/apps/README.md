@@ -1,145 +1,39 @@
-* Start the data flow emulator first in one terminal
+* For old V4
+https://github.com/DUNE-DAQ/datafilter/tree/dunedaq-v4.1.1/
+https://github.com/wchen2013a/dfbackend/tree/dunedaq-v4.1.1
 
-```
-python3 dataflow_emu.py np04_coldbox_run014182_0000_dataflow0_20220712T102315.hdf5
-
-```
-* Start the data filter process in another terminal
-
-```
-python3 datafilter-nodash.py output.hdf5
- 
-```
-
-* Fast test. Modify the variable *is_full_write* to "0" in dataflow_emu.py.
-
-* Check the results using h5diff
-
-```
-h5diff output.hdf5  np04_coldbox_run014182_0000_dataflow0_20220712T102315.hdf5
- 
-```
-
-See h5diff -h for more options. You can also use h5dump to dump both files to
-text format and using vimdiff to view the difference.
-
-
-* Run test with the data filter with plots of the ADC values.
-
- * dataflow_emu first in one terminal
-  ```
-  python3 dataflow_emu.py --test 3 np04_coldbox_run014182_0000_dataflow0_20220712T102315.hdf5
-  
-  ```
-  * Run data filter in another terminal
-
-  ```
-  pip3 install dash # if we don't have it install
-  python3 datafilter.py test_output.hdf5
-=======
-  python3 datafilter 
-
-  ```
- * You can view the plots from a browser pointing to http://yourip:8080, where
-   yourip is the IP of your data filter host.
-
-* Test data filter writer
-
-  * Modify Detector_Readout_0x00000064_WIBEth in RawData
-
-  ```
-
-  hdf5libs_datafilter_writer_test  np04hd_run024559_0009_dataflow0_datawriter_0_20240321T103447.hdf5 test2.h5 0
-  
-  # to check the results
-  h5diff -c test2.h5 np04hd_run024559_0009_dataflow0_datawriter_0_20240321T103447.hdf5
-
-  ```
-
- * Remove Detector_Readout_0x00000064_WIBEth from RawData
-
- ```
-
-  hdf5libs_datafilter_writer_test  np04hd_run024559_0009_dataflow0_datawriter_0_20240321T103447.hdf5 test2.h5 1
-
-  # to check for the dataset Detector_Readout_0x00000064_WIBEth 
-
-  h5dump -d /TriggerRecord00253.0000/RawData/Detector_Readout_0x00000064_WIBEth test2.h5
- ```
-
-* Run Trigger Record tranfer test.
-
- * start the receiver first
-
-```
-# sender on the same node
-datafilter_tr_receive_test -d `pwd` -o test
-
-# sender on different node
-datafilter_tr_receive_test --server np04-srv-004 -d `pwd` -o test
-```
- * then start the sender of the a generated Trigger Record.
-
- ```
-# sender on the same node as receiver
-datafilter_tr_send_test 
-
-# sender on different node as receiver
-datafilter_tr_send_test  --server np04-srv-004
- ```
- * check the output HDF5 file 
-
- ```
-hdf5_dump.py -f test1.hdf5 -p header
-hdf5_dump.py -f test1.hdf5 -p fragment
-
- ```
-
-* start to send trigger records from HDF5 file
-
-```
-datafilter_tr_send_test -f swtest_run001039_0000_dataflow0_datawriter_0_20231103T121050.hdf5 --hdf5
-
-```
+* Data Filter V5 with OKS
 
 * Full integration test
 
+
+This suppose that you are already run the Data Filter setup script.
 Open 4 terminals and run the following apps (trdispatcher, filterorchestrator,
 filterresultwriter, datafilter2) in a separate terminal.
 
+* First provide the following inputs variables in the dfSession.xml to TRDispatcher object.
+  * is_from_storage, the default value is true.
+  * storage_pathname, where are the HDF5 files
+  * json_file, for storing a list of files already transfered. The default value is hdf5_files_list.json
 
-```
-# run trdispatcher in np04-srv-004
+* The output directory and file prefix odir and output_h5_filename to FilterResultWriter object
 
-# To generate simple TR 
-trdispatcher --server np02-srv-004 --server_trdispatcher np04-srv-004 -r 1
-
-# for TR dataset from a HDF5 file
-trdispatcher --server np02-srv-004 --server_trdispatcher np04-srv-004 -f np04hd_run024559_0009_dataflow0_datawriter_0_20240321T103447.hdf5 --hdf5
-
-# for TR dataset from a directory
-
-trdispatcher --server np02-srv-004 --server_trdispatcher np04-srv-004 --from_storage --storage_pathname=/put_your_storage_pathname_here
-```
-
-```
-# run filterorchestrator in np04-srv-004
-filterorchestrator --server np02-srv-004 --server_trdispatcher np04-srv-004 
+* IP Address can be changed from the inputs and outputs objects of the TRDipatcher, FilterOrchastrator,
+  FilterResultWriter and DataFilter with the address attribute. The default address is 127.0.0.1.
 
 ```
 
-```
-# run filterresultwriter in np02-srv-004
-filterresultwriter --server np02-srv-004 --server_trdispatcher np04-srv-004 -d `pwd` -o test2 
-```
+cd test/apps # in each terminal
+
+# run Data Filter on np04-srv-004 for TR dataset from a directory. The start order is not important.
+
+#terminal 1
+trdispatcher
+#terminal 2
+filterorchestrator
+#terminal 3
+datafilter2
+#terminal 4
+filterresultwriter
 
 ```
-# run datafilter2 on np02-srv-004 
-datafilter2 --server np02-srv-004 --server_trdispatcher np04-srv-004 
-
-```
-
-The option "-r" allows to set the number of generated trigger record. The
-example above was set to 1.
-
-

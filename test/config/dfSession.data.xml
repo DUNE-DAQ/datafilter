@@ -79,58 +79,7 @@
  <comment creation-time="20250706T011801" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="TriggerRecord conn"/>
  <comment creation-time="20250711T053505" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="added local connsvc"/>
  <comment creation-time="20250711T231737" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="add TRQ queue"/>
- <comment creation-time="20250712T192630" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="added start"/>
- <comment creation-time="20250712T201751" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="added DaqModule"/>
- <comment creation-time="20250722T041654" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="add TRDispatcher."/>
- <comment creation-time="20250722T042351" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="add TRDistpacher_0."/>
- <comment creation-time="20250722T043205" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="to kPubSub"/>
- <comment creation-time="20250722T133222" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="change data_type."/>
  <comment creation-time="20250722T133406" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test change data_type."/>
- <comment creation-time="20250722T133544" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test change data_type."/>
- <comment creation-time="20250722T135150" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test change data_type."/>
- <comment creation-time="20250804T045834" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="change Handshake to init_t"/>
- <comment creation-time="20250805T143759" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="add trdispatcher0"/>
- <comment creation-time="20250907T174814" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="change trdispatcher0  data_type to init_t"/>
- <comment creation-time="20250914T050718" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="modified."/>
- <comment creation-time="20250914T052412" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="modified"/>
- <comment creation-time="20250914T142617" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="modified tr_tracking0 for testing."/>
- <comment creation-time="20250914T143016" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250914T143637" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250916T051829" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250916T051935" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250916T052133" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250916T113949" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250916T144813" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250924T042503" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250926T194315" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250928T045537" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250928T050709" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250928T051643" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250928T052121" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250928T164629" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250928T194328" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250929T155308" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250929T155748" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250929T160658" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250929T162740" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250929T183024" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250929T191454" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250929T192834" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250929T205018" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250929T222559" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250929T222641" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250930T120634" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250930T120852" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20250930T121019" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20251006T023108" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20251006T032246" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20251006T041651" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20251006T221121" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20251006T221834" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20251006T222105" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20251007T000731" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20251007T024827" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
- <comment creation-time="20251007T053648" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
  <comment creation-time="20251007T145932" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
 </comments>
 
@@ -393,7 +342,7 @@
  <attr name="send_timeout_ms" type="u32" val="1000"/>
  <attr name="recv_timeout_ms" type="u32" val="1000"/>
  <attr name="connection_type" type="enum" val="kSendRecv"/>
- <attr name="address" type="string" val="tcp://10.0.0.13:13000"/>
+ <attr name="address" type="string" val="tcp://127.0.0.1:13000"/>
  <rel name="associated_service" class="Service" id="local-connectivity-service-trk0"/>
 </obj>
 
@@ -402,7 +351,7 @@
  <attr name="send_timeout_ms" type="u32" val="1000"/>
  <attr name="recv_timeout_ms" type="u32" val="1000"/>
  <attr name="connection_type" type="enum" val="kSendRecv"/>
- <attr name="address" type="string" val="tcp://10.0.0.13:13001"/>
+ <attr name="address" type="string" val="tcp://127.0.0.1:13001"/>
  <rel name="associated_service" class="Service" id="local-connectivity-service-trk1"/>
 </obj>
 
@@ -411,7 +360,7 @@
  <attr name="send_timeout_ms" type="u32" val="1000"/>
  <attr name="recv_timeout_ms" type="u32" val="1000"/>
  <attr name="connection_type" type="enum" val="kSendRecv"/>
- <attr name="address" type="string" val="tcp://10.0.0.13:13002"/>
+ <attr name="address" type="string" val="tcp://127.0.0.1:13002"/>
  <rel name="associated_service" class="Service" id="local-connectivity-service-trk2"/>
 </obj>
 
@@ -420,7 +369,7 @@
  <attr name="send_timeout_ms" type="u32" val="1000"/>
  <attr name="recv_timeout_ms" type="u32" val="1000"/>
  <attr name="connection_type" type="enum" val="kSendRecv"/>
- <attr name="address" type="string" val="tcp://10.0.0.13:33000"/>
+ <attr name="address" type="string" val="tcp://127.0.0.1:33000"/>
  <rel name="associated_service" class="Service" id="local-connectivity-service-bk0"/>
 </obj>
 
@@ -429,7 +378,7 @@
  <attr name="send_timeout_ms" type="u32" val="1000"/>
  <attr name="recv_timeout_ms" type="u32" val="1000"/>
  <attr name="connection_type" type="enum" val="kSendRecv"/>
- <attr name="address" type="string" val="tcp://10.0.0.13:33001"/>
+ <attr name="address" type="string" val="tcp://127.0.0.1:33001"/>
  <rel name="associated_service" class="Service" id="local-connectivity-service-bk1"/>
 </obj>
 
@@ -438,7 +387,7 @@
  <attr name="send_timeout_ms" type="u32" val="10"/>
  <attr name="recv_timeout_ms" type="u32" val="10"/>
  <attr name="connection_type" type="enum" val="kPubSub"/>
- <attr name="address" type="string" val="tcp://10.0.0.13:15500"/>
+ <attr name="address" type="string" val="tcp://127.0.0.1:15500"/>
  <rel name="associated_service" class="Service" id="local-connectivity-service-tr0"/>
 </obj>
 
@@ -447,7 +396,7 @@
  <attr name="send_timeout_ms" type="u32" val="10"/>
  <attr name="recv_timeout_ms" type="u32" val="10"/>
  <attr name="connection_type" type="enum" val="kPubSub"/>
- <attr name="address" type="string" val="tcp://10.0.0.13:15501"/>
+ <attr name="address" type="string" val="tcp://127.0.0.1:15501"/>
  <rel name="associated_service" class="Service" id="local-connectivity-service-tr1"/>
 </obj>
 
@@ -456,7 +405,7 @@
  <attr name="send_timeout_ms" type="u32" val="1000"/>
  <attr name="recv_timeout_ms" type="u32" val="1000"/>
  <attr name="connection_type" type="enum" val="kSendRecv"/>
- <attr name="address" type="string" val="tcp://10.0.0.13:23000"/>
+ <attr name="address" type="string" val="tcp://127.0.0.1:23000"/>
  <rel name="associated_service" class="Service" id="local-connectivity-service-trd0"/>
 </obj>
 
@@ -465,7 +414,7 @@
  <attr name="send_timeout_ms" type="u32" val="1000"/>
  <attr name="recv_timeout_ms" type="u32" val="1000"/>
  <attr name="connection_type" type="enum" val="kSendRecv"/>
- <attr name="address" type="string" val="tcp://10.0.0.13:23001"/>
+ <attr name="address" type="string" val="tcp://127.0.0.1:23001"/>
  <rel name="associated_service" class="Service" id="local-connectivity-service-trd1"/>
 </obj>
 
@@ -474,7 +423,7 @@
  <attr name="send_timeout_ms" type="u32" val="1000"/>
  <attr name="recv_timeout_ms" type="u32" val="1000"/>
  <attr name="connection_type" type="enum" val="kSendRecv"/>
- <attr name="address" type="string" val="tcp://10.0.0.13:24000"/>
+ <attr name="address" type="string" val="tcp://127.0.0.1:24000"/>
  <rel name="associated_service" class="Service" id="local-connectivity-service-trw0"/>
 </obj>
 
