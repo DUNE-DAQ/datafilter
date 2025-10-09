@@ -115,7 +115,7 @@ void DataFilter::do_start(const data_t &) {
 
     TLOG() << "Request next tr";
     df_receiver->organiser.request_next_tr();
-    df_receiver->receive_tr(0);
+    df_receiver->receive_tr();
   }
 }
 
@@ -137,7 +137,7 @@ void DataFilter::do_work(std::atomic<bool> &running_flag) {
   while (running_flag.load()) {
     TLOG() << "Request next tr";
     df_receiver->organiser.request_next_tr();
-    df_receiver->receive_tr(0);
+    df_receiver->receive_tr();
 
     std::unique_lock<std::mutex> lock(work_mutex);
     work_cv.wait_for(lock, std::chrono::seconds(1), [&]() {

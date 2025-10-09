@@ -104,14 +104,7 @@ private:
 struct DataFilterConfig {
   bool use_connectivity_service = false;
 
-  int port = 5000;
-  int portA = 15500; // for trdispatcher/datafilter connection
-  int portB = 15501; // for datafilter/trwriter connection
-
-  std::string server = "127.0.0.1";
-  std::string server_trdispatcher = "127.0.0.1";
-  std::string info_file_base = "datafilter";
-  std::string session_name = "datafilter test run";
+  // std::string session_name = "datafilter test run";
   size_t num_apps = 1;
   size_t num_connections_per_group = 1;
   size_t num_groups = 1;
@@ -134,17 +127,8 @@ struct DataFilterConfig {
   size_t error_bits;
   size_t fragment_type;
 
-  std::string input_h5_filename =
-      "/lcg/storage19/test-area/dune/trigger_records/"
-      "swtest_run001039_0000_dataflow0_datawriter_0_20231103T121050.hdf5";
-
   std::string odir = "/opt/tmp/chen"; // current directory
   std::string output_h5_filename = "h5_test";
-
-  void configure_connsvc() {
-    setenv("CONNECTION_SERVER", server.c_str(), 1);
-    setenv("CONNECTION_PORT", std::to_string(port).c_str(), 1);
-  }
 
   std::string get_connection_name(size_t app_id, size_t group_id,
                                   size_t conn_id) {
@@ -158,118 +142,11 @@ struct DataFilterConfig {
     return ss.str();
   }
 
-  std::string get_connection_ip(size_t app_id, size_t group_id, size_t conn_id,
-                                size_t port) {
-    assert(num_apps < 253);
-    assert(num_groups < 253);
-    assert(num_connections_per_group < 252);
-
-    int first_byte = conn_id + 2;   // 2-254
-    int second_byte = group_id + 1; // 1-254
-    int third_byte = app_id + 1;    // 1-254
-    std::string conn_addr;
-    if (server == "127.0.0.1") {
-      conn_addr = "tcp://127." + std::to_string(third_byte) + "." +
-                  std::to_string(second_byte) + "." +
-                  std::to_string(first_byte) + ":" + std::to_string(port);
-    } else {
-      conn_addr = "tcp://" + server + ":" + std::to_string(port);
-    }
-
-    return conn_addr;
-  }
-
-  std::string get_subscriber_init_name() {
-    return get_subscriber_init_name(my_id1);
-  }
-  std::string get_subscriber_init_name(size_t id) {
-    return "conn_init_" + std::to_string(id);
-  }
-
-  // void configure_iomanager() {
-  //   setenv("DUNEDAQ_PARTITION", session_name.c_str(), 0);
-
-  //   Queues_t queues;
-  //   Connections_t connections;
-
-  //   auto conn_addr0 = "tcp://" + server + ":" + std::to_string(portA);
-  //   auto conn_addr1 = "tcp://" + server + ":" + std::to_string(portB);
-  //   connections.emplace_back(
-  //       Connection{ConnectionId{"conn_A0_G0_C0_", "TriggerRecord"},
-  //                  // conn_addr0, ConnectionType::kPubSub});
-  //                  conn_addr0, ConnectionType::kSendRecv});
-  //   connections.emplace_back(
-  //       Connection{ConnectionId{"conn_A1_G0_C0_", "TriggerRecord"},
-  //                  // conn_addr1, ConnectionType::kPubSub});
-  //                  conn_addr1, ConnectionType::kSendRecv});
-
-  //   //  for (size_t sub = 0; sub < num_apps; ++sub) {
-  //   for (size_t sub = 0; sub < 3; ++sub) {
-  //     auto port = 13000 + sub;
-  //     std::string conn_addr = "tcp://" + server + ":" + std::to_string(port);
-  //     TLOG() << "Adding control connection "
-  //            << "TR_tracking" + std::to_string(sub) << " with address "
-  //            << conn_addr;
-
-  //     connections.emplace_back(
-  //         // Connection{ ConnectionId{ "TR_tracking"+std::to_string(sub),
-  //         // "init_t" }, conn_addr, ConnectionType::kPubSub });
-  //         Connection{
-  //             ConnectionId{"TR_tracking" + std::to_string(sub), "init_t"},
-  //             conn_addr, ConnectionType::kSendRecv});
-  //   }
-
-  //   //  for (size_t sub = 0; sub < num_apps; ++sub) {
-  //   for (size_t sub = 0; sub < 3; ++sub) {
-  //     auto port = 23000 + sub;
-  //     std::string conn_addr =
-  //         "tcp://" + server_trdispatcher + ":" + std::to_string(port);
-  //     TLOG() << "Adding control connection "
-  //            << "trdispatcher" + std::to_string(sub) << " with address "
-  //            << conn_addr;
-
-  //     connections.emplace_back(
-  //         // Connection{ ConnectionId{ "TR_tracking"+std::to_string(sub),
-  //         // "init_t" }, conn_addr, ConnectionType::kPubSub });
-  //         Connection{
-  //             ConnectionId{"trdispatcher" + std::to_string(sub), "init_t"},
-  //             conn_addr, ConnectionType::kSendRecv});
-  //   }
-
-  //   //      for (size_t sub = 0; sub < num_apps; ++sub) {
-  //   for (size_t sub = 0; sub < 3; ++sub) {
-  //     auto port = 33000 + sub;
-  //     std::string conn_addr = "tcp://" + server + ":" + std::to_string(port);
-  //     TLOG() << "Adding control connection "
-  //            << "trwriter" + std::to_string(sub) << " with address "
-  //            << conn_addr;
-
-  //     connections.emplace_back(
-  //         // Connection{ ConnectionId{ "TR_tracking"+std::to_string(sub),
-  //         // "init_t" }, conn_addr, ConnectionType::kPubSub });
-  //         Connection{ConnectionId{"trwriter" + std::to_string(sub),
-  //         "init_t"},
-  //                    conn_addr, ConnectionType::kSendRecv});
-  //   }
-
-  //   // Create BookKeeping socket
-  //   for (size_t sub = 0; sub < 2; ++sub) {
-  //     auto port = 83000 + sub;
-  //     std::string conn_addrbookkeeping =
-  //         "tcp://" + server + ":" + std::to_string(port);
-  //     TLOG() << "Adding control connection "
-  //            << "bookkeeping" + std::to_string(sub) << " with address "
-  //            << conn_addrbookkeeping;
-
-  //     connections.emplace_back(
-  //         Connection{ConnectionId{"bookkeeping" + std::to_string(sub),
-  //         "bk_t"},
-  //                    conn_addrbookkeeping, ConnectionType::kSendRecv});
-  //   }
-
-  //   IOManager::get()->configure(queues, connections,
-  //   use_connectivity_service,
-  //                               std::chrono::milliseconds(publish_interval));
+  // std::string get_subscriber_init_name() {
+  //   return get_subscriber_init_name(my_id1);
+  // }
+  // std::string get_subscriber_init_name(size_t id) {
+  //   return "conn_init_" + std::to_string(id);
   // }
 };
 
@@ -1397,7 +1274,7 @@ struct DataFilterReceiver {
     receivers.clear();
     TLOG_DEBUG(5) << "receive() done";
   }
-  void receive_tr(size_t run_number1) {
+  void receive_tr() {
     bool handshake_done = false;
     std::atomic<unsigned int> received_cnt = 0;
 
@@ -1516,11 +1393,10 @@ struct DataFilterReceiver {
             if (info->msgs_received == (config.num_messages - 1)) {
               TLOG() << "msgs_received from connection name:"
                      << info->get_connection_name(config);
-              std::string app_name = "test";
-              std::string ofile_name =
-                  config.odir + "/" + config.output_h5_filename +
-                  // std::to_string(info->msgs_received.load()) +
-                  std::to_string(trigger_number) + ".hdf5";
+              // std::string app_name = "test";
+              // std::string ofile_name =
+              // config.odir + "/" + config.output_h5_filename +
+              // std::to_string(trigger_number) + ".hdf5";
 
               // TLOG() << "ofile_name " << ofile_name;
 

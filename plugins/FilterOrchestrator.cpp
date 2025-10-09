@@ -83,11 +83,6 @@ void FilterOrchestrator::do_work(std::atomic<bool> &running_flag) {
     TLOG() << "do_work() - Returned from receive(), running_flag="
            << running_flag.load();
 
-    // if (!running_flag.load()) {
-    //   TLOG() << "do_work() - running_flag is false, exiting loop";
-    //   break;
-    // }
-
     std::unique_lock<std::mutex> lock(work_mutex);
     work_cv.wait_for(lock, std::chrono::seconds(1),
                      [&]() { return !running_flag.load(); });
