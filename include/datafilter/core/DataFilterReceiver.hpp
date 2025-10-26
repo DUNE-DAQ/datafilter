@@ -1,0 +1,292 @@
+#ifndef DATAFILTER_DATAFILTERRECEIVER_HPP_
+#define DATAFILTER_DATAFILTERRECEIVER_HPP_
+
+#include "logging/Logging.hpp"
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <memory>
+#include <mutex>
+#include <queue>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "daqdataformats/TriggerRecord.hpp"
+#include "datafilter/bookkeeping_manager.hpp"
+#include "datafilter/core/Connections.hpp"
+#include "datafilter/core/DataFilterAlgothrims.hpp"
+#include "datafilter/core/DataFilterOrganiser.hpp"
+#include "datafilter/node_info.hpp"
+#include "iomanager/IOManager.hpp"
+#include "iomanager/Receiver.hpp"
+
+namespace dunedaq::datafilter {
+
+using trigger_record_ptr_t = std::unique_ptr<daqdataformats::TriggerRecord>;
+
+struct DataFilterReceiver {
+  // --------------------------------------------------------------------------
+  // Configuration / collaborators
+  // --------------------------------------------------------------------------
+  Connections cx;
+  std::shared_ptr<DataFilterOrganiser> organiser;
+  dunedaq::datafilter::BookkeepingReceiver bk_receiver;
+  dunedaq::datafilter::DataFilterAlgothrims m_alg;
+
+  // Whether to subscribe to tracking lanes (Handshake) for total_tr logs
+  bool attach_tracking{true};
+
+  // Runtime state
+  std::atomic<bool> started{false};
+
+  // We keep UIDs we registered on, so we can detach cleanly in stop()
+  std::vector<std::string> registered_tr_inputs;
+  std::vector<std::string> registered_tracking_inputs;
+
+  struct ReceivedTR {
+    trigger_record_ptr_t tr;
+    std::string src_uid;
+    std::size_t total_tr{0};
+  };
+
+  // If true => callback ONLY enqueues; caller must call receive_tr()
+  // If false (default) => callback forwards to organiser immediately (push
+  // mode)
+  bool queue_only{false};
+
+  // BookKeeping queue
+  std::queue<nlohmann::json> bk_queue;
+  std::mutex queue_mutex;
+  std::condition_variable queue_cv;
+
+  // cooperate with a handshake pull strategy
+  bool pull_mode{true};      // send request_next_tr on start/top-up
+  size_t prefetch_window{4}; // how many requests to issue initially
+
+  DataFilterReceiver(Connections c, std::shared_ptr<DataFilterOrganiser> org,
+                     RunInfo &run_info, const std::string &datafilter_id,
+                     bool attach_tracking_inputs = true)
+      : cx(std::move(c)), organiser(std::move(org)),
+        bk_receiver(run_info, datafilter_id),
+        attach_tracking(attach_tracking_inputs) {
+    // Start bookkeeping service lifecycle (no-op if it self-manages)
+    try {
+      bk_receiver.start();
+    } catch (const std::exception &e) {
+      TLOG() << "BookkeepingReceiver.start() failed: " << e.what();
+    }
+  }
+
+  ~DataFilterReceiver() {
+    // detach before bk_receiver stops
+    // if (started.load()) {
+    //   try {
+    //     stop();
+    //   } catch (...) { /* swallow */
+    //   }
+    // }
+    // try {
+    //   bk_receiver.stop();
+    // } catch (const std::exception &e) {
+    //   TLOG() << "BookkeepingReceiver.stop() failed: " << e.what();
+    // }
+  }
+
+private:
+  std::mutex m_q;
+  std::condition_variable cv_q;
+  std::deque<ReceivedTR> tr_q;
+  uint32_t m_total_tr;
+
+public:
+  // Start: register callbacks on all TR inputs (and tracking inputs if enabled)
+  void start() {
+    if (started.exchange(true)) {
+      TLOG() << "DataFilterReceiver.start(): already started";
+      return;
+    }
+
+    // subscribe to tracking lanes to log/control total_tr info
+    if (attach_tracking && !cx.tr_tracking_rx.empty()) {
+      for (const auto &tuid : cx.tr_tracking_rx) {
+        try {
+          TLOG() << "tuid >>>>>>>>>>>>>>>>" << tuid;
+          auto track_rx =
+              dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(tuid);
+
+          // type-safe function
+          std::function<void(dunedaq::datafilter::Handshake)> track_cb =
+              [&](dunedaq::datafilter::Handshake msg) {
+                if (msg.msg_id == "next_tr") {
+                  m_total_tr = msg.total_tr;
+                  TLOG() << "msg.total_tr =======> " << msg.total_tr;
+                } else {
+                  organiser->request_next_tr();
+                }
+                TLOG_DEBUG(5)
+                    << "datafilter: TR receiver callback: " << msg.msg_id;
+              };
+
+          track_rx->add_callback(track_cb);
+          registered_tracking_inputs.push_back(tuid);
+          TLOG() << "DataFilterReceiver: tracking attached to " << tuid;
+        } catch (const std::exception &e) {
+          TLOG() << "DataFilterReceiver: failed to attach tracking to " << tuid
+                 << " : " << e.what();
+        }
+      }
+    }
+
+    organiser->request_next_tr();
+    // Subscribe to all TR inputs and forward-on-arrival
+    if (cx.tr_data_rx.empty()) {
+      TLOG() << "DataFilterReceiver.start(): no TR inputs configured";
+    }
+
+    for (const auto &ruid : cx.tr_data_rx) {
+      try {
+        auto tr_rx = dunedaq::get_iom_receiver<trigger_record_ptr_t>(ruid);
+
+        // Forward every TR immediately to the organiser; total_tr not tracked
+        // here
+        auto tr_cb = [org = organiser, alg = m_alg, this,
+                      src = ruid](trigger_record_ptr_t &tr) {
+          // extract some fields for traceability
+          if (!tr->get_fragments_ref().empty()) {
+            const auto &frag = tr->get_fragments_ref().at(0);
+            TLOG() << "TR from " << src << " run=" << frag->get_run_number()
+                   << " trig=" << frag->get_trigger_number()
+                   << " ts=" << frag->get_trigger_timestamp()
+                   << " bytes=" << tr->get_total_size_bytes();
+          } else {
+            TLOG() << "TR from " << src << " (0 fragments?)";
+          }
+
+          if (queue_only) {
+            // Queue mode: enqueue and notify; caller will consume via
+            // receive_tr()
+            {
+              std::lock_guard<std::mutex> lk(m_q);
+              tr_q.push_back(ReceivedTR{std::move(tr), src, /*total_tr*/ 0});
+            }
+            cv_q.notify_one();
+          } else {
+            auto tr_rebuilt = alg.rebuild_trigger_record(tr);
+
+            const auto &frames = alg.needed_vec();
+            TLOG() << "Algothrims collected : no algothrims yet "
+                   << frames.size() << " frames";
+
+            // Push mode (default): forward immediately to organiser
+            org->accepted_trigger_record2(tr_rebuilt, m_total_tr);
+
+            // one-for-one top-up in push mode
+            if (pull_mode && org) {
+              try {
+                // Broadcast to all dispatcher UIDs; see Option C for per-UID.
+                org->request_next_tr();
+              } catch (const std::exception &e) {
+                TLOG() << "Top-up request_next_tr failed: " << e.what();
+              }
+            }
+          }
+
+          // Forward immediately (total_tr=0 in no-pull mode)
+          // org->accepted_trigger_record2(tr, /*total_tr*/ 0);
+          // org->request_next_tr();
+        };
+
+        tr_rx->add_callback(tr_cb);
+        registered_tr_inputs.push_back(ruid);
+        TLOG_DEBUG(5) << "DataFilterReceiver: TR input attached to " << ruid;
+      } catch (const std::exception &e) {
+        TLOG() << "DataFilterReceiver: failed to attach TR input to " << ruid
+               << " : " << e.what();
+      }
+    }
+
+    if (pull_mode && prefetch_window > 0 && organiser) {
+      organiser->request_next_tr(prefetch_window);
+    }
+
+    TLOG_DEBUG(5) << "DataFilterReceiver.start(): done; TR inputs="
+                  << registered_tr_inputs.size()
+                  << " tracking inputs=" << registered_tracking_inputs.size();
+  }
+
+private:
+  // Helper: blocking pop; returns false if stopped and queue empty
+  bool wait_and_pop(ReceivedTR &out) {
+    std::unique_lock<std::mutex> lk(m_q);
+    cv_q.wait(lk, [this] { return !tr_q.empty() || !started.load(); });
+    if (!started.load() && tr_q.empty())
+      return false;
+    out = std::move(tr_q.front());
+    tr_q.pop_front();
+    return true;
+  }
+
+  // Helper: timed wait
+  bool wait_and_pop(ReceivedTR &out, std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lk(m_q);
+    if (!cv_q.wait_for(lk, timeout,
+                       [this] { return !tr_q.empty() || !started.load(); }))
+      return false; // timeout
+    if (!started.load() && tr_q.empty())
+      return false;
+    out = std::move(tr_q.front());
+    tr_q.pop_front();
+    return true;
+  }
+
+public:
+  // Stop: detach callbacks from all previously registered inputs
+  void stop() {
+    if (!started.exchange(false)) {
+      TLOG_DEBUG(5) << "DataFilterReceiver.stop(): not started";
+      return;
+    }
+
+    // Detach TR input callbacks
+    for (const auto &ruid : registered_tr_inputs) {
+      try {
+        auto tr_rx = dunedaq::get_iom_receiver<trigger_record_ptr_t>(ruid);
+        tr_rx->remove_callback();
+        TLOG_DEBUG(6) << "DataFilterReceiver: TR input detached from " << ruid;
+      } catch (const std::exception &e) {
+        TLOG() << "DataFilterReceiver: detach TR input failed for " << ruid
+               << " : " << e.what();
+      }
+    }
+    registered_tr_inputs.clear();
+
+    // Detach tracking input callbacks
+    for (const auto &tuid : registered_tracking_inputs) {
+      try {
+        auto track_rx =
+            dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(tuid);
+        track_rx->remove_callback(); // no-op if not supported / not set
+        TLOG_DEBUG(5) << "DataFilterReceiver: tracking detached from " << tuid;
+      } catch (const std::exception &e) {
+        TLOG() << "DataFilterReceiver: detach tracking failed for " << tuid
+               << " : " << e.what();
+      }
+    }
+    registered_tracking_inputs.clear();
+
+    // Unblock any waiting receivers
+    {
+      std::lock_guard<std::mutex> lk(m_q);
+    }
+    cv_q.notify_all();
+
+    TLOG_DEBUG(5) << "DataFilterReceiver.stop(): done";
+  }
+};
+
+} // namespace dunedaq::datafilter
+#endif
