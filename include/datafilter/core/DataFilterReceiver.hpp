@@ -34,7 +34,7 @@ struct DataFilterReceiver {
   // --------------------------------------------------------------------------
   Connections cx;
   std::shared_ptr<DataFilterOrganiser> organiser;
-  dunedaq::datafilter::BookkeepingReceiver bk_receiver;
+  dunedaq::datafilter::BookkeepingReceiver *bk_receiver{nullptr};
   dunedaq::datafilter::DataFilterAlgothrims m_alg;
 
   // Whether to subscribe to tracking lanes (Handshake) for total_tr logs
@@ -68,20 +68,27 @@ struct DataFilterReceiver {
   size_t prefetch_window{4}; // how many requests to issue initially
 
   DataFilterReceiver(Connections c, std::shared_ptr<DataFilterOrganiser> org,
-                     RunInfo &run_info, const std::string &datafilter_id,
+                     dunedaq::datafilter::BookkeepingReceiver &bk_ref,
                      bool attach_tracking_inputs = true)
-      : cx(std::move(c)), organiser(std::move(org)),
-        bk_receiver(run_info, datafilter_id),
+      : cx(std::move(c)), organiser(std::move(org)), bk_receiver(&bk_ref),
         attach_tracking(attach_tracking_inputs) {
     // Start bookkeeping service lifecycle (no-op if it self-manages)
-    try {
-      bk_receiver.start();
-    } catch (const std::exception &e) {
-      TLOG() << "BookkeepingReceiver.start() failed: " << e.what();
-    }
+    // try {
+    //   bk_receiver.start();
+    // } catch (const std::exception &e) {
+    //   TLOG() << "BookkeepingReceiver.start() failed: " << e.what();
+    // }
   }
 
-  ~DataFilterReceiver() {
+  ~DataFilterReceiver() noexcept {
+    try {
+      // Force a real stop at destruction, even in persistent mode
+      // bk_receiver->final_shutdown.store(true, std::memory_order_release);
+      stop();
+    } catch (...) {
+      // never throw from a destructor
+    }
+    TLOG() << "BookkeepingReceiver destroyed";
     // detach before bk_receiver stops
     // if (started.load()) {
     //   try {
@@ -109,6 +116,37 @@ public:
       TLOG() << "DataFilterReceiver.start(): already started";
       return;
     }
+
+    // Wiring diagnostics
+    TLOG() << "BK RX UID: "
+           << (cx.bk_inputs.empty() ? std::string("BK input is not defined")
+                                    : cx.bk_inputs.front());
+    TLOG() << "BK TX UID: "
+           << (cx.bk_outputs.empty() ? std::string("BK output is not defined.")
+                                     : cx.bk_outputs.front());
+
+    if (bk_receiver) {
+      auto deadline =
+          std::chrono::steady_clock::now() + std::chrono::seconds(3);
+      while (
+          !bk_receiver->callback_registered.load(std::memory_order_acquire)) {
+        if (std::chrono::steady_clock::now() > deadline) {
+          TLOG()
+              << "WARN: bookkeeping callback not registered yet; proceeding.";
+          break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+    }
+
+    if (cx.tr_tracking_rx.empty())
+      TLOG() << "Tracking UIDs: <none>";
+    else
+      for (auto &tuid : cx.tr_tracking_rx)
+        TLOG_DEBUG(5) << "Tracking UID: " << tuid;
+
+    // if (organiser)
+    // organiser->df_data_ready();
 
     // subscribe to tracking lanes to log/control total_tr info
     if (attach_tracking && !cx.tr_tracking_rx.empty()) {
@@ -142,6 +180,7 @@ public:
     }
 
     organiser->request_next_tr();
+
     // Subscribe to all TR inputs and forward-on-arrival
     if (cx.tr_data_rx.empty()) {
       TLOG() << "DataFilterReceiver.start(): no TR inputs configured";

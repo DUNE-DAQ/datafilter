@@ -38,6 +38,12 @@ public:
   explicit DataFilter(const std::string &name);
   void init(std::shared_ptr<appfwk::ConfigurationManager>) override;
 
+  ~DataFilter() {
+    if (m_bk) {
+      m_bk->stop();
+    }
+  }
+
 protected:
   void generate_opmon_data() override;
 
@@ -58,6 +64,7 @@ private:
   std::shared_ptr<TRRewriterSink> m_sink;
   std::shared_ptr<DataFilterOrganiser> m_organiser;
   std::unique_ptr<DataFilterReceiver> m_rx;
+  std::shared_ptr<dunedaq::datafilter::BookkeepingReceiver> m_bk;
 
   std::vector<const dunedaq::confmodel::Queue *> m_queues;
   std::vector<const confmodel::NetworkConnection *> m_networkconnections;

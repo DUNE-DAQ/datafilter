@@ -113,13 +113,21 @@ void DataFilter::do_conf(const data_t &cfg) {
 
   m_datafilter_id = mdal->get_datafilter_id();
 
+  // bookkeeping first
+  m_bk = std::make_shared<dunedaq::datafilter::BookkeepingReceiver>(
+      m_run_info, m_datafilter_id,
+      m_connections.bk_inputs.empty() ? "" : m_connections.bk_inputs.front(),
+      m_connections.bk_outputs.empty() ? "" : m_connections.bk_outputs.front(),
+      m_session_name);
+
+  m_bk->start();
   // Wire sink -> organiser -> receiver
   m_sink = std::make_shared<dunedaq::datafilter::TRRewriterSink>(
       m_connections, dunedaq::datafilter::SendPolicy::First);
   m_organiser = std::make_shared<DataFilterOrganiser>(m_connections, m_sink);
-  m_rx = std::make_unique<DataFilterReceiver>(
-      m_connections, m_organiser, m_run_info, m_datafilter_id,
-      /* attach_tracking_inputs */ true);
+  m_rx =
+      std::make_unique<DataFilterReceiver>(m_connections, m_organiser, *m_bk,
+                                           /* attach_tracking_inputs */ true);
 
   TLOG() << "DF Connections summary: "
          << "TR data inputs=" << m_rx->cx.tr_data_rx.size()
@@ -144,7 +152,15 @@ void DataFilter::do_start(const data_t & /*cfg*/) {
   m_rx->start();
 }
 
-void DataFilter::do_stop(const data_t & /*cfg*/) { // m_rx->stop();
+void DataFilter::do_stop(const data_t & /*cfg*/) {
+
+  TLOG() << get_name() << " do_stop()";
+  // try {
+  //   if (m_rx)
+  //     m_rx->stop();
+  // } catch (const std::exception &e) {
+  //   TLOG() << "DataFilter::do_stop(): " << e.what();
+  // }
 }
 
 void DataFilter::do_work(std::atomic<bool> &running_flag) {
