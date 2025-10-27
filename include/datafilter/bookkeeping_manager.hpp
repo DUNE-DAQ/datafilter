@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype> // std::tolower
 #include <condition_variable>
 #include <execution>
 #include <fstream>
@@ -172,6 +173,13 @@ struct BookkeepingReceiver {
     return datafilter_id;
   }
 
+  static inline std::string to_lower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    return s;
+  }
+
 private:
   void send_bk(dunedaq::datafilter::BookKeeping bk_info) {
     TLOG() << "Send bookkeeping info to FilterResultWriter";
@@ -224,6 +232,13 @@ private:
       if (stop_flag)
         return;
 
+      const std::string from = to_lower(bk.from_id);
+
+      const bool is_from_trdisp =
+          (from.find("trdispatcher") != std::string::npos);
+      const bool is_from_writer =
+          (from.find("filterresultwriter") != std::string::npos);
+
       unsigned int cnt = ++received_cnt;
 
       TLOG() << "Processing bookkeeping # " << cnt << " from " << bk.from_id
@@ -244,7 +259,13 @@ private:
                << " File Index: " << file_index;
       }
 
-      auto transfer_rate = get_transfer_rate_in();
+      auto in_mbps = get_transfer_rate_in();
+      auto out_mbps = get_transfer_rate_out();
+      // we only store in and out rate.
+      auto transfer_rate = is_from_trdisp   ? in_mbps
+                           : is_from_writer ? out_mbps
+                                            : 0;
+
       TLOG() << "Transfer rate (ewma) " << transfer_rate << " Mbps";
       bk.transfer_rate = transfer_rate;
 
@@ -315,62 +336,6 @@ private:
                                     // doesn't exist or is invalid
   }
 
-  // void write_to_file(const std::string &filename,
-  //                    std::atomic<bool> &stop_flag) {
-  //   nlohmann::json existing_bk = open_existing_bk(filename);
-
-  //   auto start_time = std::chrono::high_resolution_clock::now();
-  //   int transaction_count = 0;
-
-  //   while (true) {
-  //     std::unique_lock<std::mutex> lock(queue_mutex);
-
-  //     // Use a lambda to wait for the condition variable
-  //     queue_cv.wait(lock, [&] { return !bk_queue.empty(); });
-
-  //     nlohmann::json transaction = bk_queue.front();
-  //     bk_queue.pop();
-  //     lock.unlock();
-
-  //     if (existing_bk.is_array()) {
-  //       existing_bk.push_back(transaction);
-  //     } else {
-  //       std::cerr << "Error: Existing transactions is not an array. "
-  //                    "Cannot append."
-  //                 << std::endl;
-  //       continue;
-  //     }
-
-  //     std::ofstream file(filename);
-  //     if (file.is_open()) {
-  //       file << existing_bk.dump(4);
-  //     } else {
-  //       std::cerr << "Failed to open file for writing!" << std::endl;
-  //     }
-  //     transaction_count++;
-
-  //     if (transaction_count % 1 == 0) {
-  //       auto end_time = std::chrono::high_resolution_clock::now();
-  //       auto duration =
-  //       std::chrono::duration_cast<std::chrono::milliseconds>(
-  //                           end_time - start_time)
-  //                           .count();
-  //       std::cout << "Processed " << transaction_count << " transactions in
-  //       "
-  //                 << duration << " ms" << std::endl;
-  //     }
-  //   }
-  // }
-
-  std::string generate_bk_filename(int run_number, int file_index) {
-    std::ostringstream filename_oss;
-    filename_oss << "bookkeeping_" << std::setw(6) << std::setfill('0')
-                 << run_number << "_" << std::setw(4) << std::setfill('0')
-                 << file_index << ".json";
-    return filename_oss.str();
-  }
-
-  // Writer:
   void write_to_file() {
     TLOG() << "Setting up bookkeeping writer ";
     std::string current_file;
@@ -444,80 +409,13 @@ private:
     TLOG() << "File writer thread exiting";
   }
 
-  // void write_to_file(const std::string &filename_ref,
-  //                    std::atomic<bool> &stop_flag) {
-  //   // NOTE: filename_ref is a reference bound to the mutable bk_file
-  //   string
-  //   //       in receive_bk(); it may change over time.
-  //   std::string current_file = filename_ref; // snapshot
-  //   nlohmann::json existing_bk = open_existing_bk(current_file);
-
-  //   auto start_time = std::chrono::high_resolution_clock::now();
-  //   int transaction_count = 0;
-
-  //   for (;;) {
-  //     std::unique_lock<std::mutex> lock(queue_mutex);
-  //     // Wake when there is data OR when we are asked to stop.
-  //     // queue_cv.wait(lock,
-  //     // [&] { return !bk_queue.empty() || stop_flag.load(); });
-
-  //     TLOG() << "BK: writer wait begin";
-  //     queue_cv.wait(lock,
-  //                   [&] { return !bk_queue.empty() || stop_flag.load(); });
-  //     TLOG() << "BK: writer wait woke: q=" << bk_queue.size()
-  //            << " stop=" << stop_flag.load();
-
-  //     // If stopping and nothing to do, exit cleanly.
-  //     if (bk_queue.empty() && stop_flag.load()) {
-  //       break;
-  //     }
-
-  //     // Drain one message (you may choose to drain-all for throughput).
-  //     nlohmann::json transaction = std::move(bk_queue.front());
-  //     bk_queue.pop();
-
-  //     // Capture the *current* output file after popping to minimize lock
-  //     time. std::string out_file = filename_ref; lock.unlock();
-
-  //     // Rotate file cache if the file name changed (new run/file_index).
-  //     if (out_file != current_file) {
-  //       current_file = out_file;
-  //       existing_bk = open_existing_bk(current_file);
-  //     }
-
-  //     if (existing_bk.is_array()) {
-  //       existing_bk.push_back(std::move(transaction));
-  //     } else {
-  //       std::cerr
-  //           << "Error: Existing transactions is not an array. Cannot
-  //           append."
-  //           << std::endl;
-  //       // Reset to a valid array to avoid being stuck forever.
-  //       existing_bk = nlohmann::json::array();
-  //       continue;
-  //     }
-
-  //     std::ofstream file(current_file);
-  //     if (file.is_open()) {
-  //       file << existing_bk.dump(4);
-  //     } else {
-  //       std::cerr << "Failed to open file '" << current_file << "' for
-  //       writing!"
-  //                 << std::endl;
-  //     }
-
-  //     if (++transaction_count % 1 == 0) {
-  //       auto end_time = std::chrono::high_resolution_clock::now();
-  //       auto duration =
-  //       std::chrono::duration_cast<std::chrono::milliseconds>(
-  //                           end_time - start_time)
-  //                           .count();
-  //       std::cout << "Processed " << transaction_count << " transactions in
-  //       "
-  //                 << duration << " ms" << std::endl;
-  //     }
-  //   }
-  // }
+  std::string generate_bk_filename(int run_number, int file_index) {
+    std::ostringstream filename_oss;
+    filename_oss << "bookkeeping_" << std::setw(6) << std::setfill('0')
+                 << run_number << "_" << std::setw(4) << std::setfill('0')
+                 << file_index << ".json";
+    return filename_oss.str();
+  }
 };
 
 } // namespace datafilter

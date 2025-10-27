@@ -124,6 +124,8 @@ void DataFilter::do_conf(const data_t &cfg) {
   // Wire sink -> organiser -> receiver
   m_sink = std::make_shared<dunedaq::datafilter::TRRewriterSink>(
       m_connections, dunedaq::datafilter::SendPolicy::First);
+  m_sink->bind_bookkeeping(m_bk);
+
   m_organiser = std::make_shared<DataFilterOrganiser>(m_connections, m_sink);
   m_rx =
       std::make_unique<DataFilterReceiver>(m_connections, m_organiser, *m_bk,

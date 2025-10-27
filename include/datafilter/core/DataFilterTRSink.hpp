@@ -8,8 +8,10 @@
 #include "iomanager/IOManager.hpp"
 #include "iomanager/Sender.hpp"
 
+#include "datafilter/bookkeeping_manager.hpp"
 #include "datafilter/core/Connections.hpp"
 #include "datafilter/datafilter_structs.hpp"
+#include "datafilter/transfer_info.hpp"
 
 namespace dunedaq::datafilter {
 using trigger_record_ptr_t =
@@ -33,6 +35,9 @@ struct TRRewriterSink : DataFilterTRSink {
 
   // state for RoundRobin
   std::atomic<std::size_t> rr_index{0};
+  TransferInfo m_out;
+
+  std::shared_ptr<dunedaq::datafilter::BookkeepingReceiver> m_bk;
 
   explicit TRRewriterSink(Connections conns, SendPolicy p = SendPolicy::First)
       : cx(std::move(conns)), policy(p) {}
@@ -50,7 +55,13 @@ struct TRRewriterSink : DataFilterTRSink {
         << datatype_to_string<std::unique_ptr<daqdataformats::TriggerRecord>>();
   }
 
+  void bind_bookkeeping(
+      std::shared_ptr<dunedaq::datafilter::BookkeepingReceiver> bk) {
+    m_bk = bk;
+  }
   inline void send_tr(trigger_record_ptr_t &tr, std::size_t total_tr) override {
+    using clock = std::chrono::steady_clock;
+    const auto t0 = clock::now();
     // TR rewriter control: notify downstream we’re about to send
     const auto bytes = tr ? tr->get_total_size_bytes() : 0;
     TLOG() << "TR total size in bytes " << bytes;
@@ -95,6 +106,18 @@ struct TRRewriterSink : DataFilterTRSink {
     } catch (const std::exception &e) {
       TLOG() << "TRRewriterSink: ERROR sending TR on " << tx_uid << " : "
              << e.what();
+    }
+
+    const auto t1 = clock::now();
+    const double s =
+        std::chrono::duration_cast<std::chrono::duration<double>>(t1 - t0)
+            .count();
+    if (s > 0.0 && bytes > 0) {
+      const double mbps = (static_cast<double>(bytes) * 8.0) / s / 1e6;
+      update_ewma(mbps, m_out);
+      if (m_bk)
+        m_bk->set_transfer_rate_out(
+            m_out.ewma_mbps.load(std::memory_order_relaxed));
     }
   }
 

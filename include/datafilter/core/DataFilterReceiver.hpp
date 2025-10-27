@@ -34,7 +34,7 @@ struct DataFilterReceiver {
   // Configuration / collaborators
   // --------------------------------------------------------------------------
   Connections cx;
-  std::shared_ptr<DataFilterOrganiser> organiser;
+  std::shared_ptr<dunedaq::datafilter::DataFilterOrganiser> organiser;
   dunedaq::datafilter::BookkeepingReceiver *bk_receiver{nullptr};
   dunedaq::datafilter::DataFilterAlgothrims m_alg;
 
