@@ -21,6 +21,7 @@
 #include "datafilter/core/DataFilterAlgothrims.hpp"
 #include "datafilter/core/DataFilterOrganiser.hpp"
 #include "datafilter/node_info.hpp"
+#include "datafilter/transfer_info.hpp"
 #include "iomanager/IOManager.hpp"
 #include "iomanager/Receiver.hpp"
 
@@ -53,6 +54,15 @@ struct DataFilterReceiver {
     std::size_t total_tr{0};
   };
 
+  // struct TransferInfo {
+  //   std::atomic<double> last{0.0}, ewma{0.0};
+  // };
+  std::mutex m_in_mu;
+  std::unordered_map<std::string, TransferInfo> m_in_by_src;
+  TransferInfo m_in_total;
+  std::unordered_map<std::string, std::chrono::steady_clock::time_point>
+      m_last_rx;
+
   // If true => callback ONLY enqueues; caller must call receive_tr()
   // If false (default) => callback forwards to organiser immediately (push
   // mode)
@@ -71,19 +81,10 @@ struct DataFilterReceiver {
                      dunedaq::datafilter::BookkeepingReceiver &bk_ref,
                      bool attach_tracking_inputs = true)
       : cx(std::move(c)), organiser(std::move(org)), bk_receiver(&bk_ref),
-        attach_tracking(attach_tracking_inputs) {
-    // Start bookkeeping service lifecycle (no-op if it self-manages)
-    // try {
-    //   bk_receiver.start();
-    // } catch (const std::exception &e) {
-    //   TLOG() << "BookkeepingReceiver.start() failed: " << e.what();
-    // }
-  }
+        attach_tracking(attach_tracking_inputs) {}
 
-  ~DataFilterReceiver() noexcept {
+  ~DataFilterReceiver() {
     try {
-      // Force a real stop at destruction, even in persistent mode
-      // bk_receiver->final_shutdown.store(true, std::memory_order_release);
       stop();
     } catch (...) {
       // never throw from a destructor
@@ -194,6 +195,11 @@ public:
         // here
         auto tr_cb = [org = organiser, alg = m_alg, this,
                       src = ruid](trigger_record_ptr_t &tr) {
+          using clock = std::chrono::steady_clock;
+          const auto t1 = clock::now();
+          const std::size_t bytes = tr ? tr->get_total_size_bytes() : 0;
+          double secs = 0.0;
+
           // extract some fields for traceability
           if (!tr->get_fragments_ref().empty()) {
             const auto &frag = tr->get_fragments_ref().at(0);
@@ -203,6 +209,30 @@ public:
                    << " bytes=" << tr->get_total_size_bytes();
           } else {
             TLOG() << "TR from " << src << " (0 fragments?)";
+          }
+
+          {
+            std::lock_guard<std::mutex> lk(m_in_mu);
+            auto it = m_last_rx.find(src);
+            if (it != m_last_rx.end()) {
+              secs = std::chrono::duration_cast<std::chrono::duration<double>>(
+                         t1 - it->second)
+                         .count();
+            }
+            m_last_rx[src] = t1;
+          }
+
+          if (secs > 0 && bytes > 0) {
+            const double mbps = (static_cast<double>(bytes) * 8.0) / secs / 1e6;
+            TLOG() << "Transfer rate inbound (instantaneous) " << mbps
+                   << " mbps.";
+            std::lock_guard<std::mutex> lk(m_in_mu);
+            update_ewma(mbps, m_in_by_src[src]);
+            update_ewma(mbps, m_in_total);
+            // Publish inbound EWMA now (or on a periodic timer)
+            if (bk_receiver)
+              bk_receiver->set_transfer_rate_in(
+                  m_in_total.ewma_mbps.load(std::memory_order_relaxed));
           }
 
           if (queue_only) {
@@ -258,7 +288,6 @@ public:
   }
 
 private:
-  // Helper: blocking pop; returns false if stopped and queue empty
   bool wait_and_pop(ReceivedTR &out) {
     std::unique_lock<std::mutex> lk(m_q);
     cv_q.wait(lk, [this] { return !tr_q.empty() || !started.load(); });
@@ -269,7 +298,6 @@ private:
     return true;
   }
 
-  // Helper: timed wait
   bool wait_and_pop(ReceivedTR &out, std::chrono::milliseconds timeout) {
     std::unique_lock<std::mutex> lk(m_q);
     if (!cv_q.wait_for(lk, timeout,

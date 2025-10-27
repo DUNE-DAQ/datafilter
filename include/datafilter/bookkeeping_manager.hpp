@@ -70,6 +70,9 @@ struct BookkeepingReceiver {
   std::atomic<bool> callback_registered{false};
   std::atomic<bool> first_bk_seen{false};
 
+  std::atomic<double> transfer_rate_in_mbps{0.0};  // TD -> DF
+  std::atomic<double> transfer_rate_out_mbps{0.0}; // DF -> Writer
+
   std::shared_ptr<
       dunedaq::iomanager::SenderConcept<dunedaq::datafilter::BookKeeping>>
       m_bk_sender;
@@ -150,6 +153,20 @@ struct BookkeepingReceiver {
     return transfer_rate_mbps.load();
   }
 
+  void set_transfer_rate_in(double mbps) {
+    transfer_rate_in_mbps.store(mbps, std::memory_order_relaxed);
+  }
+
+  void set_transfer_rate_out(double mbps) {
+    transfer_rate_out_mbps.store(mbps, std::memory_order_relaxed);
+  }
+  double get_transfer_rate_in() const {
+    return transfer_rate_in_mbps.load(std::memory_order_relaxed);
+  }
+  double get_transfer_rate_out() const {
+    return transfer_rate_out_mbps.load(std::memory_order_relaxed);
+  }
+
   std::string get_datafilter_id() const {
     std::lock_guard<std::mutex> lock(id_mutex);
     return datafilter_id;
@@ -227,8 +244,8 @@ private:
                << " File Index: " << file_index;
       }
 
-      auto transfer_rate = get_transfer_rate();
-      TLOG() << "Transfer rate " << transfer_rate << " Mbps";
+      auto transfer_rate = get_transfer_rate_in();
+      TLOG() << "Transfer rate (ewma) " << transfer_rate << " Mbps";
       bk.transfer_rate = transfer_rate;
 
       auto datafilter_id = get_datafilter_id();
