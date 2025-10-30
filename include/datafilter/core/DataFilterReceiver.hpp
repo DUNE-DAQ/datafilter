@@ -30,9 +30,6 @@ namespace dunedaq::datafilter {
 using trigger_record_ptr_t = std::unique_ptr<daqdataformats::TriggerRecord>;
 
 struct DataFilterReceiver {
-  // --------------------------------------------------------------------------
-  // Configuration / collaborators
-  // --------------------------------------------------------------------------
   Connections cx;
   std::shared_ptr<dunedaq::datafilter::DataFilterOrganiser> organiser;
   dunedaq::datafilter::BookkeepingReceiver *bk_receiver{nullptr};
@@ -54,24 +51,14 @@ struct DataFilterReceiver {
     std::size_t total_tr{0};
   };
 
-  // struct TransferInfo {
-  //   std::atomic<double> last{0.0}, ewma{0.0};
-  // };
   std::mutex m_in_mu;
   std::unordered_map<std::string, TransferInfo> m_in_by_src;
   TransferInfo m_in_total;
-  std::unordered_map<std::string, std::chrono::steady_clock::time_point>
-      m_last_rx;
 
   // If true => callback ONLY enqueues; caller must call receive_tr()
   // If false (default) => callback forwards to organiser immediately (push
   // mode)
   bool queue_only{false};
-
-  // BookKeeping queue
-  std::queue<nlohmann::json> bk_queue;
-  std::mutex queue_mutex;
-  std::condition_variable queue_cv;
 
   // cooperate with a handshake pull strategy
   bool pull_mode{true};      // send request_next_tr on start/top-up
@@ -196,62 +183,56 @@ public:
         auto tr_cb = [org = organiser, alg = m_alg, this,
                       src = ruid](trigger_record_ptr_t &tr) {
           using clock = std::chrono::steady_clock;
-          const auto t1 = clock::now();
+          const auto processing_start = clock::now();
           const std::size_t bytes = tr ? tr->get_total_size_bytes() : 0;
-          double secs = 0.0;
-
-          // extract some fields for traceability
-          if (!tr->get_fragments_ref().empty()) {
-            const auto &frag = tr->get_fragments_ref().at(0);
-            TLOG() << "TR from " << src << " run=" << frag->get_run_number()
-                   << " trig=" << frag->get_trigger_number()
-                   << " ts=" << frag->get_trigger_timestamp()
-                   << " bytes=" << tr->get_total_size_bytes();
-          } else {
-            TLOG() << "TR from " << src << " (0 fragments?)";
-          }
-
-          {
-            std::lock_guard<std::mutex> lk(m_in_mu);
-            auto it = m_last_rx.find(src);
-            if (it != m_last_rx.end()) {
-              secs = std::chrono::duration_cast<std::chrono::duration<double>>(
-                         t1 - it->second)
-                         .count();
-            }
-            m_last_rx[src] = t1;
-          }
-
-          if (secs > 0 && bytes > 0) {
-            const double mbps = (static_cast<double>(bytes) * 8.0) / secs / 1e6;
-            TLOG() << "Transfer rate inbound (instantaneous) " << mbps
-                   << " mbps.";
-            std::lock_guard<std::mutex> lk(m_in_mu);
-            update_ewma(mbps, m_in_by_src[src]);
-            update_ewma(mbps, m_in_total);
-            // Publish inbound EWMA now (or on a periodic timer)
-            if (bk_receiver)
-              bk_receiver->set_transfer_rate_in(
-                  m_in_total.ewma_mbps.load(std::memory_order_relaxed));
-          }
 
           if (queue_only) {
             // Queue mode: enqueue and notify; caller will consume via
             // receive_tr()
             {
               std::lock_guard<std::mutex> lk(m_q);
-              tr_q.push_back(ReceivedTR{std::move(tr), src, /*total_tr*/ 0});
+              tr_q.push_back(ReceivedTR{std::move(tr), src, m_total_tr});
             }
             cv_q.notify_one();
           } else {
+
+            const auto rebuild_start = clock::now();
             auto tr_rebuilt = alg.rebuild_trigger_record(tr);
+
+            const auto rebuild_end = clock::now();
+
+            const double rebuild_secs =
+                std::chrono::duration_cast<std::chrono::duration<double>>(
+                    rebuild_end - rebuild_start)
+                    .count();
+
+            if (rebuild_secs > 0 && bytes > 0) {
+              const double rebuild_mbps =
+                  (static_cast<double>(bytes) * 8.0) / rebuild_secs / 1e6;
+              TLOG() << "Rebuild processing rate: " << rebuild_mbps << " Mbps";
+            }
 
             const auto &frames = alg.needed_vec();
             TLOG() << "Algothrims collected : no algothrims yet "
                    << frames.size() << " frames";
 
+            // MEASURE ORGANISER PROCESSING TIME
+            const auto org_start = clock::now();
             // Push mode (default): forward immediately to organiser
             org->accepted_trigger_record2(tr_rebuilt, m_total_tr);
+
+            const auto org_end = clock::now();
+
+            const double org_secs =
+                std::chrono::duration_cast<std::chrono::duration<double>>(
+                    org_end - org_start)
+                    .count();
+
+            if (org_secs > 0 && bytes > 0) {
+              const double org_mbps =
+                  (static_cast<double>(bytes) * 8.0) / org_secs / 1e6;
+              TLOG() << "Organiser processing rate: " << org_mbps << " Mbps";
+            }
 
             // one-for-one top-up in push mode
             if (pull_mode && org) {
@@ -264,6 +245,29 @@ public:
             }
           }
 
+          // TOTAL PROCESSING TIME
+          const auto processing_end = clock::now();
+          const double total_secs =
+              std::chrono::duration_cast<std::chrono::duration<double>>(
+                  processing_end - processing_start)
+                  .count();
+
+          if (total_secs > 0 && bytes > 0) {
+            const double total_mbps =
+                (static_cast<double>(bytes) * 8.0) / total_secs / 1e6;
+            TLOG() << "Total processing rate (througput rate): " << total_mbps
+                   << " Mbps";
+
+            // Update your EWMA here for the real transfer rate
+            std::lock_guard<std::mutex> lk(m_in_mu);
+            update_ewma(total_mbps, m_in_by_src[src]);
+            update_ewma(total_mbps, m_in_total);
+
+            if (bk_receiver) {
+              bk_receiver->set_transfer_rate_in(
+                  m_in_total.ewma_mbps.load(std::memory_order_relaxed));
+            }
+          }
           // Forward immediately (total_tr=0 in no-pull mode)
           // org->accepted_trigger_record2(tr, /*total_tr*/ 0);
           // org->request_next_tr();
@@ -317,7 +321,11 @@ public:
       TLOG_DEBUG(5) << "DataFilterReceiver.stop(): not started";
       return;
     }
-
+    /*
+        m_in_tick_run = false;
+        if (m_in_tick.joinable())
+          m_in_tick.join();
+    */
     // Detach TR input callbacks
     for (const auto &ruid : registered_tr_inputs) {
       try {
