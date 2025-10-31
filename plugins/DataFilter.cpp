@@ -109,7 +109,12 @@ void DataFilter::do_conf(const data_t &cfg) {
   }
 
   m_connections = dunedaq::datafilter::ConnectionsBuilder::build_from_dal(mdal);
-  TLOG() << "m_connections " << m_connections.trdispatcher_req[0];
+
+  if (!m_connections.trdispatcher_req_tx.empty())
+    TLOG() << "TRDispatcher request tx.front(): "
+           << m_connections.trdispatcher_req_tx.front();
+  else
+    TLOG() << "TRDispatcher request tx is empty.";
 
   m_datafilter_id = mdal->get_datafilter_id();
 

@@ -134,7 +134,7 @@ private:
   std::chrono::milliseconds m_recv_timeout_ms{100};
   std::string m_trdispatcher_id;
   std::string m_bk_info_id;
-  std::string m_trdispatcher_req_rx_uid;
+  std::string m_trdispatcher_req_rx;
 
   size_t m_trigger_number;
   size_t m_run_number;

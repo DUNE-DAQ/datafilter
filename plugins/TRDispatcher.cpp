@@ -83,24 +83,13 @@ void TRDispatcher::do_conf(const data_t &) {
     throw;
   }
 
-  m_trdispatcher_req_rx_uid.clear();
-  for (const auto &uid : m_cx.trdispatcher_req) {
-    try {
-      auto maybe_rx =
-          dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(uid);
-      (void)maybe_rx; // success means 'uid' is a receiver endpoint we own
-      m_trdispatcher_req_rx_uid = uid;
-      TLOG() << "Selected TRDispatcher handshake RX endpoint: " << uid;
-      break;
-    } catch (...) {
-      // not a receiver for this module; skip
-    }
-  }
-  if (m_trdispatcher_req_rx_uid.empty()) {
+  // use the first only for now.
+  m_trdispatcher_req_rx = m_cx.trdispatcher_req_rx.front();
+  if (m_trdispatcher_req_rx.empty()) {
     TLOG() << "WARNING: No handshake receiver UID could be resolved from "
            << "ConnectionsBuilder::trdispatcher_req; falling back to legacy "
               "'trdispatcher0'.";
-    m_trdispatcher_req_rx_uid = "trdispatcher0"; // legacy fallback
+    m_trdispatcher_req_rx = "trdispatcher0"; // legacy fallback
   }
 
   // log discovered outputs
@@ -199,11 +188,11 @@ void TRDispatcher::receive(bool is_hdf5file) {
   std::atomic<unsigned int> received_cnt = 0;
 
   auto cb_receiver = dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
-      m_trdispatcher_req_rx_uid);
+      m_trdispatcher_req_rx);
 
   std::function<void(dunedaq::datafilter::Handshake)> str_receiver_cb =
       [&](dunedaq::datafilter::Handshake msg) {
-        if (msg.msg_id == m_trdispatcher_req_rx_uid) {
+        if (msg.msg_id == m_trdispatcher_req_rx) {
           ++received_cnt;
         }
         TLOG() << "Received next TR instruction from filter "
@@ -374,27 +363,20 @@ void TRDispatcher::send_tr() {
   auto trig_num = 9999; // fake trigger number for generating TR
 
   // m_trdispatcher_id = "conn_A0_G0_C0_"; // to get it from config.
-  m_trdispatcher_id = m_tr_connections_o[0];
+  m_trdispatcher_id = m_cx.tr_data_tx.front();
 
-  // if (!m_tr_connections_o.empty()) {
-  //   m_trdispatcher_id = m_tr_connections_o.front();
-  // } else {
-  //   throw std::runtime_error(
-  //       "No TriggerRecord TX connection discovered (tr_data_tx is empty)");
-  // }
-
-  if (m_tr_connections_o.empty()) {
+  if (m_cx.tr_data_tx.empty()) {
     TLOG() << "No tr_data_tx discovered; skipping TR send.";
     return;
   }
 
-  if (m_tr_tracking_tx.empty()) {
+  if (m_cx.tr_tracking_tx.empty()) {
     TLOG() << "No tr_tracking_tx discovered; Making sure that tracking is in "
               "the OKS file.";
     return;
   }
   auto init_sender = dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(
-      m_tr_tracking_tx.front());
+      m_cx.tr_tracking_tx.front());
 
   dunedaq::datafilter::Handshake sent_t1("next_tr");
   init_sender->send(std::move(sent_t1), Sender::s_block);
@@ -473,8 +455,8 @@ void TRDispatcher::send_tr_from_hdf5file() {
 
   // m_trdispatcher_id = "conn_A0_G0_C0_"; // to get it from config.
 
-  if (!m_tr_connections_o.empty()) {
-    m_trdispatcher_id = m_tr_connections_o.front();
+  if (!m_cx.tr_data_tx.empty()) {
+    m_trdispatcher_id = m_cx.tr_data_tx.front();
   } else {
     throw std::runtime_error(
         "No TriggerRecord TX connection discovered (tr_data_tx is empty)");
@@ -523,14 +505,14 @@ void TRDispatcher::send_tr_from_hdf5file() {
 
   bookkeeping_sender->send(std::move(bk_info), Sender::s_no_block);
 
-  if (m_tr_tracking_tx.empty()) {
+  if (m_cx.tr_tracking_tx.empty()) {
     TLOG() << "TR_tracking2 to DF is empty.";
     return;
   }
-  TLOG() << "m_tr_tracking_tx " << m_tr_tracking_tx.front();
+  TLOG() << "m_cx.tr_tracking_tx " << m_cx.tr_tracking_tx.front();
   // Handshake with datafilter.
   auto init_sender = dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(
-      m_tr_tracking_tx.front());
+      m_cx.tr_tracking_tx.front());
 
   dunedaq::datafilter::Handshake sent_t1("next_tr");
   // send total trigger number to datafilter then datafilter to
