@@ -14,6 +14,8 @@
 
 #include "appfwk/DAQModule.hpp"
 #include "confmodel/DaqApplication.hpp"
+#include "datafilter/core/Connections.hpp"
+#include "datafilter/core/ConnectionsBuilder.hpp"
 #include "datafilter/dal/FilterOrchestrator.hpp"
 #include "datafilter/datafilter_structs.hpp"
 #include "datafilter/opmon/filterorchestrator_info.pb.h"
@@ -98,6 +100,7 @@ private:
   std::vector<const confmodel::DaqModule *> m_modules;
   std::vector<const dunedaq::confmodel::Queue *> m_queues;
   std::vector<const confmodel::NetworkConnection *> m_networkconnections;
+  Connections m_cx;
 
   std::string m_oksConfig = "oksconflibs:test/config/dfSession.data.xml";
   std::string m_session_name = "test-session";
