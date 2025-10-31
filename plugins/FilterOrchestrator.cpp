@@ -10,10 +10,6 @@
 
 #include "FilterOrchestrator.hpp"
 
-#include "datafilter/dal/FilterOrchestrator.hpp"
-#include "datafilter/opmon/filterorchestrator_info.pb.h"
-#include <string>
-
 namespace dunedaq::datafilter {
 
 FilterOrchestrator::FilterOrchestrator(const std::string &name)

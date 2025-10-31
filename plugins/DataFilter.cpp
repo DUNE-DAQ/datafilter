@@ -139,7 +139,7 @@ void DataFilter::do_conf(const data_t &cfg) {
   TLOG() << "DF Connections summary: "
          << "TR data inputs=" << m_rx->cx.tr_data_rx.size()
          << " tracking inputs=" << m_rx->cx.tr_tracking_rx.size()
-         << " dispatcher req=" << m_rx->cx.trdispatcher_req.size();
+         << " dispatcher req=" << m_rx->cx.trdispatcher_req_tx.size();
   for (auto &uid : m_rx->cx.tr_data_rx) {
     TLOG() << "TR data uid: " << uid;
   }

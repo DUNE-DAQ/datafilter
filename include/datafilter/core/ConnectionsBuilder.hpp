@@ -56,7 +56,7 @@ struct ConnectionsBuilder {
           cx.trwriter_ctrl.push_back(id);
         if (id.find("trdispatcher") != std::string::npos) {
           cx.trdispatcher_req_tx.push_back(id);
-          cx.trdispatcher_req.push_back(id); // deprecated, to be removed.
+          // cx.trdispatcher_req.push_back(id); // deprecated, to be removed.
         }
         if (id.find("FO_ctrl") != std::string::npos)
           cx.fo_ctrl.push_back(id);
@@ -77,7 +77,7 @@ struct ConnectionsBuilder {
         if (id.find("TR_tracking") != std::string::npos)
           cx.tr_tracking_rx.push_back(id);
         if (id.find("trdispatcher") != std::string::npos) {
-          cx.trdispatcher_req.push_back(id);
+          // cx.trdispatcher_req.push_back(id);
           cx.trdispatcher_req_rx.push_back(id);
         }
         if (id.find("trwriter") != std::string::npos)

@@ -49,13 +49,13 @@ struct DataFilterOrganiser {
 
   // Send ONE "next_tr" request to every configured TRDispatcher control UID.
   inline void request_next_tr() {
-    if (cx.trdispatcher_req.empty()) {
+    if (cx.trdispatcher_req_tx.empty()) {
       TLOG() << "Organiser::request_next_tr(): no dispatcher request endpoints "
                 "configured";
       return;
     }
 
-    for (const auto &uid : cx.trdispatcher_req) {
+    for (const auto &uid : cx.trdispatcher_req_tx) {
       try {
         auto s = dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(uid);
         dunedaq::datafilter::Handshake msg("next_tr");
@@ -75,14 +75,14 @@ struct DataFilterOrganiser {
   inline void request_next_tr(std::size_t count) {
     if (count == 0)
       return;
-    if (cx.trdispatcher_req.empty()) {
+    if (cx.trdispatcher_req_tx.empty()) {
       TLOG() << "Organiser::request_next_tr(count): no dispatcher request "
                 "endpoints configured";
       return;
     }
 
     for (std::size_t i = 0; i < count; ++i) {
-      for (const auto &uid : cx.trdispatcher_req) {
+      for (const auto &uid : cx.trdispatcher_req_tx) {
         try {
           auto s = dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(uid);
           dunedaq::datafilter::Handshake msg("next_tr");

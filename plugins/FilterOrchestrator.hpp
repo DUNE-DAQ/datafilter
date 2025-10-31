@@ -14,7 +14,9 @@
 
 #include "appfwk/DAQModule.hpp"
 #include "confmodel/DaqApplication.hpp"
+#include "datafilter/dal/FilterOrchestrator.hpp"
 #include "datafilter/datafilter_structs.hpp"
+#include "datafilter/opmon/filterorchestrator_info.pb.h"
 #include "opmonlib/TestOpMonManager.hpp"
 #include "utilities/WorkerThread.hpp"
 

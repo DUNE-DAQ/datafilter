@@ -641,7 +641,7 @@ void TRDispatcher::send_tr_from_hdf5file() {
 
           auto bookkeeping_sender =
               dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
-                  "m_bk_connection_o");
+                  m_bk_connection_o);
           //// SERIALIZE
           // auto bk_bytes = dunedaq::serialization::serialize(
           //     bk_info, dunedaq::serialization::kJSON);

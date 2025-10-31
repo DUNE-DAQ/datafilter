@@ -14,8 +14,8 @@ struct Connections {
   std::vector<std::string>
       trdispatcher_req_tx; // DataFilter tx via FO -> TRDispatcher (request)
 
-  std::vector<std::string>
-      trdispatcher_req;                   // DEPRECATED, use trdispatcher_req_tx
+  // std::vector<std::string>
+  // trdispatcher_req;                   // DEPRECATED, use trdispatcher_req_tx
   std::vector<std::string> trwriter_ctrl; // DataFilter -> TRReWriter   (notify)
   std::vector<std::string> tr_tracking_rx; // DataFilter rx (tracking)
 
