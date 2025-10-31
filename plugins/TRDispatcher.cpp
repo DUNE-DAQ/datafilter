@@ -42,23 +42,12 @@ void TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
                                 "Unable to load module configuration");
   }
 
-  for (auto con : mdal->get_outputs()) {
-    TLOG() << "Output connection data_type " << con->get_data_type() << " UID "
-           << con->UID() << " datatype_to_string<trigger_record_ptr_t> "
-           << datatype_to_string<trigger_record_ptr_t>();
-    if (con->get_data_type() == datatype_to_string<trigger_record_ptr_t>()) {
-      m_tr_connections_o.push_back(con->UID());
-      TLOG() << "Output found: " << con->get_data_type();
-    }
-    if (con->get_data_type() ==
-        datatype_to_string<dunedaq::datafilter::BookKeeping>()) {
-      m_bk_connection_o = con->UID(); // this will work for one bk output
-    }
-  }
+  m_cx = dunedaq::datafilter::ConnectionsBuilder::build_from_dal(mdal);
+  m_tr_tracking_tx = m_cx.tr_tracking_tx; // signal to DF
+  m_tr_connections_o = m_cx.tr_data_tx;   // TriggerRecord outputs
 
-  for (auto tr_conn : m_tr_connections_o) {
-    TLOG() << "output TR connections " << tr_conn;
-  }
+  if (!m_cx.bk_outputs.empty())
+    m_bk_connection_o = m_cx.bk_outputs.front(); // Bookkeeping out
 
   m_storage_pathname = mdal->get_storage_pathname();
   m_is_from_storage = mdal->get_is_from_storage();
@@ -92,6 +81,35 @@ void TRDispatcher::do_conf(const data_t &) {
   } catch (const std::exception &e) {
     TLOG() << "Failed to configure IOManager. " << e.what();
     throw;
+  }
+
+  m_trdispatcher_req_rx_uid.clear();
+  for (const auto &uid : m_cx.trdispatcher_req) {
+    try {
+      auto maybe_rx =
+          dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(uid);
+      (void)maybe_rx; // success means 'uid' is a receiver endpoint we own
+      m_trdispatcher_req_rx_uid = uid;
+      TLOG() << "Selected TRDispatcher handshake RX endpoint: " << uid;
+      break;
+    } catch (...) {
+      // not a receiver for this module; skip
+    }
+  }
+  if (m_trdispatcher_req_rx_uid.empty()) {
+    TLOG() << "WARNING: No handshake receiver UID could be resolved from "
+           << "ConnectionsBuilder::trdispatcher_req; falling back to legacy "
+              "'trdispatcher0'.";
+    m_trdispatcher_req_rx_uid = "trdispatcher0"; // legacy fallback
+  }
+
+  // log discovered outputs
+  for (auto &tr_tx : m_tr_connections_o) {
+    TLOG() << "TR data TX discovered: " << tr_tx;
+  }
+
+  if (!m_bk_connection_o.empty()) {
+    TLOG() << "Bookkeeping TX discovered: " << m_bk_connection_o;
   }
 
   TLOG() << get_name() << ": exist do_conf()";
@@ -181,11 +199,11 @@ void TRDispatcher::receive(bool is_hdf5file) {
   std::atomic<unsigned int> received_cnt = 0;
 
   auto cb_receiver = dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
-      "trdispatcher0");
+      m_trdispatcher_req_rx_uid);
 
   std::function<void(dunedaq::datafilter::Handshake)> str_receiver_cb =
       [&](dunedaq::datafilter::Handshake msg) {
-        if (msg.msg_id == "trdispatcher0") {
+        if (msg.msg_id == m_trdispatcher_req_rx_uid) {
           ++received_cnt;
         }
         TLOG() << "Received next TR instruction from filter "
@@ -357,8 +375,26 @@ void TRDispatcher::send_tr() {
 
   // m_trdispatcher_id = "conn_A0_G0_C0_"; // to get it from config.
   m_trdispatcher_id = m_tr_connections_o[0];
-  auto init_sender =
-      dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>("TR_tracking2");
+
+  // if (!m_tr_connections_o.empty()) {
+  //   m_trdispatcher_id = m_tr_connections_o.front();
+  // } else {
+  //   throw std::runtime_error(
+  //       "No TriggerRecord TX connection discovered (tr_data_tx is empty)");
+  // }
+
+  if (m_tr_connections_o.empty()) {
+    TLOG() << "No tr_data_tx discovered; skipping TR send.";
+    return;
+  }
+
+  if (m_tr_tracking_tx.empty()) {
+    TLOG() << "No tr_tracking_tx discovered; Making sure that tracking is in "
+              "the OKS file.";
+    return;
+  }
+  auto init_sender = dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(
+      m_tr_tracking_tx.front());
 
   dunedaq::datafilter::Handshake sent_t1("next_tr");
   init_sender->send(std::move(sent_t1), Sender::s_block);
@@ -435,7 +471,15 @@ void TRDispatcher::send_tr() {
 void TRDispatcher::send_tr_from_hdf5file() {
   std::ostringstream oss;
 
-  m_trdispatcher_id = "conn_A0_G0_C0_"; // to get it from config.
+  // m_trdispatcher_id = "conn_A0_G0_C0_"; // to get it from config.
+
+  if (!m_tr_connections_o.empty()) {
+    m_trdispatcher_id = m_tr_connections_o.front();
+  } else {
+    throw std::runtime_error(
+        "No TriggerRecord TX connection discovered (tr_data_tx is empty)");
+  }
+
   HDF5RawDataFile h5_file(m_input_h5_filename);
   auto records = h5_file.get_all_record_ids();
   auto records_size = records.size();
@@ -468,14 +512,25 @@ void TRDispatcher::send_tr_from_hdf5file() {
   // Send the file attributes first: file_index, run_number. The
   // FilterResultWriter needs to know it before receiving the trigger
   // record.
+
+  if (m_bk_connection_o.empty()) {
+    throw std::runtime_error(
+        "No bookkeeping TX connection discovered (bk_outputs is empty)");
+  }
   auto bookkeeping_sender =
       dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
           m_bk_connection_o);
+
   bookkeeping_sender->send(std::move(bk_info), Sender::s_no_block);
 
+  if (m_tr_tracking_tx.empty()) {
+    TLOG() << "TR_tracking2 to DF is empty.";
+    return;
+  }
+  TLOG() << "m_tr_tracking_tx " << m_tr_tracking_tx.front();
   // Handshake with datafilter.
-  auto init_sender =
-      dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>("TR_tracking2");
+  auto init_sender = dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(
+      m_tr_tracking_tx.front());
 
   dunedaq::datafilter::Handshake sent_t1("next_tr");
   // send total trigger number to datafilter then datafilter to
@@ -601,9 +656,10 @@ void TRDispatcher::send_tr_from_hdf5file() {
           bk_info.tr_header_info.push_back(
               {"trigger number", std::to_string(m_trigger_number)});
           bk_info.file_send_list.push_back(m_input_h5_filename);
+
           auto bookkeeping_sender =
               dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
-                  "bookkeeping0");
+                  "m_bk_connection_o");
           //// SERIALIZE
           // auto bk_bytes = dunedaq::serialization::serialize(
           //     bk_info, dunedaq::serialization::kJSON);

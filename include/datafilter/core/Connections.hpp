@@ -13,8 +13,9 @@ struct Connections {
   std::vector<std::string>
       trdispatcher_req; // DataFilter -> TRDispatcher (request)
   std::vector<std::string> trwriter_ctrl; // DataFilter -> TRReWriter   (notify)
-  std::vector<std::string>
-      tr_tracking_rx; // Dispatcher -> DataFilter (tracking)
+  std::vector<std::string> tr_tracking_rx; // DataFilter rx (tracking)
+
+  std::vector<std::string> tr_tracking_tx; // Dispatcher tx (tracking)
 
   // TRs Data lanes
   std::vector<std::string> tr_data_rx; // TR inputs (upstream → DataFilter)

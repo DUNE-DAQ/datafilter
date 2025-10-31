@@ -32,6 +32,8 @@
 #include "conffwk/ConfigObject.hpp"
 #include "conffwk/ConfigObjectImpl.hpp"
 
+#include "datafilter/core/Connections.hpp"
+#include "datafilter/core/ConnectionsBuilder.hpp"
 #include "datafilter/dal/TRDispatcher.hpp"
 #include "datafilter/opmon/trdispatcher_info.pb.h"
 #include "detdataformats/DetID.hpp"
@@ -124,12 +126,16 @@ private:
 
   std::string m_init_connection;
   std::vector<std::string> m_tr_connections_o;
+  std::vector<std::string> m_tr_tracking_tx;
   std::string m_bk_connection_o;
+  dunedaq::datafilter::Connections m_cx;
 
   std::chrono::milliseconds m_send_timeout_ms{100};
   std::chrono::milliseconds m_recv_timeout_ms{100};
   std::string m_trdispatcher_id;
   std::string m_bk_info_id;
+  std::string m_trdispatcher_req_rx_uid;
+
   size_t m_trigger_number;
   size_t m_run_number;
   size_t run_number = 53;

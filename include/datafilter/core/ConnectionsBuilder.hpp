@@ -45,11 +45,13 @@ struct ConnectionsBuilder {
       TLOG() << "Output: dt=" << dt << " UID=" << id << " dt_tr " << dt_tr
              << " dt_hs " << dt_hs;
 
-      if (dt == dt_tr)
+      if (dt == dt_tr) {
         cx.tr_data_tx.push_back(id);
-      else if (dt == dt_bk)
+      } else if (dt == dt_bk) {
         cx.bk_outputs.push_back(id);
-      else if (dt == dt_hs) {
+      } else if (dt == dt_hs) {
+        if (id.find("TR_tracking") != std::string::npos)
+          cx.tr_tracking_tx.push_back(id);
         if (id.find("trwriter") != std::string::npos)
           cx.trwriter_ctrl.push_back(id);
         if (id.find("trdispatcher") != std::string::npos)
