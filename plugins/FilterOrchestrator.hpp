@@ -34,31 +34,6 @@ namespace dunedaq::datafilter {
 
 class FilterOrchestrator : public dunedaq::appfwk::DAQModule {
 public:
-  struct FilterOrchestratorInfo {
-    size_t conn_id;
-    size_t group_id;
-    size_t messages_sent{0};
-    size_t trigger_number;
-    size_t trigger_timestamp;
-    size_t run_number;
-    size_t element_id;
-    size_t detector_id;
-    size_t error_bits;
-    // dunedaq::daqdataformats::Fragment fragment_type;
-    size_t fragment_type;
-    std::string path_header;
-    int n_frames;
-
-    std::shared_ptr<
-        dunedaq::iomanager::SenderConcept<dunedaq::datafilter::Data>>
-        sender;
-    std::unique_ptr<std::thread> send_thread;
-    std::chrono::milliseconds get_sender_time;
-
-    FilterOrchestratorInfo(size_t group, size_t conn)
-        : conn_id(conn), group_id(group) {}
-  };
-
   explicit FilterOrchestrator(const std::string &name);
 
   void init(std::shared_ptr<appfwk::ConfigurationManager>) override;
@@ -66,7 +41,6 @@ public:
   void request_next_tr();
   void receive();
 
-  std::vector<std::shared_ptr<FilterOrchestratorInfo>> filterorchestrators;
   FilterOrchestrator(const FilterOrchestrator &) = delete;
   FilterOrchestrator &operator=(const FilterOrchestrator &) = delete;
   FilterOrchestrator(FilterOrchestrator &&) = delete;
