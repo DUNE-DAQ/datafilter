@@ -9,7 +9,6 @@
  */
 
 #include "FilterResultWriter.hpp"
-#include <optional>
 
 using dunedaq::datafilter::FilterResultWriter;
 
@@ -67,7 +66,6 @@ void FilterResultWriter::FilterResultWriter::init(
 }
 
 void FilterResultWriter::do_conf(const data_t &) {
-  // auto iom = iomanager::IOManager::get();
   TLOG() << get_name() << " do_conf()";
   dunedaq::opmonlib::TestOpMonManager opmgr;
   try {

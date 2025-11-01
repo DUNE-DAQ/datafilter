@@ -33,12 +33,14 @@ struct ConnectionsBuilder {
     Connections cx;
 
     TLOG() << "Connections builder";
+    // Data lanes
     const auto dt_tr = datatype_to_string<trigger_record_ptr_t>();
+    // Handshake
     const auto dt_hs = datatype_to_string<dunedaq::datafilter::Handshake>();
-    // the BookKeeping is still used the manual setup.
+    // BookKeeping
     const auto dt_bk = datatype_to_string<dunedaq::datafilter::BookKeeping>();
 
-    // Outputs (this module -> others)
+    // Outputs (module -> others)
     for (auto con : mdal.get_outputs()) {
       const auto &dt = con->get_data_type();
       const auto &id = con->UID();

@@ -34,6 +34,7 @@
 #include <atomic>
 #include <execution>
 #include <limits>
+#include <optional>
 #include <string>
 
 using namespace dunedaq::iomanager;
@@ -46,27 +47,27 @@ namespace dunedaq::datafilter {
 
 class FilterResultWriter : public dunedaq::appfwk::DAQModule {
 public:
-  struct FilterResultWriterInfo {
-    size_t conn_id;
-    size_t group_id;
-    size_t messages_sent{0};
-    size_t trigger_number;
-    size_t trigger_timestamp;
-    size_t run_number;
-    size_t element_id;
-    size_t detector_id;
-    size_t error_bits;
-    size_t fragment_type;
-    std::string path_header;
-    int n_frames;
+  // struct FilterResultWriterInfo {
+  //   size_t conn_id;
+  //   size_t group_id;
+  //   size_t messages_sent{0};
+  //   size_t trigger_number;
+  //   size_t trigger_timestamp;
+  //   size_t run_number;
+  //   size_t element_id;
+  //   size_t detector_id;
+  //   size_t error_bits;
+  //   size_t fragment_type;
+  //   std::string path_header;
+  //   int n_frames;
 
-    std::shared_ptr<SenderConcept<dunedaq::datafilter::Data>> sender;
-    std::unique_ptr<std::thread> send_thread;
-    std::chrono::milliseconds get_sender_time;
+  //   std::shared_ptr<SenderConcept<dunedaq::datafilter::Data>> sender;
+  //   std::unique_ptr<std::thread> send_thread;
+  //   std::chrono::milliseconds get_sender_time;
 
-    FilterResultWriterInfo(size_t group, size_t conn)
-        : conn_id(conn), group_id(group) {}
-  };
+  //   FilterResultWriterInfo(size_t group, size_t conn)
+  //       : conn_id(conn), group_id(group) {}
+  // };
 
   struct SubscriberInfo {
     size_t group_id;
