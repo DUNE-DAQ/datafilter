@@ -48,6 +48,18 @@ void FilterResultWriter::FilterResultWriter::init(
     throw appfwk::CommandFailed(ERS_HERE, get_name(), "init",
                                 "Unable to load module configuration");
   }
+
+  m_cx = dunedaq::datafilter::ConnectionsBuilder::build_from_dal(mdal);
+  TLOG() << "FRW connections: "
+         << "trwriter_ctrl="
+         << (m_cx.trwriter_ctrl.empty() ? "<none>" : m_cx.trwriter_ctrl.front())
+         << " tr_data_rx="
+         << (m_cx.tr_data_rx.empty() ? "<none>" : m_cx.tr_data_rx.front())
+         << " bk_in="
+         << (m_cx.bk_inputs.empty() ? "<none>" : m_cx.bk_inputs.front())
+         << " bk_out="
+         << (m_cx.bk_outputs.empty() ? "<none>" : m_cx.bk_outputs.front());
+
   m_odir = mdal->get_odir();
   m_output_h5_filename = mdal->get_output_h5_filename();
   TLOG() << "odir " << m_odir << "output_h5_filename prefix"
@@ -227,8 +239,14 @@ dunedaq::hdf5libs::HDF5FileLayoutParameters create_file_layout_params() {
 void FilterResultWriter::receive_attrs(std::atomic<bool> &running) {
   TLOG() << "BookKeeping receive_attrs starting";
 
-  auto receiver = dunedaq::get_iom_receiver<dunedaq::datafilter::BookKeeping>(
-      "bookkeeping1");
+  if (m_cx.bk_inputs.empty()) {
+    TLOG() << "FRW: no bookkeeping inputs configured; skipping receive_attrs";
+    return;
+  }
+  const std::string &bk_rx_uid = m_cx.bk_inputs.front();
+
+  auto receiver =
+      dunedaq::get_iom_receiver<dunedaq::datafilter::BookKeeping>(bk_rx_uid);
   if (!receiver) {
     TLOG() << "Failed to get BookKeeping receiver 'bookkeeping1'";
     return;
@@ -468,8 +486,15 @@ void FilterResultWriter::receive_tr() {
   std::condition_variable cv;
   bool handshake_done = false;
 
+  if (m_cx.trwriter_ctrl.empty()) {
+    TLOG()
+        << "FRW: no trwriter_ctrl endpoints; cannot receive 'write_tr' control";
+    return;
+  }
+  const std::string &trw_ctrl_uid = m_cx.trwriter_ctrl.front();
+
   auto cb_receiver =
-      dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>("trwriter0");
+      dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(trw_ctrl_uid);
   std::function<void(dunedaq::datafilter::Handshake)> str_receiver_cb =
       [&](dunedaq::datafilter::Handshake msg) {
         if (msg.msg_id == "write_tr") {
@@ -610,11 +635,18 @@ void FilterResultWriter::receive_tr() {
             {"tr_count", std::to_string(current_total) + "/" +
                              std::to_string(total_expected)});
 
-        auto bookkeeping_sender =
-            dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
-                "bookkeeping0");
-        bookkeeping_sender->send(std::move(bk_info), Sender::s_block);
-
+        if (m_cx.bk_outputs.empty()) {
+          TLOG() << "FRW: no bookkeeping outputs configured; skip BK update";
+        } else {
+          auto bookkeeping_sender =
+              dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
+                  m_cx.bk_outputs.front());
+          bookkeeping_sender->send(std::move(bk_info), Sender::s_block);
+        }
+        // auto bookkeeping_sender =
+        // dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
+        // "bookkeeping0");
+        // bookkeeping_sender->send(std::move(bk_info), Sender::s_block);
       } catch (const std::exception &e) {
         TLOG() << "ERROR writing TR: " << e.what();
 
@@ -634,7 +666,7 @@ void FilterResultWriter::receive_tr() {
 
         auto bookkeeping_sender =
             dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
-                "bookkeeping0");
+                m_cx.bk_outputs.front());
         bookkeeping_sender->send(std::move(bk_error), Sender::s_block);
       }
 
@@ -699,7 +731,8 @@ void FilterResultWriter::receive_tr() {
   }
 
   auto final_bookkeeping_sender =
-      dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>("bookkeeping0");
+      dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
+          m_cx.bk_outputs.front());
   final_bookkeeping_sender->send(std::move(final_bk_info), Sender::s_block);
 
   TLOG_DEBUG(5) << "Starting wait loop for receives to complete";
@@ -731,7 +764,7 @@ void FilterResultWriter::receive_tr() {
   }
 
   auto cb_receiver1 =
-      dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>("trwriter0");
+      dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(trw_ctrl_uid);
   cb_receiver1->remove_callback();
 
   subscribers.clear();
@@ -743,8 +776,15 @@ void FilterResultWriter::receive_tr_single_connection() {
   std::condition_variable cv;
   bool handshake_done = false;
 
+  if (m_cx.trwriter_ctrl.empty()) {
+    TLOG()
+        << "FRW: no trwriter_ctrl endpoints; cannot receive 'write_tr' control";
+    return;
+  }
+  const std::string &trw_ctrl_uid = m_cx.trwriter_ctrl.front();
+
   auto cb_receiver =
-      dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>("trwriter0");
+      dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(trw_ctrl_uid);
   std::function<void(dunedaq::datafilter::Handshake)> str_receiver_cb =
       [&](dunedaq::datafilter::Handshake msg) {
         if (msg.msg_id == "write_tr") {
@@ -771,9 +811,18 @@ void FilterResultWriter::receive_tr_single_connection() {
   auto srcid_geoid_map = create_srcid_geoid_map();
 
   // Use a single connection for all TRs
-  std::string single_connection = "conn_A1_G0_C0_";
+  // std::string single_connection = "conn_A1_G0_C0_";
+  // TLOG() << "Listening for ALL TRs on single connection: " <<
+  // single_connection; TLOG() << "Expecting " << m_num_messages << " TRs
+  // total";
+
+  // Use a single connection for all TRs (discovered)
+  if (m_cx.tr_data_rx.empty()) {
+    TLOG() << "FRW: no TR data inputs configured; cannot receive TRs";
+    return;
+  }
+  const std::string &single_connection = m_cx.tr_data_rx.front();
   TLOG() << "Listening for ALL TRs on single connection: " << single_connection;
-  TLOG() << "Expecting " << m_num_messages << " TRs total";
 
   std::atomic<size_t> total_msgs_received{0};
   size_t total_expected = m_num_messages;
@@ -849,7 +898,7 @@ void FilterResultWriter::receive_tr_single_connection() {
 
       auto bookkeeping_sender =
           dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
-              "bookkeeping0");
+              m_cx.bk_outputs.front());
       bookkeeping_sender->send(std::move(bk_info), Sender::s_block);
 
     } catch (const std::exception &e) {

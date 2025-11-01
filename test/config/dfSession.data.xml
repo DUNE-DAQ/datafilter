@@ -63,7 +63,7 @@
 
 <oks-data>
 
-<info name="" type="" num-of-items="75" oks-format="data" oks-version="862f2957270" created-by="gjc" created-on="thinkpad" creation-time="20231116T105446" last-modified-by="chen" last-modified-on="atlas13.lps.umontreal.ca" last-modification-time="20251031T050911"/>
+<info name="" type="" num-of-items="75" oks-format="data" oks-version="862f2957270" created-by="gjc" created-on="thinkpad" creation-time="20231116T105446" last-modified-by="chen" last-modified-on="atlas13.lps.umontreal.ca" last-modification-time="20251101T050653"/>
 
 <include>
  <file path="schema/confmodel/dunedaq.schema.xml"/>
@@ -89,6 +89,8 @@
  <comment creation-time="20251024T160013" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
  <comment creation-time="20251024T192901" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
  <comment creation-time="20251031T050911" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20251101T043551" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
+ <comment creation-time="20251101T050653" created-by="chen" created-on="atlas13.lps.umontreal.ca" author="chen" text="test"/>
 </comments>
 
 
@@ -338,9 +340,11 @@
   <ref class="NetworkConnection" id="conn_A0_G0_C0_"/>
   <ref class="NetworkConnection" id="conn_A1_G0_C0_"/>
   <ref class="NetworkConnection" id="bookkeeping1"/>
+  <ref class="NetworkConnection" id="trwriter0"/>
  </rel>
  <rel name="outputs">
   <ref class="NetworkConnection" id="TR_tracking0"/>
+  <ref class="NetworkConnection" id="bookkeeping0"/>
  </rel>
  <rel name="used_resources">
   <ref class="ProcessingResource" id="cpus"/>

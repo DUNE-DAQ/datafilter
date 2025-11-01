@@ -19,6 +19,8 @@
 
 #include "daqdataformats/TriggerRecord.hpp"
 #include "daqdataformats/TriggerRecordHeaderData.hpp"
+#include "datafilter/core/Connections.hpp"
+#include "datafilter/core/ConnectionsBuilder.hpp"
 #include "datafilter/dal/FilterResultWriter.hpp"
 #include "datafilter/datafilter_structs.hpp"
 #include "datafilter/opmon/filterresultwriter_info.pb.h"
@@ -137,6 +139,7 @@ private:
   std::shared_ptr<dunedaq::conffwk::Configuration> m_confdb;
   std::vector<const dunedaq::confmodel::Queue *> m_queues;
   std::vector<const confmodel::NetworkConnection *> m_networkconnections;
+  Connections m_cx;
 
   // TO dfbackend DEVELOPERS: PLEASE DELETE THIS FOLLOWING COMMENT AFTER READING
   // IT m_total_amount and m_amount_since_last_get_info_call are examples of
