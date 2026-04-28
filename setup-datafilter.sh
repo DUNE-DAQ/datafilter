@@ -1,26 +1,38 @@
 #!/bin/bash
 #
+# One-time work-area setup script.  Run directly — do NOT source it.
+#
 # Usage:
-#   source setup-datafilter.sh [INSTALL_DIR]
+#   bash setup-datafilter.sh [INSTALL_DIR]
+#   ./setup-datafilter.sh  [INSTALL_DIR]
 #
 # INSTALL_DIR priority (highest to lowest):
-#   1. Script argument:       source setup-datafilter.sh /your/path
-#   2. Pre-exported env var:  export INSTALL_DIR=/your/path && source setup-datafilter.sh
+#   1. Script argument:       ./setup-datafilter.sh /your/path
+#   2. Pre-exported env var:  export INSTALL_DIR=/your/path && ./setup-datafilter.sh
 #   3. Hostname-based default (np02/np04 -> $HOME/test-area/...; other -> /lcg/storage19 fallback)
+#
+# After setup completes, enter the work area with:
+#   cd $INSTALL_DIR && source env.sh && dbt-workarea-env
+
+# Guard: sourcing this script can close your shell (sub-scripts may call exit).
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+    echo "Error: do not source this script — run it directly instead:"
+    echo "  bash setup-datafilter.sh [INSTALL_DIR]"
+    echo "  ./setup-datafilter.sh  [INSTALL_DIR]"
+    return 1
+fi
 
 if [[ $SHELL != *"bash" ]]; then
     echo "You are running $SHELL. You need bash shell to continue the installation."
-    return 0
+    exit 0
 fi
 
-# --- INSTALL_DIR ---
+# --- Determine INSTALL_DIR ---
+hn=$(hostname -s)
 if [ -n "$1" ]; then
     INSTALL_DIR="$1"
 elif [ -z "$INSTALL_DIR" ]; then
-    hn=$(hostname -s)
     if [[ $hn == *"np02"* || $hn == *"np04"* ]]; then
-        echo "setup datafilter for np02 or np04"
-        source ~np04daq/bin/web_proxy.sh
         mkdir -p "$HOME/test-area"
         INSTALL_DIR="$HOME/test-area/dune-v5-spack-datafilter-integration-test"
     else
@@ -35,7 +47,7 @@ parent_dir=$(dirname "$INSTALL_DIR")
 if [ ! -d "$parent_dir" ]; then
     echo "Error: parent directory '$parent_dir' does not exist."
     echo "Create it first, or set INSTALL_DIR to a path whose parent already exists."
-    return 1
+    exit 1
 fi
 
 # --- Release pin ---
@@ -55,12 +67,18 @@ dbt-create -b candidate "$DUNE_DAQ_release" "$INSTALL_DIR/"
 
 if [ ! -d "$INSTALL_DIR" ]; then
     echo "Error: dbt-create did not create '$INSTALL_DIR'. Aborting."
-    return 1
+    exit 1
 fi
 
 cd "$INSTALL_DIR"
 source env.sh
 cd sourcecode
+
+# Re-apply web proxy after env.sh (env.sh may reset the environment on np02/np04).
+if [[ $hn == *"np02"* || $hn == *"np04"* ]]; then
+    echo "setup datafilter for np02 or np04"
+    source ~np04daq/bin/web_proxy.sh
+fi
 
 git clone https://github.com/DUNE-DAQ/daqsystemtest.git
 git clone https://github.com/DUNE-DAQ/fddaqconf.git -b coredaq-v5.4.3
@@ -87,3 +105,7 @@ cd ../..
 source dbt-env.sh
 dbt-workarea-env
 dbt-build -j$(nproc)
+
+echo ""
+echo "Setup complete. To enter the work area in a new shell:"
+echo "  cd $INSTALL_DIR && source env.sh && dbt-workarea-env"
