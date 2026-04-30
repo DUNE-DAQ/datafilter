@@ -128,8 +128,10 @@ void FilterResultWriter::do_start(const data_t &) {
       m_dispatch_ready.store(false, std::memory_order_release);
     }
     TLOG() << "FRW: dispatch gate passed — starting TR/TS receive cycle";
-    receive_tr_single_connection();
-    receive_ts_single_connection();
+    if (!m_cx.tr_data_rx.empty())
+      receive_tr_single_connection();
+    if (!m_cx.ts_data_rx.empty())
+      receive_ts_single_connection();
   }
 }
 void FilterResultWriter::do_stop(const data_t &) {
@@ -202,6 +204,10 @@ void FilterResultWriter::receive_attrs(std::atomic<bool> &running) {
 
   std::function<void(dunedaq::datafilter::BookKeeping &)> cb =
       [&](dunedaq::datafilter::BookKeeping bk) {
+        // Update run_number from every BK so TS-only mode gets the right value.
+        if (bk.run_number > 0)
+          m_run_number = bk.run_number;
+
         // Find "file_index" and update (keep this fast)
         for (const auto &kv : bk.file_attributes_info) {
           if (kv.first == "file_index") {
@@ -587,7 +593,7 @@ void FilterResultWriter::receive_tr_single_connection() {
 
   {
     std::unique_lock<std::mutex> lock(cv_mutex);
-    cv.wait_for(lock, std::chrono::seconds(10), [&] { return handshake_done; });
+    cv.wait_for(lock, std::chrono::milliseconds(500), [&] { return handshake_done; });
   }
 
   if (!handshake_done) {
@@ -958,6 +964,38 @@ void FilterResultWriter::receive_ts_single_connection() {
   }
 
   receiver->remove_callback();
+
+  // Notify DF of TS batch completion; DF's BookkeepingReceiver translates this
+  // to kReRecorded and forwards to TRD on bookkeeping2.
+  if (!m_cx.bk_outputs.empty()) {
+    const bool all_written =
+        (ts_expected.load() > 0) &&
+        (ts_received.load() >= ts_expected.load());
+    const auto ts_status = all_written
+                               ? to_string(TRStatus::kFileCompleted)
+                               : to_string(TRStatus::kWriteFailed);
+    dunedaq::datafilter::BookKeeping ts_bk(m_cx.bk_outputs.front());
+    ts_bk.entry_id   = time_point_to_string(std::chrono::system_clock::now());
+    ts_bk.from_id    = "FilterResultWriter";
+    ts_bk.run_number = m_run_number;
+    ts_bk.tr_status  = ts_status;
+    ts_bk.tr_header_info.push_back(
+        {"total_ts_written", std::to_string(ts_received.load())});
+    ts_bk.tr_header_info.push_back(
+        {"expected_ts", std::to_string(ts_expected.load())});
+    try {
+      auto bk_sender =
+          dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
+              m_cx.bk_outputs.front());
+      bk_sender->send(std::move(ts_bk), Sender::s_block);
+      TLOG() << "FRW: sent TS completion BK (" << ts_status << ") to DF"
+             << " ts_received=" << ts_received.load()
+             << " ts_expected=" << ts_expected.load();
+    } catch (const std::exception &e) {
+      TLOG() << "FRW: TS completion BK send failed: " << e.what();
+    }
+  }
+
   TLOG_DEBUG(5) << "receive_ts_single_connection() done";
 }
 
