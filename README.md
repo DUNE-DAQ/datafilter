@@ -9,4 +9,4 @@ chmod 755 setup-datafilter.sh
 ./setup-datafilter.sh /your/installation/path
 
 ```
-* More details docs/README.md
+* [More details] (docs/README.md)
