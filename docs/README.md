@@ -14,7 +14,7 @@ Setup the DataFilter first.
 wget https://raw.githubusercontent.com/DUNE-DAQ/datafilter/refs/heads/develop/setup-datafilter.sh
 # The $INSTALL_DIR variable need to be defined before running the script.
 chmod 755 setup-datafilter.sh
-./setup-datafilter.sh /your/path  
+./setup-datafilter.sh /your/installation/path  
 ```
 The script will build the project. Once it is done.
 
