@@ -235,10 +235,12 @@ private:
   void send_bk(dunedaq::datafilter::BookKeeping bk_info) {
     TLOG() << "Send bookkeeping info to FilterResultWriter";
 
-    const std::string tx_uid =
-        m_bk_tx_uid.empty() ? "bookkeeping1" : m_bk_tx_uid;
+    if (m_bk_tx_uid.empty()) {
+      TLOG() << "send_bk: m_bk_tx_uid not configured — OKS topology error, skipping send";
+      return;
+    }
     m_bk_sender =
-        dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(tx_uid);
+        dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(m_bk_tx_uid);
 
     if (!m_bk_sender) {
       TLOG() << "Failed to get bookkeeping sender!";
@@ -257,14 +259,15 @@ private:
   void receive_bk() {
     TLOG() << "Setting up bookkeeping receiver";
 
-    const std::string rx_uid =
-        m_bk_rx_uid.empty() ? "bookkeeping0" : m_bk_rx_uid;
-
-    TLOG() << "BK: attempting to bind receiver on uid=" << rx_uid
+    if (m_bk_rx_uid.empty()) {
+      TLOG() << "receive_bk: m_bk_rx_uid not configured — OKS topology error, skipping receiver setup";
+      return;
+    }
+    TLOG() << "BK: attempting to bind receiver on uid=" << m_bk_rx_uid
            << " type=BookKeeping";
 
     auto cb_receiver =
-        dunedaq::get_iom_receiver<dunedaq::datafilter::BookKeeping>(rx_uid);
+        dunedaq::get_iom_receiver<dunedaq::datafilter::BookKeeping>(m_bk_rx_uid);
     if (!cb_receiver) {
       TLOG() << "Failed to get bookkeeping receiver";
       return;
