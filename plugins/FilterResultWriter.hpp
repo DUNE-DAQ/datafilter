@@ -115,11 +115,9 @@ private:
   void do_conf(const data_t &);
   void do_start(const data_t &);
   void do_stop(const data_t &);
-  void do_work(std::atomic<bool> &running);
   void receive_attrs(std::atomic<bool> &running);
 
   // Threading
-  dunedaq::utilities::WorkerThread m_thread;
   dunedaq::utilities::WorkerThread m_bk_thread;
 
   std::shared_ptr<dunedaq::conffwk::Configuration> m_confdb;
@@ -142,7 +140,7 @@ private:
   std::string m_session_name = "test-session";
   size_t m_trigger_timestamp;
   size_t m_trigger_number;
-  size_t m_run_number;
+  std::atomic<size_t> m_run_number{0};
   std::atomic<size_t> m_num_messages{0};
   std::string m_info_file_base = "FilterResultWriter";
   std::string m_odir;

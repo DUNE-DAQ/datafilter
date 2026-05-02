@@ -35,8 +35,6 @@ namespace dunedaq::datafilter {
 
 FilterResultWriter::FilterResultWriter(const std::string &name)
     : dunedaq::appfwk::DAQModule(name),
-      m_thread(
-          std::bind(&FilterResultWriter::do_work, this, std::placeholders::_1)),
       m_bk_thread(std::bind(&FilterResultWriter::receive_attrs, this,
                             std::placeholders::_1)) {
   register_command("conf", &FilterResultWriter::do_conf);
@@ -179,10 +177,16 @@ void FilterResultWriter::do_start(const data_t &) {
       m_dispatch_ready.store(false, std::memory_order_release);
     }
     TLOG() << "FRW: dispatch gate passed — starting TR/TS receive cycle";
-    if (!m_cx.tr_data_rx.empty())
-      receive_tr_single_connection();
-    if (!m_cx.ts_data_rx.empty())
-      receive_ts_single_connection();
+    std::thread tr_thread([this] {
+      if (!m_cx.tr_data_rx.empty())
+        receive_tr_single_connection();
+    });
+    std::thread ts_thread([this] {
+      if (!m_cx.ts_data_rx.empty())
+        receive_ts_single_connection();
+    });
+    tr_thread.join();
+    ts_thread.join();
   }
   TLOG() << "FRW: do_start() dispatch loop exiting";
 }
@@ -208,20 +212,6 @@ void FilterResultWriter::do_stop(const data_t &) {
   m_bk_thread.stop_working_thread();
 }
 
-void FilterResultWriter::do_work(std::atomic<bool> &running) {
-  std::mutex work_mutex;
-  std::condition_variable work_cv;
-
-  while (running.load()) {
-    receive_tr_single_connection();
-    receive_ts_single_connection();
-
-    std::unique_lock<std::mutex> lock(work_mutex);
-    work_cv.wait_for(lock, std::chrono::seconds(1), [&]() {
-      return !running.load(); // check for new work availability
-    });
-  }
-}
 
 std::string
 FilterResultWriter::generate_hdf5file_pathname(std::string file_pathname_prefix,
@@ -274,7 +264,7 @@ void FilterResultWriter::receive_attrs(std::atomic<bool> &running) {
       [&](dunedaq::datafilter::BookKeeping bk) {
         // Update run_number from every BK so TS-only mode gets the right value.
         if (bk.run_number > 0)
-          m_run_number = bk.run_number;
+          m_run_number.store(bk.run_number);
 
         // Find "file_index" and update (keep this fast)
         for (const auto &kv : bk.file_attributes_info) {
@@ -431,20 +421,20 @@ void FilterResultWriter::receive_tr_single_connection() {
     m_trigger_timestamp =
         tr->get_fragments_ref().at(0)->get_trigger_timestamp();
     m_trigger_number = tr->get_fragments_ref().at(0)->get_trigger_number();
-    m_run_number = tr->get_fragments_ref().at(0)->get_run_number();
+    m_run_number.store(tr->get_fragments_ref().at(0)->get_run_number());
     size_t file_index = get_file_index();
 
     size_t current_total = ++total_msgs_received;
 
     TLOG() << "Received TR " << current_total << "/" << total_expected
-           << " - run: " << m_run_number << ", trigger: " << m_trigger_number
+           << " - run: " << m_run_number.load() << ", trigger: " << m_trigger_number
            << ", file_index: " << file_index;
 
     // Write each TR to its own file
     std::string app_name = "test";
     std::string file_pathname_prefix = m_odir + "/" + m_output_h5_filename;
     std::string file_base = generate_hdf5file_pathname(
-        file_pathname_prefix, m_run_number, file_index, m_trigger_number);
+        file_pathname_prefix, m_run_number.load(), file_index, m_trigger_number);
     std::string writing_pathname = file_base + ".filtered.writing";
     std::string final_pathname = file_base + ".filtered.hdf5";
 
@@ -460,7 +450,7 @@ void FilterResultWriter::receive_tr_single_connection() {
 
     try {
       std::unique_ptr<HDF5RawDataFile> h5file_ptr(new HDF5RawDataFile(
-          writing_pathname, m_run_number, m_file_index, app_name, fl_pars,
+          writing_pathname, m_run_number.load(), m_file_index, app_name, fl_pars,
           srcid_geoid_map, compression_level, ""));
 
       h5file_ptr->write(*tr);
@@ -483,9 +473,9 @@ void FilterResultWriter::receive_tr_single_connection() {
       bk_info.conn_id = single_connection;
       bk_info.from_id = "FilterResultWriter";
       bk_info.tr_status = to_string(TRStatus::kReRecorded);
-      bk_info.run_number = m_run_number;
+      bk_info.run_number = m_run_number.load();
       bk_info.tr_header_info.push_back(
-          {"run_number", std::to_string(m_run_number)});
+          {"run_number", std::to_string(m_run_number.load())});
       bk_info.tr_header_info.push_back(
           {"trigger_number", std::to_string(m_trigger_number)});
       bk_info.tr_header_info.push_back(
@@ -510,9 +500,9 @@ void FilterResultWriter::receive_tr_single_connection() {
       bk_error.conn_id = single_connection;
       bk_error.from_id = "FilterResultWriter";
       bk_error.tr_status = to_string(TRStatus::kWriteFailed);
-      bk_error.run_number = m_run_number;
+      bk_error.run_number = m_run_number.load();
       bk_error.tr_header_info.push_back(
-          {"run_number", std::to_string(m_run_number)});
+          {"run_number", std::to_string(m_run_number.load())});
       bk_error.tr_header_info.push_back(
           {"trigger_number", std::to_string(m_trigger_number)});
       bk_error.tr_header_info.push_back({"error", e.what()});
@@ -567,9 +557,9 @@ void FilterResultWriter::receive_tr_single_connection() {
     final_bk_info.tr_status = (actually_written >= actually_received)
                                   ? to_string(TRStatus::kFileCompleted)
                                   : to_string(TRStatus::kWriteFailed);
-    final_bk_info.run_number = m_run_number;
+    final_bk_info.run_number = m_run_number.load();
     final_bk_info.tr_header_info.push_back(
-        {"run_number", std::to_string(m_run_number)});
+        {"run_number", std::to_string(m_run_number.load())});
     final_bk_info.tr_header_info.push_back(
         {"total_trs_written", std::to_string(actually_written)});
     final_bk_info.tr_header_info.push_back(
@@ -659,6 +649,7 @@ void FilterResultWriter::receive_ts_single_connection() {
          << ts_expected.load();
 
   std::atomic<size_t> ts_received{0};
+  std::atomic<size_t> ts_written{0};
 
   dunedaq::datafilter::time_point_to_string time_point_to_string(
       dunedaq::datafilter::Precision::NANOSECONDS);
@@ -681,15 +672,19 @@ void FilterResultWriter::receive_ts_single_connection() {
       m_ts_prebuf.pop();
     }
 
-    size_t current = ++ts_received;
+    ++ts_received;
     auto ts_number = ts->get_header().timeslice_number;
+    size_t current = ts_received.load();
 
     TLOG() << "Received TS " << current << "/" << ts_expected.load()
            << " ts_number=" << ts_number;
 
-    std::string file_pathname_prefix = m_odir + "/" + m_output_h5_filename;
+    // Prefix with "_ts" to keep TS filenames distinct from TR filenames,
+    // which use the same run/file_index/sequence scheme.
+    std::string file_pathname_prefix =
+        m_odir + "/" + m_output_h5_filename + "_ts";
     std::string file_base = generate_hdf5file_pathname(
-        file_pathname_prefix, m_run_number, get_file_index(), ts_number);
+        file_pathname_prefix, m_run_number.load(), get_file_index(), ts_number);
     std::string writing_pathname = file_base + ".filtered.writing";
     std::string final_pathname = file_base + ".filtered.hdf5";
 
@@ -699,11 +694,12 @@ void FilterResultWriter::receive_ts_single_connection() {
       unsigned compression_level = 0;
       try {
         std::unique_ptr<HDF5RawDataFile> h5file_ptr(new HDF5RawDataFile(
-            writing_pathname, m_run_number, get_file_index(), "test",
+            writing_pathname, m_run_number.load(), get_file_index(), "test",
             ts_fl_pars, srcid_geoid_map, compression_level, ""));
         h5file_ptr->write(*ts);
         h5file_ptr.reset();
         std::filesystem::rename(writing_pathname, final_pathname);
+        ++ts_written;
         TLOG() << "Successfully wrote TS " << current
                << " ts_number=" << ts_number << " -> " << final_pathname;
       } catch (const std::exception &e) {
@@ -721,16 +717,16 @@ void FilterResultWriter::receive_ts_single_connection() {
   // to kReRecorded and forwards to TRD on bookkeeping2.
   if (!m_cx.bk_outputs.empty()) {
     const bool all_written =
-        (ts_expected.load() > 0) && (ts_received.load() >= ts_expected.load());
+        (ts_expected.load() > 0) && (ts_written.load() >= ts_expected.load());
     const auto ts_status = all_written ? to_string(TRStatus::kFileCompleted)
                                        : to_string(TRStatus::kWriteFailed);
     dunedaq::datafilter::BookKeeping ts_bk(m_cx.bk_outputs.front());
     ts_bk.entry_id = time_point_to_string(std::chrono::system_clock::now());
     ts_bk.from_id = "FilterResultWriter";
-    ts_bk.run_number = m_run_number;
+    ts_bk.run_number = m_run_number.load();
     ts_bk.tr_status = ts_status;
     ts_bk.tr_header_info.push_back(
-        {"total_ts_written", std::to_string(ts_received.load())});
+        {"total_ts_written", std::to_string(ts_written.load())});
     ts_bk.tr_header_info.push_back(
         {"expected_ts", std::to_string(ts_expected.load())});
     try {

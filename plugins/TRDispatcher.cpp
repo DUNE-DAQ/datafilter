@@ -677,7 +677,7 @@ void TRDispatcher::send_ts() {
     }
   }
 
-  // Tell DataFilter how many TSes to expect so it can send "write_ts" to FRW.
+  // Tell DataFilter how many TSs to expect so it can send "write_ts" to FRW.
   if (!m_cx.tr_tracking_tx.empty()) {
     try {
       auto hs_sender = dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(
@@ -1115,7 +1115,7 @@ void TRDispatcher::send_ts_from_hdf5file() {
     }
   }
 
-  // Tell DataFilter how many TSes to expect so it can send "write_ts" to FRW.
+  // Tell DataFilter how many TSs to expect so it can send "write_ts" to FRW.
   if (!m_cx.tr_tracking_tx.empty()) {
     try {
       auto hs_sender = dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(
