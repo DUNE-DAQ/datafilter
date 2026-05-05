@@ -167,9 +167,9 @@ private:
 
   std::atomic<bool> m_running{false};
 
-  // Pre-subscription buffers: always-on callbacks registered at the start of
-  // do_start() so kPubSub data is never dropped on the first cycle (cold-start
-  // race: TRD publishes before receive_ts/tr_single_connection() registers).
+  // Pre-subscription buffers: always-on callbacks so data/control messages are
+  // never dropped between remove_callback() of cycle N and add_callback() of
+  // cycle N+1 (applies to both kPubSub data and kSendRecv ctrl handshakes).
   std::queue<timeslice_ptr_t> m_ts_prebuf;
   std::mutex m_ts_prebuf_mtx;
   std::condition_variable m_ts_prebuf_cv;
@@ -178,6 +178,14 @@ private:
   std::condition_variable m_tr_prebuf_cv;
   std::shared_ptr<ReceiverConcept<timeslice_ptr_t>> m_ts_prebuf_rx;
   std::shared_ptr<ReceiverConcept<trigger_record_ptr_t>> m_tr_prebuf_rx;
+
+  // Pre-buffer for write_tr control handshake on trwriter_ctrl (kSendRecv).
+  // Registered once before the dispatch loop; receive_tr_single_connection()
+  // drains from this queue instead of registering a transient callback.
+  std::queue<dunedaq::datafilter::Handshake> m_write_tr_prebuf;
+  std::mutex m_write_tr_prebuf_mtx;
+  std::condition_variable m_write_tr_prebuf_cv;
+  std::shared_ptr<ReceiverConcept<dunedaq::datafilter::Handshake>> m_write_tr_ctrl_rx;
 
   // for testing only, not used and to be removed.
   std::thread m_attrs_test_thread;
