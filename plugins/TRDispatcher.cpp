@@ -116,70 +116,57 @@ void TRDispatcher::do_start(const data_t &) {
 
 void TRDispatcher::get_from_storage() {
 
-  std::vector<std::filesystem::path> files;
-  size_t cnt = 0;
+  // std::vector<std::filesystem::path> files;
+  // size_t cnt = 0;
 
-  TLOG() << "m_is_from_storage " << m_is_from_storage;
+  TLOG() << "m_is_from_storage=" << m_is_from_storage
+         << " m_generate_triger_record=" << m_generate_trigger_record
+         << " m_generate_time_slice=" << m_generate_time_slice;
 
-  if (!m_generate_trigger_record && !m_generate_time_slice) {
+  const DispatchMode mode = [&]() -> DispatchMode {
+    if (!m_generate_trigger_record && !m_generate_time_slice)
+      return DispatchMode::kStorageHDF5;
+    if (m_generate_trigger_record && m_generate_time_slice && m_parallel_send)
+      return DispatchMode::kGeneratedParallel;
+    return DispatchMode::kGeneratedSerial;
+  }();
 
-    bool is_hdf5file = true;
-    if (!m_is_from_storage) {
-      while (m_keep_running.load())
-        receive(is_hdf5file);
-    } else {
-      while (m_keep_running.load()) {
-        files = get_hdf5files_from_storage();
+  // kGeneratedSerial / kGeneratedParallel: no filesystem polling
+  if (mode != DispatchMode::kStorageHDF5) {
+    while (m_keep_running.load())
+      receive(mode);
+    return;
+  }
 
-        if (files.size() > 0) {
-          for (auto file : files) {
-            m_input_h5_filename = file;
-            TLOG() << "Sending from " << m_storage_pathname << "file "
-                   << m_input_h5_filename;
-            receive(is_hdf5file);
-          }
-          // Short sleep after processing files in case they come in bursts
-          std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        } else {
-          // Longer sleep when no files found
-          std::this_thread::sleep_for(std::chrono::milliseconds(500));
-          cnt++;
-          if (cnt % 120 == 0) { // Log every minute (120 * 500ms = 60s)
-            TLOG() << "IDLE: No new HDF5 files after " << (cnt * 500 / 1000)
-                   << " seconds.";
-          }
-        }
-      }
+  // kStorageHDF5: poll filesystem, dispatch one file per handshake
+  size_t idle_cnt = 0;
+
+  while (m_keep_running.load()) {
+    auto files = get_hdf5files_from_storage();
+
+    if (files.empty()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      ++idle_cnt;
+      if (idle_cnt % 120 == 0)
+        TLOG() << "IDLE: no new HDF5 files after " << (idle_cnt * 500 / 1000)
+               << " s.";
+      continue;
     }
-  } else {
-    // Generated mode: keep a single persistent callback so no handshake is
-    // lost while send_tr/send_ts are executing.
-    std::atomic<unsigned int> request_cnt{0};
-    auto cb_receiver =
-        dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
-            m_trdispatcher_req_rx);
-    std::function<void(dunedaq::datafilter::Handshake)> gen_cb =
-        [&](dunedaq::datafilter::Handshake msg) {
-          TLOG() << "TRD (generated): received handshake: " << msg.msg_id;
-          ++request_cnt;
-        };
-    cb_receiver->add_callback(gen_cb);
 
-    unsigned int sent_cnt = 0;
-    while (m_keep_running.load()) {
-      // Wait for the next pull request from FO.
-      while (m_keep_running.load() && request_cnt.load() <= sent_cnt)
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    idle_cnt = 0;
+
+    for (auto &file : files) {
       if (!m_keep_running.load())
         break;
-      ++sent_cnt;
-      if (m_generate_trigger_record)
-        send_tr();
-      if (m_generate_time_slice)
-        send_ts();
+
+      m_input_h5_filename = file;
+      TLOG() << "Dispatching from " << m_storage_pathname << " file "
+             << m_input_h5_filename;
+
+      receive(mode);
     }
 
-    cb_receiver->remove_callback();
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
 }
 
@@ -215,8 +202,7 @@ void TRDispatcher::generate_opmon_data() {
 }
 
 // Receive handshake from FilterOrchestrator
-void TRDispatcher::receive(bool is_hdf5file) {
-  bool handshake_done = false;
+void TRDispatcher::receive(DispatchMode mode) {
   std::atomic<unsigned int> received_cnt = 0;
 
   auto cb_receiver = dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
@@ -233,26 +219,44 @@ void TRDispatcher::receive(bool is_hdf5file) {
       };
 
   cb_receiver->add_callback(str_receiver_cb);
-  while (!handshake_done && m_keep_running.load()) {
-    if (received_cnt >= 1)
-      handshake_done = true;
-    else
-      std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
+  while (received_cnt < 1 && m_keep_running.load())
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
 
   cb_receiver->remove_callback();
-  if (!handshake_done)
+  if (!m_keep_running.load())
     return; // stopped before receiving handshake
 
-  if (is_hdf5file) {
+  switch (mode) {
+
+  case DispatchMode::kStorageHDF5:
     send_tr_from_hdf5file();
     send_ts_from_hdf5file();
-  } else {
+    break;
+
+  case DispatchMode::kGeneratedSerial:
     if (m_generate_trigger_record)
       send_tr();
     if (m_generate_time_slice)
       send_ts();
+    break;
+
+  case DispatchMode::kGeneratedParallel: {
+    std::thread tr_thread, ts_thread;
+
+    if (m_generate_trigger_record)
+      tr_thread = std::thread([this] { send_tr(); });
+
+    if (m_generate_time_slice)
+      ts_thread = std::thread([this] { send_ts(); });
+
+    if (tr_thread.joinable())
+      tr_thread.join();
+    if (ts_thread.joinable())
+      ts_thread.join();
+    break;
   }
+
+  } // switch
 }
 
 // generate a dummy test trigger record to be send to datafilter
@@ -467,7 +471,6 @@ void TRDispatcher::send_tr() {
   std::ostringstream ss;
   auto trig_num = m_tr_seq_num.fetch_add(1);
 
-  // m_trdispatcher_id = "conn_A0_G0_C0_"; // to get it from config.
   m_trdispatcher_id = m_cx.tr_data_tx.front();
 
   if (m_cx.tr_data_tx.empty()) {

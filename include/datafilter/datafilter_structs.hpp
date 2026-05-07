@@ -14,6 +14,13 @@
 namespace dunedaq {
 namespace datafilter {
 
+enum class DispatchMode {
+  kDataWriter,        // get TR and TS from DataWriter
+  kStorageHDF5,       // read from HDF5 file
+  kGeneratedSerial,   // send_tr() then send_ts()
+  kGeneratedParallel, // send_tr() || send_ts()
+};
+
 // TR lifecycle states -- defined in DataStorage Model Notes
 // States 1–5 are upstream (builder/recorder), outside datafilter scope.
 enum class TRStatus : uint8_t {

@@ -19,11 +19,11 @@ bool has_enough_space(const std::string &dir, std::uintmax_t min_free_bytes) {
   auto sp = std::filesystem::space(dir, ec);
   if (ec) {
     TLOG() << "StorageCheck: cannot query space for " << dir << " ("
-           << ec.message() << ") — proceeding anyway";
+           << ec.message() << ") -- proceeding anyway";
     return true; // don't block on query failure
   }
   if (sp.available < min_free_bytes) {
-    TLOG() << "StorageCheck: STORAGE LOW — available=" << sp.available
+    TLOG() << "StorageCheck: STORAGE LOW -- available=" << sp.available
            << " bytes (<" << min_free_bytes << "), skipping write to " << dir;
     return false;
   }
@@ -56,7 +56,7 @@ void FilterResultWriter::FilterResultWriter::init(
   m_confdb->get<dunedaq::confmodel::Queue>(m_queues);
   m_confdb->get<dunedaq::confmodel::NetworkConnection>(m_networkconnections);
 
-  // get TRDispatcher attributes.
+  // get attributes (it is moving from TRD->DF->FRW).
   auto mdal =
       mcfg->get_dal<dunedaq::datafilter::dal::FilterResultWriter>(get_name());
 
@@ -110,6 +110,7 @@ void FilterResultWriter::do_conf(const data_t &) {
     TLOG() << "FRW: registered TS kPubSub callback on "
            << m_cx.ts_data_rx.front();
   }
+
   if (!m_cx.tr_data_rx.empty() && !m_tr_prebuf_rx) {
     m_tr_prebuf_rx = dunedaq::get_iom_receiver<trigger_record_ptr_t>(
         m_cx.tr_data_rx.front());
@@ -723,6 +724,8 @@ void FilterResultWriter::receive_ts_single_connection() {
   TLOG_DEBUG(5) << "receive_ts_single_connection() done";
 }
 
+// DF should alway send next_tr, so it is not used here. It will be removed in
+// next cleanup.
 void FilterResultWriter::send_next_tr() {
   bool handshake_done = false;
 
@@ -791,6 +794,7 @@ void FilterResultWriter::receive_attrs_test() {
   receiver->remove_callback();
 }
 
+// Using thread instead. It is not used
 void FilterResultWriter::start_receive_attrs_test_thread() {
   // prevent double-start
   bool was_running =

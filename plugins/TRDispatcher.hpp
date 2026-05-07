@@ -79,7 +79,7 @@ public:
   explicit TRDispatcher(const std::string &name);
 
   void init(std::shared_ptr<appfwk::ConfigurationManager>) override;
-  void receive(bool is_hdf5file);
+  void receive(DispatchMode mode);
 
   void send_tr_from_hdf5file();
   void send_ts_from_hdf5file();
@@ -186,6 +186,8 @@ private:
   std::atomic<int> m_amount_since_last_call{0};
   std::atomic<uint64_t> m_tr_seq_num{0}; // counter for generated TR numbers
   std::atomic<uint64_t> m_ts_seq_num{0}; // counter for generated TS numbers
+
+  bool m_parallel_send{false}; // set from DAL: mdal->get_parallel_send()
 };
 
 } // namespace dunedaq::datafilter
