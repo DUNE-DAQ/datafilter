@@ -36,6 +36,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="$SCRIPT_DIR/logs"
 PID_DIR="/tmp/datafilter-pids"
 
+# --- supervise defaults (overridable via supervise CLI flags) ---
+SUPERVISE_INTERVAL=2
+SUPERVISE_MAX_RESTARTS=3
+SUPERVISE_WINDOW=60
+SUPERVISE_BACKOFF_MAX=16
+SUPERVISE_HEALTHY_AFTER=30
+SUPERVISE_LOG="$LOG_DIR/supervise.log"
+
+# supervisor in-memory state (populated by cmd_supervise)
+declare -A SUP_WATCH        # key -> 1 if opted-in for this run
+declare -A SUP_FAILED       # key -> 1 if max-restarts hit, no longer watched
+declare -A SUP_HISTORY      # key -> space-separated epoch timestamps of restarts
+declare -A SUP_BACKOFF      # key -> next backoff seconds (1,2,4,...)
+declare -A SUP_LAST_START   # key -> epoch of last start_one call
+declare -A SUP_LAST_STATE   # key -> last printed state, to debounce status lines
+
 # app_key -> binary name, OKS app name
 declare -A BIN=( [frw]=filterresultwriter [fo]=filterorchestrator [trd]=trdispatcher [df]=datafilter2 )
 declare -A APP=( [frw]=FilterResultWriter_0 [fo]=FilterOrchestrator_0 [trd]=TRDispatcher_0 [df]=DataFilter_0 )
@@ -192,9 +208,188 @@ do_monitor() {
     tmux attach-session -t "$sn"
 }
 
+# --- supervise: auto-restart crashed apps ---
+
+# timestamped log line, to stdout and supervise.log
+sup_log() {
+    local msg="$1"
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$msg" | tee -a "$SUPERVISE_LOG"
+}
+
+# archive previous supervise.log on each supervise invocation
+rotate_supervise_log() {
+    if [ -f "$SUPERVISE_LOG" ]; then
+        local ts; ts="$(date +%Y%m%d_%H%M%S)"
+        mv "$SUPERVISE_LOG" "$LOG_DIR/supervise_${ts}.log"
+    fi
+}
+
+# parse --key=value flags for supervise; defaults watch every app in START_ORDER
+parse_supervise_args() {
+    local arg val k
+    while [ $# -gt 0 ]; do
+        arg="$1"
+        case "$arg" in
+            --apps=*)
+                val="${arg#--apps=}"
+                IFS=',' read -r -a _sup_apps <<< "$val"
+                for k in "${_sup_apps[@]}"; do
+                    local rk; rk="$(resolve_key "$k")"
+                    if [ -z "$rk" ]; then
+                        echo "supervise: unknown app '$k'" >&2; exit 1
+                    fi
+                    SUP_WATCH[$rk]=1
+                done
+                ;;
+            --interval=*)       SUPERVISE_INTERVAL="${arg#--interval=}" ;;
+            --max-restarts=*)   SUPERVISE_MAX_RESTARTS="${arg#--max-restarts=}" ;;
+            --window=*)         SUPERVISE_WINDOW="${arg#--window=}" ;;
+            --backoff-max=*)    SUPERVISE_BACKOFF_MAX="${arg#--backoff-max=}" ;;
+            --healthy-after=*)  SUPERVISE_HEALTHY_AFTER="${arg#--healthy-after=}" ;;
+            *)
+                echo "supervise: unknown flag '$arg'" >&2
+                exit 1
+                ;;
+        esac
+        shift
+    done
+    # default: watch every app
+    if [ ${#SUP_WATCH[@]} -eq 0 ]; then
+        for k in "${START_ORDER[@]}"; do SUP_WATCH[$k]=1; done
+    fi
+}
+
+# drop timestamps older than NOW - SUPERVISE_WINDOW from SUP_HISTORY[key]
+prune_restart_history() {
+    local key="$1" now="$2" cutoff t kept=""
+    cutoff=$(( now - SUPERVISE_WINDOW ))
+    for t in ${SUP_HISTORY[$key]:-}; do
+        if [ "$t" -ge "$cutoff" ]; then
+            kept+=" $t"
+        fi
+    done
+    SUP_HISTORY[$key]="${kept# }"
+}
+
+restart_count() {
+    local key="$1"
+    # shellcheck disable=SC2086
+    set -- ${SUP_HISTORY[$key]:-}
+    echo $#
+}
+
+# 0=alive, 1=PID file present but process dead, 2=PID file absent (user-stopped)
+app_pid_alive() {
+    local key="$1" pf pid
+    pf="$(pid_file "$key")"
+    if [ ! -f "$pf" ]; then return 2; fi
+    pid=$(cat "$pf" 2>/dev/null)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then return 0; fi
+    return 1
+}
+
+should_restart_app() {
+    local key="$1" now="$2"
+    [ "${SUP_WATCH[$key]:-0}" = "1" ] || return 1
+    [ -z "${SUP_FAILED[$key]:-}" ] || return 1
+    app_pid_alive "$key"
+    [ $? -eq 1 ] || return 1
+    local last="${SUP_LAST_START[$key]:-0}"
+    local cooldown="${SUP_BACKOFF[$key]:-1}"
+    [ $(( now - last )) -ge "$cooldown" ] || return 1
+    return 0
+}
+
+# reset backoff/history if the app has been up for SUPERVISE_HEALTHY_AFTER seconds
+supervise_check_healthy() {
+    local key="$1" now="$2"
+    app_pid_alive "$key"; [ $? -eq 0 ] || return 0
+    local last="${SUP_LAST_START[$key]:-0}"
+    [ "$last" -gt 0 ] || return 0
+    if [ $(( now - last )) -ge "$SUPERVISE_HEALTHY_AFTER" ] \
+       && [ "${SUP_BACKOFF[$key]:-1}" -ne 1 -o -n "${SUP_HISTORY[$key]:-}" ]; then
+        SUP_BACKOFF[$key]=1
+        SUP_HISTORY[$key]=""
+        sup_log "$key: healthy for ${SUPERVISE_HEALTHY_AFTER}s, backoff reset"
+    fi
+}
+
+mark_app_failed() {
+    local key="$1"
+    SUP_FAILED[$key]=1
+    sup_log "FAILED $key: exceeded $SUPERVISE_MAX_RESTARTS restarts in ${SUPERVISE_WINDOW}s; no longer watching"
+}
+
+supervise_restart_one() {
+    local key="$1" now="$2"
+    prune_restart_history "$key" "$now"
+    local n; n=$(restart_count "$key")
+    if [ "$n" -ge "$SUPERVISE_MAX_RESTARTS" ]; then
+        mark_app_failed "$key"
+        return
+    fi
+    local bk="${SUP_BACKOFF[$key]:-1}"
+    SUP_HISTORY[$key]="${SUP_HISTORY[$key]:-} $now"
+    sup_log "restart attempt $(( n + 1 ))/$SUPERVISE_MAX_RESTARTS for $key (backoff was ${bk}s)"
+    start_one "$key"
+    SUP_LAST_START[$key]="$now"
+    local next=$(( bk * 2 ))
+    [ "$next" -gt "$SUPERVISE_BACKOFF_MAX" ] && next="$SUPERVISE_BACKOFF_MAX"
+    SUP_BACKOFF[$key]="$next"
+}
+
+# one pass over all watched apps
+supervise_one_cycle() {
+    local now="$1" k state rc
+    for k in "${START_ORDER[@]}"; do
+        [ "${SUP_WATCH[$k]:-0}" = "1" ] || continue
+        [ -z "${SUP_FAILED[$k]:-}" ] || continue
+        app_pid_alive "$k"; rc=$?
+        case "$rc" in
+            0) state="running" ;;
+            1) state="dead"    ;;
+            2) state="stopped" ;;
+        esac
+        if [ "${SUP_LAST_STATE[$k]:-}" != "$state" ]; then
+            sup_log "$k: $state"
+            SUP_LAST_STATE[$k]="$state"
+        fi
+        supervise_check_healthy "$k" "$now"
+        if should_restart_app "$k" "$now"; then
+            supervise_restart_one "$k" "$now"
+        fi
+    done
+}
+
+cmd_supervise() {
+    parse_supervise_args "$@"
+    mkdir -p "$LOG_DIR" "$PID_DIR"
+    cd "$SCRIPT_DIR" || { echo "Cannot cd to $SCRIPT_DIR"; exit 1; }
+    rotate_supervise_log
+    local k
+    for k in "${!SUP_WATCH[@]}"; do
+        SUP_BACKOFF[$k]=1
+        SUP_HISTORY[$k]=""
+        SUP_LAST_START[$k]=0
+        SUP_LAST_STATE[$k]=""
+    done
+    trap 'sup_log "supervisor exiting (apps left running)"; exit 0' INT TERM
+    sup_log "supervisor started; watching=${!SUP_WATCH[*]} interval=${SUPERVISE_INTERVAL}s max=${SUPERVISE_MAX_RESTARTS}/${SUPERVISE_WINDOW}s backoff_cap=${SUPERVISE_BACKOFF_MAX}s healthy_after=${SUPERVISE_HEALTHY_AFTER}s"
+    while true; do
+        supervise_one_cycle "$(date +%s)"
+        sleep "$SUPERVISE_INTERVAL"
+    done
+}
+
 # --- main ---
 cmd="${1:-}"
 shift || true
+
+# supervise uses --key=value flags, not bare app names; bypass the resolve loop
+if [ "$cmd" = "supervise" ]; then
+    cmd_supervise "$@"
+    exit 0
+fi
 
 # Resolve any extra args to internal keys
 resolved_keys=()
@@ -214,9 +409,15 @@ case "$cmd" in
     status)       do_status ;;
     monitor)      do_monitor ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status|monitor} [app...]"
+        echo "Usage: $0 {start|stop|restart|status|monitor|supervise} [app...]"
         echo "  Apps: frw  fo  trd  df  (or full names like trdispatcher)"
         echo "  Env:  DATAFILTER_WORK_DIR  DATAFILTER_BUILD_DIR  DATAFILTER_OUTPUT_DIR"
+        echo
+        echo "  supervise [--apps=df,frw,trd,fo] [--interval=2] [--max-restarts=3] \\"
+        echo "            [--window=60] [--backoff-max=16] [--healthy-after=30]"
+        echo "    Foreground watchdog: restarts apps that crashed (PID file present,"
+        echo "    process dead). Apps you stopped via 'stop' are not restarted."
+        echo "    Ctrl+C exits the supervisor without stopping the apps."
         exit 1
         ;;
 esac

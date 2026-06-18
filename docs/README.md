@@ -18,22 +18,27 @@ chmod 755 setup-datafilter.sh
 ```
 The script will build the project. Once it is done.
 
-Open 4 terminals and run from `test/apps/` (start order does not matter):
+Open a terminals and run from `test/apps/` (start order does not matter),
+you need to run trdispatcher, filterorchestrator, datafilter2 and filterresultwriter:
 
 ```bash
 cd test/apps   # in each terminal
 
-# Terminal 1
-trdispatcher
+# to start all the four apps
+./dfcontrol.sh start
 
-# Terminal 2
-filterorchestrator
+# to stop all the four apps
 
-# Terminal 3
-datafilter2
+./dfcontrol.sh stop
 
-# Terminal 4
-filterresultwriter
+# you can also start an individual app, for example trdispatcher (trd)
+
+./dfcontrol.sh start trd # this is the short name. You can use the long name, trdispatcher if you want. 
+
+# you can monitor the logs and the outputs, tmux is required.
+
+./dfcontrol.sh monitor
+
 ```
 
 All configuration lives in `test/config/dfSession.data.xml`.
