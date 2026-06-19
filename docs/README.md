@@ -18,26 +18,35 @@ chmod 755 setup-datafilter.sh
 ```
 The script will build the project. Once it is done.
 
-Open a terminals and run from `test/apps/` (start order does not matter),
+Open a terminals and run the apps from `test/apps/`,
 you need to run trdispatcher, filterorchestrator, datafilter2 and filterresultwriter:
 
 ```bash
 cd test/apps   # in each terminal
 
+# to build DF
+
+dfcoontrol.sh build
+
 # to start all the four apps
-./dfcontrol.sh start
+
+dfcontrol.sh start
 
 # to stop all the four apps
 
-./dfcontrol.sh stop
+dfcontrol.sh stop
 
 # you can also start an individual app, for example trdispatcher (trd)
 
-./dfcontrol.sh start trd # this is the short name. You can use the long name, trdispatcher if you want. 
+dfcontrol.sh start trd # this is the short name. You can use the long name, trdispatcher if you want. 
 
 # you can monitor the logs and the outputs, tmux is required.
 
-./dfcontrol.sh monitor
+dfcontrol.sh monitor
+
+# to get help
+
+./dfcontrol.sh 
 
 ```
 
