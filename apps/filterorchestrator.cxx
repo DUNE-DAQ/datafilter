@@ -15,6 +15,7 @@
 #include "datafilter/commandline_args.hpp"
 #include "datafilter/make_config_mgr.hpp"
 #include "ers/ers.hpp"
+#include <csignal>
 
 using namespace dunedaq::appfwk;
 using data_t = nlohmann::json;
@@ -41,8 +42,17 @@ int main(int argc, char *argv[]) {
   filterorchestrator1->init(mgr1);
   filterorchestrator1->execute_command("conf", filterorchestrator_cfg);
   filterorchestrator1->execute_command("start", filterorchestrator_cfg);
-  // allow enough time for worker to enter loop at least once
-  std::this_thread::sleep_for(10s);
+
+  // Block until SIGINT or SIGTERM (Ctrl+C), then do a graceful stop.
+  sigset_t waitset;
+  sigemptyset(&waitset);
+  sigaddset(&waitset, SIGINT);
+  sigaddset(&waitset, SIGTERM);
+  sigprocmask(SIG_BLOCK, &waitset, nullptr);
+  int sig_received = 0;
+  sigwait(&waitset, &sig_received);
+  TLOG() << "Received signal " << sig_received << ", stopping FilterOrchestrator...";
+
   filterorchestrator1->execute_command("stop", filterorchestrator_cfg);
 
   return 0;

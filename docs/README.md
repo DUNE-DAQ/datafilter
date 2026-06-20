@@ -24,7 +24,7 @@ you need to run trdispatcher, filterorchestrator, datafilter2 and filterresultwr
 ```bash
 cd test/apps   # in each terminal
 
-# to build DF
+# to build DF (if dfcontrol.sh is installed, use dfcontrol.sh, if not use ./dfcontrol.sh)
 
 dfcoontrol.sh build
 

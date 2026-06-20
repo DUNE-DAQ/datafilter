@@ -15,6 +15,7 @@
 #include "datafilter/commandline_args.hpp"
 #include "datafilter/make_config_mgr.hpp"
 #include "ers/ers.hpp"
+#include <csignal>
 
 using namespace dunedaq::appfwk;
 using data_t = nlohmann::json;
@@ -40,6 +41,17 @@ int main(int argc, char *argv[]) {
   trdispatcher1->init(mgr1);
   trdispatcher1->execute_command("conf", trdispatcher_cfg);
   trdispatcher1->execute_command("start", trdispatcher_cfg);
+
+  // Block until SIGINT or SIGTERM (Ctrl+C), then do a graceful stop.
+  sigset_t waitset;
+  sigemptyset(&waitset);
+  sigaddset(&waitset, SIGINT);
+  sigaddset(&waitset, SIGTERM);
+  sigprocmask(SIG_BLOCK, &waitset, nullptr);
+  int sig_received = 0;
+  sigwait(&waitset, &sig_received);
+  TLOG() << "Received signal " << sig_received << ", stopping TRDispatcher...";
+
   trdispatcher1->execute_command("stop", trdispatcher_cfg);
 
   return 0;
