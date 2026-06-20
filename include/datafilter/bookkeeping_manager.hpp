@@ -7,9 +7,12 @@
 #include <condition_variable>
 #include <execution>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <queue>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include "datafilter/datafilter_structs.hpp"
@@ -47,39 +50,47 @@ struct BookkeepingReceiver {
   std::atomic<bool> stop_flag{false};
   std::unique_ptr<std::thread> receiver_thread;
   std::unique_ptr<std::thread> writer_thread;
+
+  // Each queue entry carries its target filename alongside the JSON entry,
+  // enabling per-cycle file routing without shared mutable filename state.
   std::mutex queue_mutex;
   std::condition_variable queue_cv;
-  std::queue<nlohmann::json> bk_queue;
-  std::atomic<unsigned int> received_cnt{0};
+  std::queue<std::pair<std::string, nlohmann::json>> bk_queue;
 
-  // Transfer rate tracking.
+  // Transfer rate tracking
   std::atomic<double> transfer_rate_mbps{0};
   std::mutex rate_mutex;
 
-  std::string m_bk_rx_uid;  // DF listens here (bookkeeping0)
-  std::string m_bk_tx_uid;  // DF forwards initial BK to FRW (bookkeeping1)
-  std::string m_bk_trd_uid; // DF forwards completion to TRD (bookkeeping2)
-
+  std::string m_bk_rx_uid;
+  std::string m_bk_tx_uid;
+  std::string m_bk_trd_uid;
   std::string m_session_name;
-  // Datafilter ID
   std::string datafilter_id;
   mutable std::mutex id_mutex;
 
-  std::string bk_file;
-  std::mutex file_mutex;
-  std::atomic<bool> have_file{false};
+  // Per-cycle BK state machine, keyed by df_cycle_id minted on each
+  // kAssignedToFilter.  Replaces the single received_cnt / all_bk_received
+  // that could not handle concurrent cycles.
+  struct CycleState {
+    bool frw_confirmed = false;
+    bool trd_final = false;
+    std::string bk_filename;
+    unsigned int run_number = 0;
+    std::vector<uint64_t>
+        filtered_triggers; // trigger numbers dropped by DataFilter
+  };
+  std::unordered_map<uint64_t, CycleState> m_cycles;
+  std::mutex m_cycles_mtx;
+  std::atomic<uint64_t> m_next_cycle_id{0};
+  // Counts open cycles; stop() waits until this reaches 0.
+  std::atomic<int> m_active_cycles{0};
+  std::mutex m_all_done_mtx;
+  std::condition_variable m_all_done_cv;
 
   std::atomic<bool> callback_registered{false};
-  std::atomic<bool> first_bk_seen{false};
 
-  // Completion tracking: set when the final TRD BK (kReRecorded or
-  // kWriteFailed) is received. stop() waits on this before terminating.
-  std::atomic<bool> all_bk_received{false};
-  std::mutex all_bk_mutex;
-  std::condition_variable all_bk_cv;
-
-  std::atomic<double> transfer_rate_in_mbps{0.0};  // TD -> DF
-  std::atomic<double> transfer_rate_out_mbps{0.0}; // DF -> Writer
+  std::atomic<double> transfer_rate_in_mbps{0.0};
+  std::atomic<double> transfer_rate_out_mbps{0.0};
 
   std::shared_ptr<
       dunedaq::iomanager::SenderConcept<dunedaq::datafilter::BookKeeping>>
@@ -111,14 +122,12 @@ struct BookkeepingReceiver {
       TLOG() << "Receiver already running";
       return;
     }
-
     stop_flag.store(false);
     writer_thread = std::make_unique<std::thread>([this]() {
       TLOG() << "Starting writer thread (ID: " << std::this_thread::get_id()
              << ")";
       this->write_to_file();
     });
-
     receiver_thread = std::make_unique<std::thread>([this]() {
       TLOG() << "Starting receiver thread (ID: " << std::this_thread::get_id()
              << ")";
@@ -130,36 +139,26 @@ struct BookkeepingReceiver {
 
   void stop() {
     TLOG() << "Initiating bookkeeping receiver shutdown";
-
-    // Wait for the final TRD BookKeeping (kReRecorded or kWriteFailed)
-    // before killing threads. This ensures all 3 expected BK entries
-    // (TRD assigned_to_filter, FRW file_completed, TRD
-    // re_recorded/write_failed) are written even if stop() is called before
-    // FRW's write-wait completes. 10-minute timeout covers any realistic
-    // FRW processing time.
     {
-      std::unique_lock<std::mutex> lk(all_bk_mutex);
-      bool got_final = all_bk_cv.wait_for(lk, std::chrono::minutes(10), [this] {
-        return all_bk_received.load(std::memory_order_acquire);
+      std::unique_lock<std::mutex> lk(m_all_done_mtx);
+      bool done = m_all_done_cv.wait_for(lk, std::chrono::minutes(10), [this] {
+        return m_active_cycles.load(std::memory_order_acquire) == 0;
       });
-      if (!got_final)
-        TLOG() << "stop(): timed out waiting for final TRD BK — "
-                  "stopping anyway";
+      if (!done)
+        TLOG() << "stop(): timed out waiting for all cycles — stopping anyway";
       else
-        TLOG() << "stop(): final TRD BK confirmed, draining queue";
+        TLOG() << "stop(): all cycles complete, draining queue";
     }
-
     stop_flag.store(true);
+    callback_registered.store(false, std::memory_order_relaxed);
     queue_cv.notify_all();
 
-    if (receiver_thread && receiver_thread->joinable()) {
+    if (receiver_thread && receiver_thread->joinable())
       receiver_thread->join();
-    }
     receiver_thread.reset();
 
-    if (writer_thread && writer_thread->joinable()) {
+    if (writer_thread && writer_thread->joinable())
       writer_thread->join();
-    }
     writer_thread.reset();
 
     TLOG() << "Bookkeeping receiver fully stopped";
@@ -178,7 +177,6 @@ struct BookkeepingReceiver {
   void set_transfer_rate_in(double mbps) {
     transfer_rate_in_mbps.store(mbps, std::memory_order_relaxed);
   }
-
   void set_transfer_rate_out(double mbps) {
     transfer_rate_out_mbps.store(mbps, std::memory_order_relaxed);
   }
@@ -187,6 +185,17 @@ struct BookkeepingReceiver {
   }
   double get_transfer_rate_out() const {
     return transfer_rate_out_mbps.load(std::memory_order_relaxed);
+  }
+
+  // Called by DataFilterReceiver when a TR is dropped by the filter algorithm.
+  // Records the trigger number so it appears in the bookkeeping JSON alongside
+  // the written TRs for the same cycle.
+  void record_filtered_trigger(uint64_t trig_num) {
+    std::lock_guard<std::mutex> lk(m_cycles_mtx);
+    // With serialized dispatch there is at most one active cycle.
+    for (auto &[id, cs] : m_cycles)
+      if (!cs.frw_confirmed)
+        cs.filtered_triggers.push_back(trig_num);
   }
 
   std::string get_datafilter_id() const {
@@ -202,10 +211,9 @@ struct BookkeepingReceiver {
   }
 
 private:
-  // Forwards FRW's completion BK to TRD via bookkeeping2 (m_bk_trd_uid).
-  // Translates kFileCompleted → kReRecorded so TRD's existing status check
-  // passes. Preserves from_id="FilterResultWriter" so TRD's from_id check
-  // passes unchanged.
+  // Forward FRW's completion BK to TRD via bookkeeping2.
+  // Copies file_attributes_info so that df_cycle_id and trd_bk_seq propagate
+  // to TRD's always-on callback for per-cycle waiter routing.
   void send_completion_to_trd(const dunedaq::datafilter::BookKeeping &frw_bk) {
     if (m_bk_trd_uid.empty()) {
       TLOG() << "send_completion_to_trd: no TRD uid configured, skipping";
@@ -213,11 +221,13 @@ private:
     }
     dunedaq::datafilter::BookKeeping fwd(m_bk_trd_uid);
     fwd.from_id = "FilterResultWriter";
+    fwd.entry_id = frw_bk.entry_id; // propagate FRW completion timestamp
     fwd.run_number = frw_bk.run_number;
     fwd.tr_status = (frw_bk.tr_status == to_string(TRStatus::kFileCompleted))
                         ? to_string(TRStatus::kReRecorded)
                         : to_string(TRStatus::kWriteFailed);
     fwd.tr_header_info = frw_bk.tr_header_info;
+    fwd.file_attributes_info = frw_bk.file_attributes_info;
 
     auto sender =
         dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(m_bk_trd_uid);
@@ -229,33 +239,26 @@ private:
     try {
       sender->send(std::move(fwd), std::chrono::milliseconds(2000));
       TLOG() << "BookkeepingReceiver: forwarded FRW completion ("
-             << frw_bk.tr_status << " -> " << fwd.tr_status << ") to TRD via "
-             << m_bk_trd_uid;
+             << frw_bk.tr_status << " -> " << fwd.tr_status << ") to TRD";
     } catch (const std::exception &e) {
       TLOG() << "send_completion_to_trd failed: " << e.what();
     }
   }
 
   void send_bk(dunedaq::datafilter::BookKeeping bk_info) {
-    TLOG() << "Send bookkeeping info to FilterResultWriter";
-
     if (m_bk_tx_uid.empty()) {
-      TLOG() << "send_bk: m_bk_tx_uid not configured — OKS topology "
-                "error, skipping send";
+      TLOG() << "send_bk: m_bk_tx_uid not configured — skipping";
       return;
     }
     m_bk_sender =
         dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(m_bk_tx_uid);
-
     if (!m_bk_sender) {
       TLOG() << "Failed to get bookkeeping sender!";
       return;
     }
-
     try {
       m_bk_sender->send(std::move(bk_info), std::chrono::milliseconds(2000));
       TLOG() << "Successfully sent BookKeeping data.";
-
     } catch (const std::exception &e) {
       TLOG() << "Send failed (non-blocking, continuing): " << e.what();
     }
@@ -265,13 +268,9 @@ private:
     TLOG() << "Setting up bookkeeping receiver";
 
     if (m_bk_rx_uid.empty()) {
-      TLOG() << "receive_bk: m_bk_rx_uid not configured — OKS topology "
-                "error, skipping receiver setup";
+      TLOG() << "receive_bk: m_bk_rx_uid not configured — skipping";
       return;
     }
-    TLOG() << "BK: attempting to bind receiver on uid=" << m_bk_rx_uid
-           << " type=BookKeeping";
-
     auto cb_receiver =
         dunedaq::get_iom_receiver<dunedaq::datafilter::BookKeeping>(
             m_bk_rx_uid);
@@ -280,133 +279,162 @@ private:
       return;
     }
 
-    // TLOG() << "Starting file writer thread";
-    // std::thread file_writer([this, &bk_file]() {
-    //   TLOG() << "File writer thread started (ID: " <<
-    //   std::this_thread::get_id()
-    //          << ")";
-    //   this->write_to_file(bk_file, stop_flag);
-    //   TLOG() << "File writer thread exiting";
-    // });
-
     auto str_receiver_cb = [&](dunedaq::datafilter::BookKeeping bk) {
       if (stop_flag)
         return;
 
       const std::string from = to_lower(bk.from_id);
-
       const bool is_from_trdisp =
           (from.find("trdispatcher") != std::string::npos);
       const bool is_from_writer =
           (from.find("filterresultwriter") != std::string::npos);
 
-      // Detect start of a new pipeline cycle (TRD assigns a new file).
-      // Reset per-cycle counters so the cnt==1 gate and stop() wait work
-      // correctly for every run, not just the first.
+      // Helper: extract uint64_t from file_attributes_info by key.
+      auto get_attr_u64 = [&](const std::string &key) -> uint64_t {
+        for (const auto &kv : bk.file_attributes_info)
+          if (kv.first == key)
+            try {
+              return std::stoull(kv.second);
+            } catch (...) {
+            }
+        return UINT64_MAX;
+      };
+
       if (is_from_trdisp &&
           bk.tr_status == to_string(TRStatus::kAssignedToFilter)) {
-        received_cnt.store(0, std::memory_order_relaxed);
-        all_bk_received.store(false, std::memory_order_release);
-        TLOG() << "New pipeline cycle detected — resetting per-cycle "
-                  "counters";
-      }
+        // New pipeline cycle: mint a df_cycle_id and inject into the BK
+        // before forwarding to FRW.
+        const uint64_t cycle_id = m_next_cycle_id.fetch_add(1);
+        bk.file_attributes_info.push_back(
+            {"df_cycle_id", std::to_string(cycle_id)});
 
-      unsigned int cnt = ++received_cnt;
-
-      TLOG() << "Processing bookkeeping # " << cnt << " from " << bk.from_id
-             << " (Run: " << bk.run_number << ")";
-
-      if (cnt == 1) {
-        std::string file_index = "0";
-        if (auto it = std::find_if(
-                bk.file_attributes_info.begin(), bk.file_attributes_info.end(),
-                [](const auto &p) { return p.first == "file_index"; });
-            it != bk.file_attributes_info.end()) {
-          file_index = it->second;
+        std::string file_index_str = "0";
+        for (const auto &kv : bk.file_attributes_info)
+          if (kv.first == "file_index") {
+            file_index_str = kv.second;
+            break;
+          }
+        int file_idx = 0;
+        try {
+          file_idx = std::stoi(file_index_str);
+        } catch (...) {
         }
 
-        // send_bk() forwards initial BK to FRW if a BK output is
-        // configured. Guard with try-catch so that a
-        // missing/unconfigured output does not throw past this point
-        // and skip run_info.set() and queuing below.
+        run_info.set(bk.run_number, file_idx);
+        const std::string fname = generate_bk_filename(bk.run_number, file_idx);
+
+        {
+          std::lock_guard<std::mutex> lk(m_cycles_mtx);
+          CycleState &cs = m_cycles[cycle_id];
+          cs.run_number = bk.run_number;
+          cs.bk_filename = fname;
+        }
+        m_active_cycles.fetch_add(1, std::memory_order_relaxed);
+
+        bk.transfer_rate = get_transfer_rate_in();
+        bk.datafilter_id = get_datafilter_id();
+
+        {
+          std::lock_guard<std::mutex> lk(queue_mutex);
+          bk_queue.emplace(fname, to_json(bk));
+        }
+        queue_cv.notify_one();
+
         if (!m_bk_tx_uid.empty()) {
           try {
             send_bk(bk);
           } catch (const std::exception &e) {
-            TLOG() << "send_bk failed (non-critical, continuing): " << e.what();
+            TLOG() << "send_bk failed (non-critical): " << e.what();
           }
         }
-        run_info.set(bk.run_number, std::stoi(file_index));
-        TLOG() << "Set initial run info - Run: " << bk.run_number
-               << " File Index: " << file_index;
+
+        TLOG() << "New cycle " << cycle_id << " (run=" << bk.run_number
+               << " file=" << file_idx << ")";
+        return;
       }
 
-      auto in_mbps = get_transfer_rate_in();
-      auto out_mbps = get_transfer_rate_out();
-      // we only store in and out rate.
-      auto transfer_rate = is_from_trdisp   ? in_mbps
-                           : is_from_writer ? out_mbps
-                                            : 0;
+      // All other messages carry df_cycle_id in file_attributes_info.
+      const uint64_t cycle_id = get_attr_u64("df_cycle_id");
 
-      TLOG() << "Transfer rate (ewma) " << transfer_rate << " Mbps";
-      bk.transfer_rate = transfer_rate;
+      std::string fname;
+      if (cycle_id != UINT64_MAX) {
+        std::lock_guard<std::mutex> lk(m_cycles_mtx);
+        auto it = m_cycles.find(cycle_id);
+        if (it != m_cycles.end())
+          fname = it->second.bk_filename;
+      }
 
-      auto datafilter_id = get_datafilter_id();
-      bk.datafilter_id = datafilter_id;
+      bk.transfer_rate =
+          is_from_trdisp ? get_transfer_rate_in() : get_transfer_rate_out();
+      bk.datafilter_id = get_datafilter_id();
 
-      auto [run, file_idx] = run_info.get();
-      {
-        std::lock_guard<std::mutex> lock(file_mutex);
-        bk_file = generate_bk_filename(run, file_idx);
-        TLOG() << "Updated output file: " << bk_file;
-        have_file.store(true, std::memory_order_release);
+      // For FRW completion BK, inject filtered trigger numbers collected by
+      // DataFilterReceiver so they appear in the JSON entry alongside the
+      // written TRs, making filtering decisions explicit.
+      const bool is_frw_completion =
+          is_from_writer &&
+          (bk.tr_status == to_string(TRStatus::kFileCompleted) ||
+           bk.tr_status == to_string(TRStatus::kWriteFailed));
+      // Computed before the enqueue so the finalize sentinel can be pushed in
+      // the same lock, guaranteeing it lands in the same writer batch as the
+      // kReRecorded entry and the file is retired immediately after its final
+      // write.
+      const bool is_trd_final =
+          is_from_trdisp && (bk.tr_status == to_string(TRStatus::kReRecorded) ||
+                             bk.tr_status == to_string(TRStatus::kWriteFailed));
+      if (is_frw_completion && cycle_id != UINT64_MAX) {
+        std::lock_guard<std::mutex> lk(m_cycles_mtx);
+        auto it = m_cycles.find(cycle_id);
+        if (it != m_cycles.end()) {
+          for (uint64_t trig : it->second.filtered_triggers)
+            bk.tr_header_info.push_back(
+                {"filtered_trigger_number", std::to_string(trig)});
+        }
       }
 
       {
-        std::lock_guard<std::mutex> lock(queue_mutex);
-        bk_queue.push(to_json(bk));
-        TLOG() << "Queued message (Queue size: " << bk_queue.size() << ")";
+        std::lock_guard<std::mutex> lk(queue_mutex);
+        bk_queue.emplace(fname, to_json(bk));
+        if (is_trd_final && !fname.empty())
+          bk_queue.emplace(fname, nlohmann::json{}); // finalize sentinel
       }
       queue_cv.notify_one();
 
-      // When FRW signals file completion (kFileCompleted or
-      // kWriteFailed), forward a translated confirmation to TRD via
-      // bookkeeping2. DataFilter is the intermediary — FRW no longer
-      // sends directly to TRD.
-      if (is_from_writer &&
-          (bk.tr_status == to_string(TRStatus::kFileCompleted) ||
-           bk.tr_status == to_string(TRStatus::kWriteFailed))) {
+      if (is_frw_completion) {
+        if (cycle_id != UINT64_MAX) {
+          std::lock_guard<std::mutex> lk(m_cycles_mtx);
+          auto it = m_cycles.find(cycle_id);
+          if (it != m_cycles.end())
+            it->second.frw_confirmed = true;
+        }
         send_completion_to_trd(bk);
       }
 
-      // Detect TRD's final BK (kReRecorded or kWriteFailed) — sent after
-      // TRD receives the forwarded completion and calls WriteJSON.
-      // Signals stop() to unblock and drain cleanly.
-      if (is_from_trdisp &&
-          (bk.tr_status == to_string(TRStatus::kReRecorded) ||
-           bk.tr_status == to_string(TRStatus::kWriteFailed))) {
-        all_bk_received.store(true, std::memory_order_release);
-        all_bk_cv.notify_all();
-        TLOG() << "Final TRD BK received (status=" << bk.tr_status
-               << ") — all bookkeeping complete.";
+      if (is_trd_final) {
+        if (cycle_id != UINT64_MAX) {
+          std::lock_guard<std::mutex> lk(m_cycles_mtx);
+          m_cycles.erase(cycle_id);
+        }
+        const int prev =
+            m_active_cycles.fetch_sub(1, std::memory_order_acq_rel);
+        if (prev == 1) {
+          // Last active cycle just completed.
+          m_all_done_cv.notify_all();
+        }
+        TLOG() << "Cycle " << cycle_id << " complete (active=" << (prev - 1)
+               << ")";
       }
     };
 
     cb_receiver->add_callback(str_receiver_cb);
+    callback_registered.store(true, std::memory_order_release);
     TLOG() << "Callback registered, entering main loop";
 
-    while (!stop_flag.load()) {
-      // Nothing to do here anymore; writer consumes queue.
+    while (!stop_flag.load())
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-    TLOG() << "Cleaning up receiver";
 
     cb_receiver->remove_callback();
-    {
-      std::lock_guard<std::mutex> lk(queue_mutex);
-    }
-    queue_cv.notify_all(); // in case writer is waiting
-
+    queue_cv.notify_all();
     TLOG() << "Receiver cleanup complete";
   }
 
@@ -424,28 +452,10 @@ private:
                           {"transfer_rate", bk.transfer_rate}};
   }
 
-  // Function to read existing transactions from the file
-  nlohmann::json open_existing_bk(const std::string &filename) {
-    std::ifstream file(filename);
-    if (file.is_open()) {
-      try {
-        nlohmann::json existing_bk;
-        file >> existing_bk;
-        return existing_bk;
-      } catch (const std::exception &e) {
-        std::cerr << "Error reading JSON file: " << e.what() << std::endl;
-      }
-    }
-    return nlohmann::json::array(); // Return an empty array if the file
-                                    // doesn't exist or is invalid
-  }
-
   void write_to_file() {
-    TLOG() << "Setting up bookkeeping writer ";
-    std::string current_file;
-    nlohmann::json existing_bk = nlohmann::json::array();
-    auto start_time = std::chrono::high_resolution_clock::now();
-    int transaction_count = 0;
+    TLOG() << "Setting up bookkeeping writer";
+    // Per-file accumulator: filename -> array of JSON entries.
+    std::unordered_map<std::string, nlohmann::json> file_data;
 
     for (;;) {
       std::unique_lock<std::mutex> lock(queue_mutex);
@@ -459,8 +469,7 @@ private:
       if (bk_queue.empty() && stop_flag.load())
         break;
 
-      // Drain-all
-      std::vector<nlohmann::json> batch;
+      std::vector<std::pair<std::string, nlohmann::json>> batch;
       batch.reserve(bk_queue.size());
       while (!bk_queue.empty()) {
         batch.emplace_back(std::move(bk_queue.front()));
@@ -468,63 +477,83 @@ private:
       }
       lock.unlock();
 
-      // Get latest file name
-      std::string out_file;
-      {
-        std::lock_guard<std::mutex> f(file_mutex);
-        out_file = bk_file;
-      }
-      if (!have_file.load(std::memory_order_acquire)) {
-        // No filename yet — return items to queue rather than losing
-        // them.
-        {
-          std::lock_guard<std::mutex> rl(queue_mutex);
-          for (auto &item : batch)
-            bk_queue.push(std::move(item));
+      // Append to per-file accumulators.
+      // Null-JSON entries are finalize sentinels pushed by receive_bk() when
+      // a cycle's kReRecorded arrives; they trigger retirement after one final
+      // write.
+      std::unordered_set<std::string> pending;
+      std::unordered_set<std::string> finalized;
+
+      for (auto &[fname, entry] : batch) {
+        if (fname.empty()) {
+          TLOG() << "write_to_file: BK entry has no filename, dropping";
+          continue;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        continue;
+        if (entry.is_null()) {
+          finalized.insert(fname);
+          pending.insert(fname); // flush one final time before retirement
+          continue;
+        }
+        auto &arr = file_data[fname];
+        if (!arr.is_array()) {
+          arr = nlohmann::json::array();
+          // Pre-load existing on-disk content so a re-dispatch after HD
+          // failure + remount appends to the failure record rather than
+          // overwriting it.
+          std::ifstream existing(fname);
+          if (existing.is_open()) {
+            try {
+              nlohmann::json disk_data;
+              existing >> disk_data;
+              if (disk_data.is_array())
+                arr = std::move(disk_data);
+            } catch (const std::exception &e) {
+              TLOG() << "write_to_file: could not parse existing '" << fname
+                     << "': " << e.what() << " -- starting fresh";
+            }
+          }
+        }
+        arr.push_back(std::move(entry));
+        pending.insert(fname);
       }
 
-      // Rotate if needed
-      if (out_file != current_file) {
-        current_file = out_file;
-        existing_bk = open_existing_bk(current_file);
-        if (!existing_bk.is_array())
-          existing_bk = nlohmann::json::array();
+      // Flush only files that received new entries in this batch.
+      for (const auto &fname : pending) {
+        auto it = file_data.find(fname);
+        if (it == file_data.end())
+          continue;
+        auto &arr = it->second;
+        // Maintain entries sorted by entry_id using a multimap.
+        // nlohmann::json array iterators and std::sort interact
+        // unpredictably, so we rebuild the array from a sorted container.
+        std::multimap<std::string, nlohmann::json> sorted;
+        for (auto &elem : arr)
+          sorted.emplace(elem["entry_id"].get<std::string>(), std::move(elem));
+        arr = nlohmann::json::array();
+        for (auto &[_, elem] : sorted)
+          arr.push_back(std::move(elem));
+
+        std::ofstream f(fname);
+        if (f.is_open())
+          f << arr.dump(4);
+        else
+          TLOG() << "write_to_file: failed to open '" << fname << "'";
       }
 
-      // Append batch
-      for (auto &t : batch)
-        existing_bk.push_back(std::move(t));
-
-      // Flush
-      std::ofstream file(current_file);
-      if (file.is_open()) {
-        file << existing_bk.dump(4);
-      } else {
-        std::cerr << "Failed to open file '" << current_file
-                  << "' for writing!\n";
-      }
-
-      if (++transaction_count % 1 == 0) {
-        auto end_time = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            end_time - start_time)
-                            .count();
-        std::cout << "Processed " << transaction_count << " transactions in "
-                  << duration << " ms\n";
+      // Retire completed files so they are never rewritten by later batches.
+      for (const auto &fname : finalized) {
+        file_data.erase(fname);
+        TLOG() << "write_to_file: retired " << fname << " (cycle complete)";
       }
     }
     TLOG() << "File writer thread exiting";
   }
 
   std::string generate_bk_filename(int run_number, int file_index) {
-    std::ostringstream filename_oss;
-    filename_oss << "bookkeeping_" << std::setw(6) << std::setfill('0')
-                 << run_number << "_" << std::setw(4) << std::setfill('0')
-                 << file_index << ".json";
-    return filename_oss.str();
+    std::ostringstream oss;
+    oss << "bookkeeping_" << std::setw(6) << std::setfill('0') << run_number
+        << "_" << std::setw(4) << std::setfill('0') << file_index << ".json";
+    return oss.str();
   }
 };
 

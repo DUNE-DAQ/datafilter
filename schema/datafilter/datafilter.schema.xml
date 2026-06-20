@@ -144,6 +144,8 @@
   <attribute name="json_file" description="Store a list of hdf5 files that already delivered to the Data Filter. " type="string" is-not-null="yes"/>
   <attribute name="generate_trigger_record" description="Generate a trigger record for testing only.&#xA;This should be false by default." type="bool" init-value="false" is-not-null="yes"/>
   <attribute name="generate_time_slice" description="Generate a TimeSlice for testing only.&#xA;This should be false by default." type="bool" init-value="false" is-not-null="yes"/>
+  <attribute name="parallel_send" description="Send TR and TS in parallel threads vs sequentially." type="bool" init-value="false" is-not-null="yes"/>
+  <attribute name="number_generated_events" description="Max number of generated events. 0 = unlimited." type="u32" init-value="0" is-not-null="yes"/>
  </class>
 
 </oks-schema>

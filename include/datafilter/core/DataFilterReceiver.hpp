@@ -101,6 +101,10 @@ private:
   std::deque<ReceivedTR> tr_q;
   uint32_t m_total_tr{0};
   uint32_t m_total_ts{0};
+  std::atomic<int64_t> m_last_tr_ns{0};
+  std::thread m_heartbeat_thread;
+  std::mutex m_hb_mtx;
+  std::condition_variable m_hb_cv;
 
 public:
   // Start: register callbacks on all TR inputs (and tracking inputs if enabled)
@@ -180,8 +184,6 @@ public:
       }
     }
 
-    organiser->request_next_tr();
-
     // Subscribe to all TR inputs and forward-on-arrival
     if (cx.tr_data_rx.empty()) {
       TLOG() << "DataFilterReceiver.start(): no TR inputs configured";
@@ -195,6 +197,9 @@ public:
         // here
         auto tr_cb = [org = organiser, this,
                       src = ruid](trigger_record_ptr_t &tr) {
+          m_last_tr_ns.store(
+              std::chrono::steady_clock::now().time_since_epoch().count(),
+              std::memory_order_relaxed);
           using clock = std::chrono::steady_clock;
           const auto processing_start = clock::now();
           const std::size_t bytes = tr ? tr->get_total_size_bytes() : 0;
@@ -208,6 +213,18 @@ public:
             }
             cv_q.notify_one();
           } else {
+
+            // Capture trigger number before rebuild_trigger_record() may
+            // consume the TR (returns nullptr when all fragments are filtered).
+            uint64_t dropped_trig_num = 0;
+            bool has_dropped_trig_num = false;
+            if (tr && !tr->get_fragments_ref().empty()) {
+              try {
+                dropped_trig_num =
+                    tr->get_fragments_ref().at(0)->get_trigger_number();
+                has_dropped_trig_num = true;
+              } catch (...) {}
+            }
 
             const auto rebuild_start = clock::now();
             auto tr_rebuilt = m_alg.rebuild_trigger_record(tr);
@@ -225,10 +242,7 @@ public:
               TLOG() << "Rebuild processing rate: " << rebuild_mbps << " Mbps";
             }
 
-            const auto &frames = m_alg.needed_vec();
-            TLOG() << "Algothrims collected " << frames.size() << " frame refs";
-
-            // MEASURE ORGANISER PROCESSING TIME
+            // measure organiser processing time
             const auto org_start = clock::now();
 
             if (tr_rebuilt) {
@@ -237,6 +251,13 @@ public:
             } else {
               TLOG() << "DataFilterReceiver: TR dropped by filter"
                      << " (all WIBEth fragments below ADC threshold)";
+              if (has_dropped_trig_num && bk_receiver)
+                bk_receiver->record_filtered_trigger(dropped_trig_num);
+              // Notify FRW with total_tr=0 so it does not wait for TR data
+              // that will never arrive.  TRRewriterSink sends write_tr(0) and
+              // returns without sending TR payload.
+              trigger_record_ptr_t null_tr;
+              org->accepted_trigger_record2(null_tr, 0);
             }
 
             const auto org_end = clock::now();
@@ -263,7 +284,7 @@ public:
             }
           }
 
-          // TOTAL PROCESSING TIME
+          // total processing time
           const auto processing_end = clock::now();
           const double total_secs =
               std::chrono::duration_cast<std::chrono::duration<double>>(
@@ -280,6 +301,9 @@ public:
             std::lock_guard<std::mutex> lk(m_in_mu);
             update_ewma(total_mbps, m_in_by_src[src]);
             update_ewma(total_mbps, m_in_total);
+            TLOG() << "EWMA processing rate: "
+                   << m_in_total.ewma_mbps.load(std::memory_order_relaxed)
+                   << " Mbps";
 
             if (bk_receiver) {
               bk_receiver->set_transfer_rate_in(
@@ -305,8 +329,7 @@ public:
       try {
         auto ts_rx = dunedaq::get_iom_receiver<timeslice_ptr_t>(ruid);
 
-        auto ts_cb = [org = organiser, this,
-                      src = ruid](timeslice_ptr_t &ts) {
+        auto ts_cb = [org = organiser, this, src = ruid](timeslice_ptr_t &ts) {
           using clock = std::chrono::steady_clock;
           const auto t0 = clock::now();
           const std::size_t bytes = ts ? ts->get_total_size_bytes() : 0;
@@ -314,7 +337,8 @@ public:
           // Pass through to organiser (no TS algorithm yet)
           org->accepted_timeslice(ts, m_total_ts);
 
-          // Pull-mode top-up: request next TS batch after each one is forwarded.
+          // Pull-mode top-up: request next TS batch after each one is
+          // forwarded.
           if (pull_mode && org) {
             try {
               org->request_next_ts();
@@ -328,11 +352,14 @@ public:
               std::chrono::duration_cast<std::chrono::duration<double>>(t1 - t0)
                   .count();
           if (secs > 0 && bytes > 0) {
-            const double mbps =
-                (static_cast<double>(bytes) * 8.0) / secs / 1e6;
+            const double mbps = (static_cast<double>(bytes) * 8.0) / secs / 1e6;
             std::lock_guard<std::mutex> lk(m_in_mu);
             update_ewma(mbps, m_in_by_src[src]);
             update_ewma(mbps, m_in_total);
+            TLOG() << "TS processing rate: " << mbps << " Mbps";
+            TLOG() << "TS EWMA processing rate: "
+                   << m_in_total.ewma_mbps.load(std::memory_order_relaxed)
+                   << " Mbps";
           }
         };
 
@@ -345,9 +372,48 @@ public:
       }
     }
 
+    // Now that all kPubSub callbacks are registered (ZMQ SUB sockets
+    // subscribed), it is safe to request the first TR from TRD. Data cannot
+    // arrive before this point because TRD only sends data after receiving
+    // "next_tr".
+    organiser->request_next_tr();
+
     if (pull_mode && prefetch_window > 0 && organiser) {
       organiser->request_next_tr(prefetch_window);
     }
+
+    // Heartbeat: re-send bootstrap requests if no TR arrives for 30 s.
+    // Recovers from lost requests caused by TRD stop/restart mid-run.
+    m_last_tr_ns.store(
+        std::chrono::steady_clock::now().time_since_epoch().count(),
+        std::memory_order_relaxed);
+    m_heartbeat_thread = std::thread([this] {
+      constexpr int64_t kTimeoutNs = 30LL * 1'000'000'000LL;
+      while (true) {
+        {
+          std::unique_lock<std::mutex> lk(m_hb_mtx);
+          m_hb_cv.wait_for(lk, std::chrono::seconds(5),
+                           [this] { return !started.load(); });
+        }
+        if (!started.load())
+          break;
+        if (!pull_mode || !organiser)
+          continue;
+        const int64_t now =
+            std::chrono::steady_clock::now().time_since_epoch().count();
+        if ((now - m_last_tr_ns.load(std::memory_order_relaxed)) > kTimeoutNs) {
+          TLOG() << "DataFilterReceiver: no TR for 30s, re-sending bootstrap";
+          try {
+            organiser->request_next_tr();
+            if (prefetch_window > 0)
+              organiser->request_next_tr(prefetch_window);
+          } catch (...) {
+          }
+          // Reset timer to avoid repeated spam before TRD responds.
+          m_last_tr_ns.store(now, std::memory_order_relaxed);
+        }
+      }
+    });
 
     TLOG_DEBUG(5) << "DataFilterReceiver.start(): done; TR inputs="
                   << registered_tr_inputs.size()
@@ -385,6 +451,9 @@ public:
       TLOG_DEBUG(5) << "DataFilterReceiver.stop(): not started";
       return;
     }
+    m_hb_cv.notify_all();
+    if (m_heartbeat_thread.joinable())
+      m_heartbeat_thread.join();
     /*
         m_in_tick_run = false;
         if (m_in_tick.joinable())

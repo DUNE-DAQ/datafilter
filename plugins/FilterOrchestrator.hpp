@@ -23,8 +23,11 @@
 #include "utilities/WorkerThread.hpp"
 
 #include <atomic>
+#include <condition_variable>
 #include <execution>
 #include <limits>
+#include <mutex>
+#include <queue>
 #include <string>
 
 using data_t = nlohmann::json;
@@ -97,6 +100,12 @@ private:
   std::chrono::milliseconds m_recv_timeout_ms{100};
   std::atomic<int64_t> m_total_amount{0};
   std::atomic<int> m_amount_since_last_call{0};
+
+  // Always-on request prebuf (same pattern as TRDispatcher)
+  std::queue<dunedaq::datafilter::Handshake> m_req_q;
+  std::mutex m_req_mtx;
+  std::condition_variable m_req_cv;
+  std::shared_ptr<ReceiverConcept<dunedaq::datafilter::Handshake>> m_req_rx;
 };
 
 } // namespace dunedaq::datafilter

@@ -65,6 +65,15 @@ void TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
   if (m_generate_time_slice)
     TLOG() << "Runing Generated TimeSlice";
 
+  m_parallel_send = mdal->get_parallel_send();
+  if (m_parallel_send)
+    TLOG() << "Parallel send enabled.";
+
+  // test events with limited number from oks
+  m_number_generated_events = mdal->get_number_generated_events();
+  if (m_number_generated_events > 0)
+    TLOG() << "Max generated events: " << m_number_generated_events;
+
   m_send_timeout_ms = std::chrono::milliseconds(mdal->get_send_timeout_ms());
   m_recv_timeout_ms = std::chrono::milliseconds(mdal->get_recv_timeout_ms());
 
@@ -104,18 +113,214 @@ void TRDispatcher::do_conf(const data_t &) {
     TLOG() << "Bookkeeping TX discovered: " << m_bk_connection_o;
   }
 
+  // Pre-warm PULL sockets so they exist before DF/FRW send control/BK messages.
+  // IOManager creates sockets lazily; without this, cold-start sends are
+  // dropped.
+  if (!m_cx.trdispatcher_req_rx.empty()) {
+    dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
+        m_cx.trdispatcher_req_rx.front());
+    TLOG() << "TRD: pre-warmed trdispatcher_req_rx PULL on "
+           << m_cx.trdispatcher_req_rx.front();
+  }
+  if (!m_cx.bk_inputs.empty()) {
+    dunedaq::get_iom_receiver<dunedaq::datafilter::BookKeeping>(
+        m_cx.bk_inputs.front());
+    TLOG() << "TRD: pre-warmed bk_inputs PULL on " << m_cx.bk_inputs.front();
+  }
+
+  // Pre-create PUB/PUSH sender sockets in do_conf() so ZMQ connections
+  // are established before any data flows in do_start().
+  // This mitigates the ZMQ slow-joiner issue on cold start.
+  if (!m_cx.tr_data_tx.empty()) {
+    m_trdispatcher_id = m_cx.tr_data_tx.front();
+    dunedaq::get_iom_sender<trigger_record_ptr_t>(m_trdispatcher_id);
+    TLOG() << "TRD: pre-created TR data sender on " << m_trdispatcher_id;
+  }
+
   TLOG() << get_name() << ": exist do_conf()";
 }
 
 void TRDispatcher::do_start(const data_t &) {
-  // temporary no thread. Will be back later.
-  // m_thread.start_working_thread();
+  TLOG() << "TRD do_start(): ENTER, m_start_barrier=" << m_start_barrier.load()
+         << " m_keep_running=" << m_keep_running.load();
   m_keep_running.store(true);
-  get_from_storage();
+  m_events_remaining.store(m_number_generated_events);
+  m_events_remaining.store(m_number_generated_events);
+  m_pub_warmup_needed.store(true);
+
+  // Always-on callback on bk_inputs (bookkeeping2): routes each confirmation
+  // from DF to the correct in-flight CycleWaiter by trd_bk_seq.  Registered
+  // before get_from_storage() so no confirmation can arrive before the
+  // callback is active.
+  if (!m_cx.bk_inputs.empty()) {
+    m_bk_always_on_rx =
+        dunedaq::get_iom_receiver<dunedaq::datafilter::BookKeeping>(
+            m_cx.bk_inputs.front());
+    m_bk_always_on_rx->add_callback([this](
+                                        dunedaq::datafilter::BookKeeping bk) {
+      if (bk.from_id != "FilterResultWriter")
+        return;
+      uint64_t seq = UINT64_MAX;
+      for (const auto &kv : bk.file_attributes_info)
+        if (kv.first == "trd_bk_seq") {
+          try {
+            seq = std::stoull(kv.second);
+          } catch (...) {
+          }
+          break;
+        }
+      if (seq == UINT64_MAX) {
+        TLOG() << "TRD always-on BK cb: missing trd_bk_seq, ignoring";
+        return;
+      }
+      std::shared_ptr<CycleWaiter> waiter;
+      {
+        std::lock_guard<std::mutex> lk(m_bk_waiters_mtx);
+        auto it = m_bk_waiters.find(seq);
+        if (it != m_bk_waiters.end())
+          waiter = it->second;
+      }
+      if (!waiter) {
+        TLOG() << "TRD always-on BK cb: no waiter for seq=" << seq;
+        return;
+      }
+      waiter->file_attrs = bk.file_attributes_info;
+      waiter->got_reply.store(true, std::memory_order_release);
+
+      // Send final BK (kReRecorded) directly from the callback so
+      // send_tr/send_ts can return immediately without waiting.
+      if (!m_bk_connection_o.empty()) {
+        dunedaq::datafilter::time_point_to_string tp2s(
+            dunedaq::datafilter::Precision::NANOSECONDS);
+        dunedaq::datafilter::BookKeeping final_bk(m_bk_connection_o);
+        // Use FRW's completion timestamp when available (propagated by DF relay);
+        // fall back to now() only if relay did not set it.
+        final_bk.entry_id = bk.entry_id.empty()
+                                ? tp2s(std::chrono::system_clock::now())
+                                : bk.entry_id;
+        final_bk.from_id =
+            waiter->is_hdf5_mode ? "trdispatcher" : "trdispatcher";
+        final_bk.tr_status = to_string(TRStatus::kReRecorded);
+        final_bk.run_number = bk.run_number;
+        final_bk.tr_header_info.push_back(
+            {"run number", std::to_string(bk.run_number)});
+        for (const auto &kv : waiter->file_attrs)
+          if (kv.first == "df_cycle_id") {
+            final_bk.file_attributes_info.push_back(kv);
+            break;
+          }
+        if (!waiter->file_send_list.empty())
+          final_bk.file_send_list = waiter->file_send_list;
+        try {
+          auto bk_sender =
+              dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
+                  m_bk_connection_o);
+          bk_sender->send(std::move(final_bk), std::chrono::milliseconds(2000));
+          TLOG() << "TRD always-on BK cb: sent final BK (kReRecorded) seq="
+                 << seq;
+        } catch (const std::exception &e) {
+          TLOG() << "TRD always-on BK cb: final BK send failed: " << e.what();
+        }
+      }
+
+      // Deferred WriteJSON for HDF5 mode.
+      // WriteJSON is called BEFORE releasing the in-flight guard to
+      // eliminate the TOCTOU window where the file is neither in-flight
+      // nor in the JSON (which lets the 100ms polling loop re-dispatch it).
+      if (waiter->is_hdf5_mode && waiter->got_reply.load()) {
+        if (bk.tr_status == to_string(TRStatus::kFileCompleted) ||
+            bk.tr_status == to_string(TRStatus::kReRecorded)) {
+          try {
+            dunedaq::datafilter::HDF5FromStorage s(waiter->storage_pathname,
+                                                   waiter->json_file);
+            s.WriteJSON(waiter->h5_filename);
+            TLOG() << "TRD always-on BK cb: WriteJSON done for "
+                   << waiter->h5_filename;
+          } catch (const std::exception &e) {
+            TLOG() << "TRD always-on BK cb: WriteJSON failed: " << e.what();
+          }
+        } else {
+          TLOG() << "TRD always-on BK cb: WriteJSON skipped -- FRW status="
+                 << bk.tr_status << " for " << waiter->h5_filename;
+          // Hold off re-dispatch for 30 s so a persistent write failure
+          // does not spin the dispatch loop at full speed.
+          {
+            std::lock_guard<std::mutex> blk(m_backoff_mtx);
+            m_backoff_files[waiter->h5_filename] =
+                std::chrono::steady_clock::now() + std::chrono::seconds(30);
+          }
+        }
+        {
+          std::lock_guard<std::mutex> lk(m_in_flight_mtx);
+          m_in_flight_files.erase(waiter->h5_filename);
+        }
+        m_in_flight_cv.notify_one();
+      }
+
+      // Clean up waiter
+      {
+        std::lock_guard<std::mutex> lk(m_bk_waiters_mtx);
+        m_bk_waiters.erase(seq);
+      }
+      TLOG() << "TRD always-on BK cb: completed seq=" << seq;
+    });
+    TLOG() << "TRD: registered always-on BK callback on "
+           << m_cx.bk_inputs.front();
+  }
+
+  // Always-on callback on trdispatcher_req_rx: buffers "next_tr"/"next_ts"
+  // requests so they are never dropped between cycles.
+  if (!m_cx.trdispatcher_req_rx.empty()) {
+    m_req_rx = dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
+        m_cx.trdispatcher_req_rx.front());
+    m_req_rx->add_callback([this](dunedaq::datafilter::Handshake msg) {
+      if (msg.msg_id == "next_tr" || msg.msg_id == "next_ts") {
+        TLOG() << "received request_next_tr from FO";
+        std::lock_guard<std::mutex> lk(m_req_prebuf_mtx);
+        m_req_prebuf.push(std::move(msg));
+        m_req_prebuf_cv.notify_one();
+      }
+    });
+    TLOG() << "TRD: registered always-on request callback on "
+           << m_cx.trdispatcher_req_rx.front();
+  }
+
+  // Start the WorkerThread so get_from_storage() runs off the command thread.
+  // If we call get_from_storage() directly here, the framework's sequential
+  // command dispatch blocks: DF/FRW never get do_start() and never send
+  // "next_tr", so we deadlock.
+  TLOG() << "TRD do_start: starting WorkerThread";
+  m_thread.start_working_thread();
+
+  // Two-phase barrier: wait for WorkerThread to be ready, then set barrier.
+  // In multi-module mode (do_start async), this ensures the barrier is set
+  // before do_work() waits.  In standalone mode, the fallback timeout in
+  // do_work() handles the case where do_start() blocks on
+  // start_working_thread().
+  TLOG() << "TRD do_start: waiting for m_worker_ready...";
+  {
+    std::unique_lock<std::mutex> lk(m_req_prebuf_mtx);
+    bool worker_ready =
+        m_req_prebuf_cv.wait_for(lk, std::chrono::milliseconds(100),
+                                 [this] { return m_worker_ready.load(); });
+    if (worker_ready) {
+      TLOG() << "TRD do_start: m_worker_ready detected, setting barrier";
+    } else {
+      TLOG() << "TRD do_start: m_worker_ready TIMEOUT (standalone mode)";
+    }
+  }
+
+  // WorkerThread is ready OR we timed out.  Set the barrier and notify.
+  TLOG() << "TRD do_start: setting m_start_barrier=true";
+  m_start_barrier.store(true);
+  m_req_prebuf_cv.notify_all();
+  TLOG() << "TRD do_start: EXIT, m_start_barrier=" << m_start_barrier.load();
+
+  // NOTE: BK cleanup moved to do_stop(); the BK callback must stay alive
+  // for the entire run because FRW sends completion BK asynchronously.
 }
 
 void TRDispatcher::get_from_storage() {
-
   // std::vector<std::filesystem::path> files;
   // size_t cnt = 0;
 
@@ -131,17 +336,41 @@ void TRDispatcher::get_from_storage() {
     return DispatchMode::kGeneratedSerial;
   }();
 
+  TLOG() << "get_from_storage: mode=" << static_cast<int>(mode)
+         << " m_running_flag="
+         << (m_running_flag ? m_running_flag->load() : -1);
+
   // kGeneratedSerial / kGeneratedParallel: no filesystem polling
   if (mode != DispatchMode::kStorageHDF5) {
-    while (m_keep_running.load())
+    TLOG() << "get_from_storage: entering generated while loop";
+    // Loop on both keep_running and running_flag:
+    // - keep_running=false: do_stop() called and returned, exit immediately
+    // - running_flag=false: stop_working_thread() called, framework wants us to
+    // stop The CV wait inside receive() unblocks when either condition changes.
+    while (m_keep_running.load() && m_running_flag && m_running_flag->load())
       receive(mode);
+    TLOG() << "get_from_storage: exited generated while loop (keep_running="
+           << m_keep_running.load()
+           << " running_flag=" << (m_running_flag ? m_running_flag->load() : -1)
+           << ")";
     return;
   }
 
   // kStorageHDF5: poll filesystem, dispatch one file per handshake
   size_t idle_cnt = 0;
 
-  while (m_keep_running.load()) {
+  while (m_running_flag && m_running_flag->load()) {
+    // Serialize: wait for the current in-flight file to complete before scanning
+    // for the next. Prevents TRs from multiple source files from interleaving
+    // in FRW's prebuf and corrupting per-source-file bookkeeping.
+    {
+      std::unique_lock<std::mutex> lk(m_in_flight_mtx);
+      if (!m_in_flight_files.empty()) {
+        m_in_flight_cv.wait_for(lk, std::chrono::milliseconds(500));
+        continue;
+      }
+    }
+
     auto files = get_hdf5files_from_storage();
 
     if (files.empty()) {
@@ -156,42 +385,132 @@ void TRDispatcher::get_from_storage() {
     idle_cnt = 0;
 
     for (auto &file : files) {
-      if (!m_keep_running.load())
+      if (!(m_running_flag && m_running_flag->load()))
         break;
 
       m_input_h5_filename = file;
+
+      // Skip files already in-flight (dispatched but WriteJSON deferred)
+      {
+        std::lock_guard<std::mutex> lk(m_in_flight_mtx);
+        if (m_in_flight_files.count(m_input_h5_filename)) {
+          TLOG() << "TRD: " << m_input_h5_filename
+                 << " already in flight, skipping";
+          continue;
+        }
+      }
+      // Skip files within the write-fail backoff window
+      {
+        std::lock_guard<std::mutex> blk(m_backoff_mtx);
+        auto it = m_backoff_files.find(m_input_h5_filename);
+        if (it != m_backoff_files.end()) {
+          if (std::chrono::steady_clock::now() < it->second) {
+            TLOG_DEBUG(7) << "TRD: " << m_input_h5_filename
+                          << " in write-fail backoff, skipping";
+            continue;
+          }
+          m_backoff_files.erase(it);
+          TLOG() << "TRD: write-fail backoff expired for "
+                 << m_input_h5_filename << ", retrying";
+        }
+      }
+      // Insert into in-flight -- double-check after the backoff lock gap
+      {
+        std::lock_guard<std::mutex> lk(m_in_flight_mtx);
+        if (m_in_flight_files.count(m_input_h5_filename))
+          continue;
+        m_in_flight_files.insert(m_input_h5_filename);
+      }
+
       TLOG() << "Dispatching from " << m_storage_pathname << " file "
              << m_input_h5_filename;
 
       receive(mode);
+      break;  // one file per scan; outer loop re-enters only when in-flight is empty
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 }
 
 void TRDispatcher::do_stop(const data_t &) {
+  TLOG() << "TRD do_stop() called, m_keep_running was="
+         << m_keep_running.load();
+  // Signal receive() to wake up and return; the WorkerThread loop uses
+  // m_running_flag (not m_keep_running) so this only unblocks the CV wait.
   m_keep_running.store(false);
+  m_start_barrier.store(false);
+  m_req_prebuf_cv.notify_all();
 
-  // m_thread.stop_working_thread();
+  // Stop the WorkerThread (which is running get_from_storage() -> receive()).
+  // This sets running_flag=false and joins the thread.
+  m_thread.stop_working_thread();
+
+  // Now safe to clean up callbacks — no thread is using them anymore.
+  {
+    std::lock_guard<std::mutex> lk(m_req_prebuf_mtx);
+    while (!m_req_prebuf.empty())
+      m_req_prebuf.pop();
+  }
+  if (m_req_rx) {
+    m_req_rx->remove_callback();
+    m_req_rx.reset();
+  }
+
+  // Clean up BK callback and waiters after the worker thread has exited.
+  if (m_bk_always_on_rx) {
+    m_bk_always_on_rx->remove_callback();
+    m_bk_always_on_rx.reset();
+  }
+  {
+    std::lock_guard<std::mutex> lk(m_bk_waiters_mtx);
+    m_bk_waiters.clear();
+  }
 }
 
 void TRDispatcher::do_work(std::atomic<bool> &running_flag) {
+  TLOG() << "TRD do_work: FIRST LINE running_flag=" << running_flag.load()
+         << " addr=" << &running_flag;
+  m_running_flag = &running_flag;
 
-  std::mutex work_mutex;
-  std::condition_variable work_cv;
-  std::vector<std::filesystem::path> files;
-  size_t cnt = 0;
-
-  TLOG() << "m_is_from_storage " << m_is_from_storage;
-  while (running_flag.load()) {
-    get_from_storage();
-
-    std::unique_lock<std::mutex> lock(work_mutex);
-    work_cv.wait_for(lock, std::chrono::seconds(1), [&]() {
-      return !running_flag.load(); // check for new do_work availability
-    });
+  // Two-phase barrier to prevent lost wakeup between WorkerThread and
+  // do_start(). Phase 1: WorkerThread signals m_worker_ready before waiting.
+  // Phase 2: do_start() waits for m_worker_ready, then sets m_start_barrier,
+  //          then notifies the CV.  This guarantees the notification is not
+  //          lost.
+  // In standalone mode (no downstream), do_start() won't set m_start_barrier,
+  // so we use a timeout and check m_keep_running.
+  TLOG()
+      << "TRD do_work: signaling m_worker_ready=true, then waiting on barrier";
+  {
+    std::unique_lock<std::mutex> lk(m_req_prebuf_mtx);
+    m_worker_ready.store(true); // Signal BEFORE waiting
+    TLOG() << "TRD do_work: m_worker_ready set, now waiting for barrier...";
+    bool barrier_set = m_req_prebuf_cv.wait_for(
+        lk, std::chrono::seconds(2), [this] { return m_start_barrier.load(); });
+    if (barrier_set) {
+      TLOG() << "TRD do_work: start barrier SET (do_start() completed, barrier "
+                "received)";
+    } else {
+      TLOG() << "TRD do_work: start barrier TIMEOUT (m_worker_ready="
+             << m_worker_ready.load()
+             << " m_keep_running=" << m_keep_running.load() << ")";
+      if (m_keep_running.load()) {
+        TLOG() << "TRD do_work: m_keep_running=1, proceeding (standalone mode)";
+      } else {
+        TLOG() << "TRD do_work: m_keep_running=0, exiting";
+        m_running_flag = nullptr;
+        return;
+      }
+    }
   }
+
+  TLOG() << "TRD do_work: entering (m_is_from_storage=" << m_is_from_storage
+         << " running_flag=" << running_flag.load() << " addr=" << &running_flag
+         << " m_running_flag=" << m_running_flag << ")";
+  get_from_storage();
+  m_running_flag = nullptr;
+  TLOG() << "TRD do_work: get_from_storage() returned";
 }
 
 void TRDispatcher::generate_opmon_data() {
@@ -203,35 +522,48 @@ void TRDispatcher::generate_opmon_data() {
 
 // Receive handshake from FilterOrchestrator
 void TRDispatcher::receive(DispatchMode mode) {
-  std::atomic<unsigned int> received_cnt = 0;
-
-  auto cb_receiver = dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
-      m_trdispatcher_req_rx);
-
-  std::function<void(dunedaq::datafilter::Handshake)> str_receiver_cb =
-      [&](dunedaq::datafilter::Handshake msg) {
-        if (msg.msg_id == m_trdispatcher_req_rx) {
-          ++received_cnt;
-        }
-        TLOG() << "Received next TR instruction from filter "
-                  "orchestrator: "
-               << msg.msg_id;
-      };
-
-  cb_receiver->add_callback(str_receiver_cb);
-  while (received_cnt < 1 && m_keep_running.load())
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-
-  cb_receiver->remove_callback();
-  if (!m_keep_running.load())
-    return; // stopped before receiving handshake
+  TLOG_DEBUG(7) << "receive(): enter, m_keep_running=" << m_keep_running.load();
+  // Drain from the always-on prebuf (registered in do_start()).
+  // Replaces transient add_callback/remove_callback to prevent between-cycle
+  // drops.
+  {
+    std::unique_lock<std::mutex> lk(m_req_prebuf_mtx);
+    m_req_prebuf_cv.wait_for(lk, std::chrono::milliseconds(100), [this] {
+      return !m_req_prebuf.empty() || !m_keep_running.load();
+    });
+    if (!m_keep_running.load()) {
+      TLOG_DEBUG(7) << "receive(): m_keep_running is false, returning";
+      return;
+    }
+    if (m_req_prebuf.empty()) {
+      TLOG_DEBUG(7) << "receive(): timeout, no request yet, returning to retry";
+      // Release in-flight guard so the file is retried on the next scan.
+      {
+        std::lock_guard<std::mutex> lk(m_in_flight_mtx);
+        m_in_flight_files.erase(m_input_h5_filename);
+      }
+      return;
+    }
+    TLOG_DEBUG(7) << "receive(): got request from prebuf, size="
+                  << m_req_prebuf.size();
+    m_req_prebuf.pop();
+  }
 
   switch (mode) {
-
-  case DispatchMode::kStorageHDF5:
-    send_tr_from_hdf5file();
-    send_ts_from_hdf5file();
+  case DispatchMode::kStorageHDF5: {
+    bool tr_owns = false, ts_owns = false;
+    {
+      std::thread tr_th([&] { tr_owns = send_tr_from_hdf5file(); });
+      std::thread ts_th([&] { ts_owns = send_ts_from_hdf5file(); });
+      tr_th.join();
+      ts_th.join();
+    }
+    if (!tr_owns && !ts_owns) {
+      std::lock_guard<std::mutex> lk(m_in_flight_mtx);
+      m_in_flight_files.erase(m_input_h5_filename);
+    }
     break;
+  }
 
   case DispatchMode::kGeneratedSerial:
     if (m_generate_trigger_record)
@@ -468,6 +800,16 @@ timeslice_ptr_t TRDispatcher::create_time_slice(uint64_t ts_num) {
 
 // send trigger records from self generated TR
 void TRDispatcher::send_tr() {
+  if (m_number_generated_events > 0) {
+    auto prev = m_events_remaining.fetch_sub(1);
+    if (prev == 0) {
+      m_events_remaining.fetch_add(1);
+      TLOG() << "send_tr: event limit (" << m_number_generated_events
+             << ") reached, skipping";
+      return;
+    }
+  }
+
   std::ostringstream ss;
   auto trig_num = m_tr_seq_num.fetch_add(1);
 
@@ -488,6 +830,13 @@ void TRDispatcher::send_tr() {
   // dispatch gate. In HDF5 mode this happens in send_tr_from_hdf5file();
   // generated mode must replicate it, otherwise FRW never registers its
   // trwriter0 / TR-data callbacks and the ctrl send times out.
+  const uint64_t bk_seq = m_bk_seq.fetch_add(1);
+  auto waiter = std::make_shared<CycleWaiter>();
+  {
+    std::lock_guard<std::mutex> lk(m_bk_waiters_mtx);
+    m_bk_waiters[bk_seq] = waiter;
+  }
+
   if (!m_bk_connection_o.empty()) {
     dunedaq::datafilter::time_point_to_string tp2s(
         dunedaq::datafilter::Precision::NANOSECONDS);
@@ -498,13 +847,17 @@ void TRDispatcher::send_tr() {
     bk_gen.run_number = run_number;
     bk_gen.file_attributes_info.push_back(
         {"file_index", std::to_string(trig_num)});
+    bk_gen.file_attributes_info.push_back({"record_type", "TR"});
+    bk_gen.file_attributes_info.push_back(
+        {"trd_bk_seq", std::to_string(bk_seq)});
+    bk_gen.file_attributes_info.push_back({"total_tr", "1"});
     bk_gen.tr_header_info.push_back({"record size", "1"});
     try {
       auto bk_sender =
           dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
               m_bk_connection_o);
       bk_sender->send(std::move(bk_gen), std::chrono::milliseconds(2000));
-      TLOG() << "send_tr (generated): sent initial BK on " << m_bk_connection_o;
+      TLOG() << "send_tr (generated): sent initial BK (seq=" << bk_seq << ")";
     } catch (const std::exception &e) {
       TLOG() << "send_tr (generated): initial BK send failed: " << e.what();
     }
@@ -547,9 +900,6 @@ void TRDispatcher::send_tr() {
             [=, &completed_receiver_tracking, &tracking_mutex]() {
               bool complete_received = false;
 
-              // 500 ms: allow the BK chain (TRD→DF BK0→DF BK1→FRW dispatch
-              // gate) to complete before publishing on the kPubSub channel.
-              std::this_thread::sleep_for(500ms);
               while (!complete_received) {
                 TLOG() << "Sender message: generate trigger "
                           "record";
@@ -585,69 +935,21 @@ void TRDispatcher::send_tr() {
   }
   trdispatchers.clear();
 
-  // Wait for DF to forward FRW's write confirmation on bookkeeping2.
-  // Only then is it safe to send the final kReRecorded BK to DF.
-  if (!m_cx.bk_inputs.empty()) {
-    auto bk_receiver =
-        dunedaq::get_iom_receiver<dunedaq::datafilter::BookKeeping>(
-            m_cx.bk_inputs.front());
-
-    std::atomic<bool> got_reply{false};
-    std::function<void(dunedaq::datafilter::BookKeeping)> conf_cb =
-        [&](dunedaq::datafilter::BookKeeping bk) {
-          if (bk.from_id == "FilterResultWriter") {
-            got_reply.store(true);
-          }
-        };
-
-    bk_receiver->add_callback(conf_cb);
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(300);
-    while (!got_reply.load() && std::chrono::steady_clock::now() < deadline) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    }
-    bk_receiver->remove_callback();
-
-    if (got_reply.load()) {
-      TLOG() << "send_tr (generated): FRW confirmed write via "
-             << m_cx.bk_inputs.front();
-    } else {
-      TLOG() << "send_tr (generated): timeout waiting for FRW confirmation on "
-             << m_cx.bk_inputs.front();
-    }
-  }
-
-  // Send final BK (kReRecorded) to DF — records JSON entry 3 and
-  // unblocks BookkeepingReceiver::stop().
-  if (!m_bk_connection_o.empty()) {
-    dunedaq::datafilter::time_point_to_string tp2s(
-        dunedaq::datafilter::Precision::NANOSECONDS);
-    dunedaq::datafilter::BookKeeping final_bk(m_bk_connection_o);
-    final_bk.entry_id = tp2s(std::chrono::system_clock::now());
-    final_bk.from_id = "trdispatcher";
-    final_bk.file_send_status = "send";
-    final_bk.tr_status = to_string(TRStatus::kReRecorded);
-    final_bk.run_number = run_number;
-    final_bk.tr_header_info.push_back(
-        {"run number", std::to_string(run_number)});
-    final_bk.file_send_list = {"generated"};
-    try {
-      auto bk_sender =
-          dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
-              m_bk_connection_o);
-      bk_sender->send(std::move(final_bk), Sender::s_block);
-      TLOG() << "send_tr (generated): sent final BK (kReRecorded) on "
-             << m_bk_connection_o;
-    } catch (const std::exception &e) {
-      TLOG() << "send_tr (generated): final BK send failed: " << e.what();
-    }
-  }
-
   TLOG() << "TR send done; it will start the next send.";
 }
 
 // Send a generated TimeSlice (no HDF5 source).
 void TRDispatcher::send_ts() {
+  if (m_number_generated_events > 0) {
+    auto prev = m_events_remaining.fetch_sub(1);
+    if (prev == 0) {
+      m_events_remaining.fetch_add(1);
+      TLOG() << "send_ts: event limit (" << m_number_generated_events
+             << ") reached, skipping";
+      return;
+    }
+  }
+
   if (m_cx.ts_data_tx.empty()) {
     TLOG() << "No ts_data_tx discovered; skipping TS send.";
     return;
@@ -658,6 +960,13 @@ void TRDispatcher::send_ts() {
   auto ts_num = m_ts_seq_num.fetch_add(1);
 
   // Send initial BK so DF opens FRW's dispatch gate before TS data arrives.
+  const uint64_t ts_bk_seq = m_bk_seq.fetch_add(1);
+  auto ts_waiter = std::make_shared<CycleWaiter>();
+  {
+    std::lock_guard<std::mutex> lk(m_bk_waiters_mtx);
+    m_bk_waiters[ts_bk_seq] = ts_waiter;
+  }
+
   if (!m_bk_connection_o.empty()) {
     dunedaq::datafilter::time_point_to_string tp2s(
         dunedaq::datafilter::Precision::NANOSECONDS);
@@ -668,13 +977,17 @@ void TRDispatcher::send_ts() {
     bk_gen.run_number = run_number;
     bk_gen.file_attributes_info.push_back(
         {"file_index", std::to_string(ts_num)});
+    bk_gen.file_attributes_info.push_back({"record_type", "TS"});
+    bk_gen.file_attributes_info.push_back(
+        {"trd_bk_seq", std::to_string(ts_bk_seq)});
     bk_gen.tr_header_info.push_back({"record size", "1"});
     try {
       auto bk_sender =
           dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
               m_bk_connection_o);
       bk_sender->send(std::move(bk_gen), std::chrono::milliseconds(2000));
-      TLOG() << "send_ts (generated): sent initial BK on " << m_bk_connection_o;
+      TLOG() << "send_ts (generated): sent initial BK (seq=" << ts_bk_seq
+             << ")";
     } catch (const std::exception &e) {
       TLOG() << "send_ts (generated): initial BK send failed: " << e.what();
     }
@@ -694,65 +1007,20 @@ void TRDispatcher::send_ts() {
     }
   }
 
-  // 500 ms delay: allow BK chain to propagate before publishing on kPubSub.
-  std::thread send_thread([=]() {
-    std::this_thread::sleep_for(500ms);
-    TLOG() << "Sending generated TimeSlice " << ts_num;
-    ts_sender->try_send(create_time_slice(ts_num),
-                        std::chrono::milliseconds(m_send_timeout_ms));
-    TLOG() << "TS send done.";
-  });
-  send_thread.join();
-
-  // Wait for FRW's write confirmation forwarded by DF on bookkeeping2.
-  if (!m_cx.bk_inputs.empty()) {
-    auto bk_recv = dunedaq::get_iom_receiver<dunedaq::datafilter::BookKeeping>(
-        m_cx.bk_inputs.front());
-    std::atomic<bool> got_reply{false};
-    std::function<void(dunedaq::datafilter::BookKeeping)> conf_cb =
-        [&](dunedaq::datafilter::BookKeeping bk) {
-          if (bk.from_id == "FilterResultWriter")
-            got_reply.store(true);
-        };
-    bk_recv->add_callback(conf_cb);
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(300);
-    while (!got_reply.load() && std::chrono::steady_clock::now() < deadline)
-      std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    bk_recv->remove_callback();
-    TLOG() << "send_ts (generated): FRW reply: "
-           << (got_reply.load() ? "received" : "timeout");
-  }
-
-  // Send final BK (kReRecorded) to DF — unblocks BookkeepingReceiver::stop().
-  if (!m_bk_connection_o.empty()) {
-    dunedaq::datafilter::time_point_to_string tp2s(
-        dunedaq::datafilter::Precision::NANOSECONDS);
-    dunedaq::datafilter::BookKeeping final_bk(m_bk_connection_o);
-    final_bk.entry_id = tp2s(std::chrono::system_clock::now());
-    final_bk.from_id = "trdispatcher";
-    final_bk.file_send_status = "send";
-    final_bk.tr_status = to_string(TRStatus::kReRecorded);
-    final_bk.run_number = run_number;
-    final_bk.tr_header_info.push_back(
-        {"run number", std::to_string(run_number)});
-    final_bk.file_send_list = {"generated_ts"};
-    try {
-      auto bk_sender =
-          dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
-              m_bk_connection_o);
-      bk_sender->send(std::move(final_bk), Sender::s_block);
-      TLOG() << "send_ts (generated): sent final BK (kReRecorded)";
-    } catch (const std::exception &e) {
-      TLOG() << "send_ts (generated): final BK send failed: " << e.what();
-    }
-  }
+  TLOG() << "Sending generated TimeSlice " << ts_num;
+  ts_sender->try_send(create_time_slice(ts_num),
+                      std::chrono::milliseconds(m_send_timeout_ms));
+  TLOG() << "TS send done.";
 }
 
 // Send trigger records from generated hdf5 files.
-void TRDispatcher::send_tr_from_hdf5file() {
-  // Previous threads were already joined at end of last call; clear the vector
-  // so this call spawns exactly ONE send thread instead of N on the N-th cycle.
+// Returns true if a BK waiter was registered (guard ownership transferred to
+// the always-on BK callback); false if the file was skipped or config is bad
+// (caller is responsible for releasing the in-flight guard).
+bool TRDispatcher::send_tr_from_hdf5file() {
+  // Previous threads were already joined at end of last call; clear the
+  // vector so this call spawns exactly ONE send thread instead of N on the
+  // N-th cycle.
   trdispatchers.clear();
 
   std::ostringstream oss;
@@ -771,12 +1039,12 @@ void TRDispatcher::send_tr_from_hdf5file() {
     TLOG_DEBUG(7) << "File " << m_input_h5_filename
                   << " is not a TriggerRecord file (record_type="
                   << h5_file.get_record_type() << "); skipping TR send.";
-    return;
+    return false;
   }
   auto records = h5_file.get_all_trigger_record_ids();
   if (records.empty()) {
     TLOG() << "No TriggerRecords in " << m_input_h5_filename;
-    return;
+    return false;
   }
   auto records_size = records.size();
   auto total_tr = *(std::next(records.begin(), records.size() - 1));
@@ -803,13 +1071,28 @@ void TRDispatcher::send_tr_from_hdf5file() {
   bk_info.run_number = h5_file.get_attribute<size_t>("run_number");
   bk_info.file_attributes_info.push_back(
       {"file_index", std::to_string(file_index)});
+  bk_info.file_attributes_info.push_back({"record_type", "TR"});
+  const uint64_t h5_bk_seq = m_bk_seq.fetch_add(1);
+  bk_info.file_attributes_info.push_back(
+      {"trd_bk_seq", std::to_string(h5_bk_seq)});
+  bk_info.file_attributes_info.push_back(
+      {"total_tr", std::to_string(records.size())});
   bk_info.file_send_list.push_back(m_input_h5_filename);
-  // Mark state: TRD is about to dispatch TRs from this file.
   bk_info.tr_status = to_string(TRStatus::kAssignedToFilter);
 
-  // Send the file attributes first: file_index, run_number. The
-  // FilterResultWriter needs to know it before receiving the trigger
-  // record.
+  // Fully initialize the waiter before inserting into the map so that
+  // the always-on BK callback never sees a partially-constructed entry
+  // even when FRW responds before the send thread finishes.
+  auto h5_waiter = std::make_shared<CycleWaiter>();
+  h5_waiter->is_hdf5_mode = true;
+  h5_waiter->h5_filename = m_input_h5_filename;
+  h5_waiter->storage_pathname = m_storage_pathname;
+  h5_waiter->json_file = m_json_file;
+  h5_waiter->file_send_list = {m_input_h5_filename};
+  {
+    std::lock_guard<std::mutex> lk(m_bk_waiters_mtx);
+    m_bk_waiters[h5_bk_seq] = h5_waiter;
+  }
 
   if (m_bk_connection_o.empty()) {
     throw std::runtime_error(
@@ -819,11 +1102,11 @@ void TRDispatcher::send_tr_from_hdf5file() {
       dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
           m_bk_connection_o);
 
-  bookkeeping_sender->send(std::move(bk_info), Sender::s_no_block);
+  bookkeeping_sender->send(std::move(bk_info), std::chrono::milliseconds(2000));
 
   if (m_cx.tr_tracking_tx.empty()) {
     TLOG() << "TR_tracking2 to DF is empty.";
-    return;
+    return false;
   }
   TLOG() << "m_cx.tr_tracking_tx " << m_cx.tr_tracking_tx.front();
   // Handshake with datafilter.
@@ -835,7 +1118,7 @@ void TRDispatcher::send_tr_from_hdf5file() {
   // FilterResultWriter
   sent_t1.total_tr = int(records_size);
 
-  init_sender->send(std::move(sent_t1), Sender::s_no_block);
+  init_sender->send(std::move(sent_t1), Sender::s_block);
 
   std::unordered_map<int, std::set<size_t>> completed_receiver_tracking;
   std::mutex tracking_mutex;
@@ -863,6 +1146,13 @@ void TRDispatcher::send_tr_from_hdf5file() {
                 after_sender - before_sender);
       });
 
+  // On the first dispatch after each start/restart, wait for ZMQ SUB sockets
+  // to reconnect before publishing.  One-time cost; cleared immediately.
+  if (m_pub_warmup_needed.exchange(false)) {
+    TLOG() << "TRD: kPubSub warmup wait (200 ms) for subscriber reconnection";
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  }
+
   TLOG_DEBUG(7) << "Starting publish threads";
   std::for_each(
       std::execution::par_unseq, std::begin(trdispatchers),
@@ -876,7 +1166,6 @@ void TRDispatcher::send_tr_from_hdf5file() {
           bool all_sends_ok = true;
 
           std::ostringstream oss;
-          std::this_thread::sleep_for(100ms);
           while (!complete_received) {
             TLOG() << "Sender message: trigger record";
 
@@ -928,14 +1217,15 @@ void TRDispatcher::send_tr_from_hdf5file() {
                 } catch (const std::exception &e) {
                   TLOG() << "try_send failed for trigger record " << rid.first
                          << "," << rid.second << ": " << e.what()
-                         << " — will not mark source file as transferred.";
+                         << " — will not mark source file as "
+                            "transferred.";
                   all_sends_ok = false;
                 }
               } catch (const std::exception &e) {
-                TLOG()
-                    << "get_trigger_record failed for rid " << rid.first << ","
-                    << rid.second << ": " << e.what()
-                    << " — skipping this TR, will not mark file transferred.";
+                TLOG() << "get_trigger_record failed for rid " << rid.first
+                       << "," << rid.second << ": " << e.what()
+                       << " — skipping this TR, will not mark "
+                          "file transferred.";
                 all_sends_ok = false;
               }
             }
@@ -955,106 +1245,9 @@ void TRDispatcher::send_tr_from_hdf5file() {
             break;
           } // while loop
 
-          // Gate WriteJSON on FRW write-result confirmation (bookkeeping2).
-          // If bookkeeping2 is not configured, fall back to send-success flag.
-          bool write_confirmed = false;
-
-          if (!m_cx.bk_inputs.empty()) {
-            auto bk_receiver =
-                dunedaq::get_iom_receiver<dunedaq::datafilter::BookKeeping>(
-                    m_cx.bk_inputs.front());
-
-            std::mutex conf_mutex;
-            std::string received_status;
-            std::atomic<bool> got_reply{false};
-
-            std::function<void(dunedaq::datafilter::BookKeeping)> conf_cb =
-                [&](dunedaq::datafilter::BookKeeping bk) {
-                  if (bk.from_id == "FilterResultWriter") {
-                    std::lock_guard<std::mutex> lk(conf_mutex);
-                    received_status = bk.tr_status;
-                    got_reply.store(true);
-                  }
-                };
-
-            bk_receiver->add_callback(conf_cb);
-
-            // Wait up to 300 s for FRW to finish writing.
-            // FRW loops through receive_tr_single_connection() calls; the first
-            // call that actually handles the file can take up to ~2 min before
-            // sending its final BK, so 120 s was too tight.
-            const auto deadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds(300);
-            while (!got_reply.load() &&
-                   std::chrono::steady_clock::now() < deadline) {
-              std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            }
-
-            bk_receiver->remove_callback();
-
-            std::string status_copy;
-            {
-              std::lock_guard<std::mutex> lk(conf_mutex);
-              status_copy = received_status;
-            }
-
-            if (got_reply.load() &&
-                status_copy ==
-                    dunedaq::datafilter::to_string(TRStatus::kReRecorded)) {
-              write_confirmed = true;
-            } else {
-              TLOG() << "TRD: FRW confirmation for " << m_input_h5_filename
-                     << " — status='" << status_copy
-                     << "' timeout=" << !got_reply.load()
-                     << " — WriteJSON skipped; file will be retried.";
-            }
-          } else {
-            // No bookkeeping2 configured: fall back to whether sends succeeded
-            write_confirmed = all_sends_ok;
-            TLOG() << "TRD: no bk_inputs (bookkeeping2) configured; using"
-                      " send-success as WriteJSON gate.";
-          }
-
-          if (write_confirmed) {
-            dunedaq::datafilter::HDF5FromStorage s(m_storage_pathname,
-                                                   m_json_file);
-            s.WriteJSON(m_input_h5_filename);
-          } else {
-            TLOG() << "WriteJSON skipped for " << m_input_h5_filename
-                   << " — will retry on next scan cycle.";
-          }
-
-          // send book keeping info after the TR is tranfered.
-          TLOG() << "Send bookkeeping info to datafilter server";
-          bk_info.file_send_status = "send";
-          // Reflect actual write outcome: kReRecorded if FRW confirmed all
-          // TRs written, kWriteFailed if storage was full or timeout.
-          bk_info.tr_status = write_confirmed
-                                  ? to_string(TRStatus::kReRecorded)
-                                  : to_string(TRStatus::kWriteFailed);
-          bk_info.run_number = m_run_number;
-          TLOG() << "run number from trdispatcher " << m_run_number;
-          bk_info.tr_header_info.push_back(
-              {"run number", std::to_string(m_run_number)});
-          bk_info.tr_header_info.push_back(
-              {"trigger number", std::to_string(m_trigger_number)});
-          // Assign rather than push_back: the initial s_no_block send does not
-          // consume the move, so file_send_list may already contain the entry.
-          bk_info.file_send_list = {m_input_h5_filename};
-
-          auto bookkeeping_sender =
-              dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
-                  m_bk_connection_o);
-          //// SERIALIZE
-          // auto bk_bytes = dunedaq::serialization::serialize(
-          //     bk_info, dunedaq::serialization::kJSON);
-          //// DESERIALIZE
-          // auto bk_deserialized =
-          //     dunedaq::serialization::deserialize<
-          //         dunedaq::datafilter::BookKeeping_json>(
-          //         bk_bytes);
-
-          bookkeeping_sender->send(std::move(bk_info), Sender::s_block);
+          TLOG() << "TRD: HDF5 TR send thread done for " << m_input_h5_filename
+                 << " (seq=" << h5_bk_seq << ")";
+          ++info->messages_sent;
         }));
       });
 
@@ -1063,14 +1256,17 @@ void TRDispatcher::send_tr_from_hdf5file() {
     sender->send_thread->join();
     sender->send_thread.reset(nullptr);
   }
+  return true;
 }
 
 // Send TimeSlices from the same HDF5 file.
-void TRDispatcher::send_ts_from_hdf5file() {
+// Returns true if a BK waiter was registered (guard ownership transferred to
+// the always-on BK callback); false if the file was skipped.
+bool TRDispatcher::send_ts_from_hdf5file() {
   if (m_cx.ts_data_tx.empty()) {
     TLOG_DEBUG(7)
         << "No TimeSlice TX connections configured; skipping TS send.";
-    return;
+    return false;
   }
   m_tsdispatcher_id = m_cx.ts_data_tx.front();
 
@@ -1079,12 +1275,12 @@ void TRDispatcher::send_ts_from_hdf5file() {
     TLOG_DEBUG(7) << "File " << m_input_h5_filename
                   << " is not a TimeSlice file (record_type="
                   << h5_file.get_record_type() << "); skipping TS send.";
-    return;
+    return false;
   }
   auto ts_records = h5_file.get_all_timeslice_ids();
   if (ts_records.empty()) {
     TLOG_DEBUG(7) << "No TimeSlices in " << m_input_h5_filename;
-    return;
+    return false;
   }
 
   TLOG() << "Sending " << ts_records.size() << " TimeSlice(s) from "
@@ -1095,6 +1291,19 @@ void TRDispatcher::send_ts_from_hdf5file() {
   const size_t ts_run_number = h5_file.get_attribute<size_t>("run_number");
   const size_t ts_file_index = h5_file.get_attribute<size_t>("file_index");
 
+  const uint64_t ts_h5_bk_seq = m_bk_seq.fetch_add(1);
+  // Fully initialize before map insertion -- same race guard as TR path.
+  auto ts_h5_waiter = std::make_shared<CycleWaiter>();
+  ts_h5_waiter->is_hdf5_mode = true;
+  ts_h5_waiter->h5_filename = m_input_h5_filename;
+  ts_h5_waiter->storage_pathname = m_storage_pathname;
+  ts_h5_waiter->json_file = m_json_file;
+  ts_h5_waiter->file_send_list = {m_input_h5_filename};
+  {
+    std::lock_guard<std::mutex> lk(m_bk_waiters_mtx);
+    m_bk_waiters[ts_h5_bk_seq] = ts_h5_waiter;
+  }
+
   // Send initial BK (kAssignedToFilter) to open FRW's dispatch gate.
   if (!m_bk_connection_o.empty()) {
     dunedaq::datafilter::BookKeeping init_bk(m_bk_connection_o);
@@ -1103,6 +1312,9 @@ void TRDispatcher::send_ts_from_hdf5file() {
     init_bk.run_number = ts_run_number;
     init_bk.file_attributes_info.push_back(
         {"file_index", std::to_string(ts_file_index)});
+    init_bk.file_attributes_info.push_back({"record_type", "TS"});
+    init_bk.file_attributes_info.push_back(
+        {"trd_bk_seq", std::to_string(ts_h5_bk_seq)});
     init_bk.tr_header_info.push_back(
         {"record size", std::to_string(ts_records.size())});
     init_bk.file_send_list.push_back(m_input_h5_filename);
@@ -1111,8 +1323,9 @@ void TRDispatcher::send_ts_from_hdf5file() {
       auto bk_sender =
           dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
               m_bk_connection_o);
-      bk_sender->send(std::move(init_bk), Sender::s_no_block);
-      TLOG() << "send_ts_from_hdf5file: sent initial BK (kAssignedToFilter)";
+      bk_sender->send(std::move(init_bk), std::chrono::milliseconds(2000));
+      TLOG() << "send_ts_from_hdf5file: sent initial BK (seq=" << ts_h5_bk_seq
+             << ")";
     } catch (const std::exception &e) {
       TLOG() << "send_ts_from_hdf5file: initial BK send failed: " << e.what();
     }
@@ -1125,16 +1338,13 @@ void TRDispatcher::send_ts_from_hdf5file() {
           m_cx.tr_tracking_tx.front());
       dunedaq::datafilter::Handshake hs("next_ts");
       hs.total_tr = static_cast<int>(ts_records.size());
-      hs_sender->send(std::move(hs), Sender::s_no_block);
+      hs_sender->send(std::move(hs), Sender::s_block);
       TLOG() << "send_ts_from_hdf5file: sent next_ts total="
              << ts_records.size();
     } catch (const std::exception &e) {
       TLOG() << "send_ts_from_hdf5file: next_ts send failed: " << e.what();
     }
   }
-
-  // Allow BK chain to propagate before publishing on kPubSub.
-  std::this_thread::sleep_for(500ms);
 
   auto ts_sender = dunedaq::get_iom_sender<timeslice_ptr_t>(m_tsdispatcher_id);
 
@@ -1153,79 +1363,9 @@ void TRDispatcher::send_ts_from_hdf5file() {
 
   TLOG() << "TimeSlice send done for " << m_input_h5_filename;
 
-  // Wait for FRW's write confirmation forwarded by DF on bookkeeping2.
-  bool write_confirmed = false;
-  if (!m_cx.bk_inputs.empty()) {
-    auto bk_recv = dunedaq::get_iom_receiver<dunedaq::datafilter::BookKeeping>(
-        m_cx.bk_inputs.front());
-    std::string received_status;
-    std::mutex conf_mutex;
-    std::atomic<bool> got_reply{false};
-    std::function<void(dunedaq::datafilter::BookKeeping)> conf_cb =
-        [&](dunedaq::datafilter::BookKeeping bk) {
-          if (bk.from_id == "FilterResultWriter") {
-            std::lock_guard<std::mutex> lk(conf_mutex);
-            received_status = bk.tr_status;
-            got_reply.store(true);
-          }
-        };
-    bk_recv->add_callback(conf_cb);
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::seconds(300);
-    while (!got_reply.load() && std::chrono::steady_clock::now() < deadline)
-      std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    bk_recv->remove_callback();
-
-    std::string status_copy;
-    {
-      std::lock_guard<std::mutex> lk(conf_mutex);
-      status_copy = received_status;
-    }
-    if (got_reply.load() && status_copy == to_string(TRStatus::kReRecorded)) {
-      write_confirmed = true;
-    } else {
-      TLOG() << "TRD: TS confirmation for " << m_input_h5_filename
-             << " status='" << status_copy << "' timeout=" << !got_reply.load()
-             << " — WriteJSON skipped; file will be retried.";
-    }
-  } else {
-    write_confirmed = true;
-  }
-
-  if (write_confirmed) {
-    dunedaq::datafilter::HDF5FromStorage s(m_storage_pathname, m_json_file);
-    s.WriteJSON(m_input_h5_filename);
-    TLOG() << "send_ts_from_hdf5file: WriteJSON done for "
-           << m_input_h5_filename;
-  } else {
-    TLOG() << "send_ts_from_hdf5file: WriteJSON skipped for "
-           << m_input_h5_filename << " — will retry on next scan cycle.";
-  }
-
-  // Send final BK (kReRecorded) to DF — unblocks BookkeepingReceiver::stop().
-  if (!m_bk_connection_o.empty()) {
-    const auto final_status = write_confirmed
-                                  ? to_string(TRStatus::kReRecorded)
-                                  : to_string(TRStatus::kWriteFailed);
-    dunedaq::datafilter::BookKeeping final_bk(m_bk_connection_o);
-    final_bk.entry_id = tp2s(std::chrono::system_clock::now());
-    final_bk.from_id = "trdispatcher";
-    final_bk.file_send_status = "send";
-    final_bk.tr_status = final_status;
-    final_bk.run_number = ts_run_number;
-    final_bk.tr_header_info.push_back(
-        {"run number", std::to_string(ts_run_number)});
-    final_bk.file_send_list = {m_input_h5_filename};
-    try {
-      auto bk_sender =
-          dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
-              m_bk_connection_o);
-      bk_sender->send(std::move(final_bk), Sender::s_block);
-      TLOG() << "send_ts_from_hdf5file: sent final BK (" << final_status << ")";
-    } catch (const std::exception &e) {
-      TLOG() << "send_ts_from_hdf5file: final BK send failed: " << e.what();
-    }
-  }
+  TLOG() << "TRD: TS HDF5 send done for " << m_input_h5_filename
+         << " (seq=" << ts_h5_bk_seq << ")";
+  return true;
 }
 
 std::vector<std::filesystem::path> TRDispatcher::get_hdf5files_from_storage() {

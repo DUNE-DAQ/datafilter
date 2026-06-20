@@ -4,6 +4,7 @@
 #include "daqdataformats/TimeSlice.hpp"
 #include "daqdataformats/TriggerRecord.hpp"
 #include <memory>
+#include <thread>
 
 #include "iomanager/IOManager.hpp"
 #include "iomanager/Sender.hpp"
@@ -71,31 +72,31 @@ struct TRRewriterSink : DataFilterTRSink {
     const std::string &tx_uid = cx.tr_data_tx.front();
     TLOG() << "tx_uid " << tx_uid;
 
-    trigger_record_ptr_t tr_out = std::move(tr);
-    if (!tr_out) {
-      TLOG() << "send_tr(): NULL TriggerRecord, nothing to send";
-      return;
-    }
-
-    TLOG() << "TR rewriter send TR to FilterResultWriter";
+    // Always send write_tr ctrl (even for filtered/null TRs) so FRW receives
+    // the post-filter count immediately and does not wait for data that will
+    // never arrive.  m_tr_prebuf_rx is registered at do_conf() so no sleep is
+    // needed before publishing TR data.
     if (!cx.trwriter_ctrl.empty()) {
       const auto &ctrl_uid = cx.trwriter_ctrl.front();
-      TLOG() << "ctrl_uid " << ctrl_uid;
       try {
         dunedaq::datafilter::Handshake h("write_tr");
         h.total_tr = total_tr;
         m_ctrl_sender->send(std::move(h), std::chrono::milliseconds(1000));
         TLOG() << "TRRewriterSink: wrote ctrl 'write_tr' to " << ctrl_uid
                << " total_tr=" << total_tr;
-        // Give FRW time to receive ctrl and call add_callback on the kPubSub
-        // TR data channel before we publish.  Without this sleep the TR data
-        // arrives before FRW's subscriber is active and is silently dropped.
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
       } catch (const std::exception &e) {
         TLOG() << "TRRewriterSink: ctrl send failed on " << ctrl_uid << " : "
                << e.what();
       }
     }
+
+    trigger_record_ptr_t tr_out = std::move(tr);
+    if (!tr_out) {
+      TLOG() << "send_tr(): NULL TriggerRecord (filtered), write_tr already sent";
+      return;
+    }
+
+    TLOG() << "TR rewriter send TR to FilterResultWriter";
 
     // Send the TR
     if (cx.tr_data_tx.empty()) {
@@ -112,6 +113,12 @@ struct TRRewriterSink : DataFilterTRSink {
       TLOG() << "TRRewriterSink: ERROR sending TR on " << tx_uid << " : "
              << e.what();
     }
+// Pace burst sends to prevent ZMQ PUB/SUB drops on cold start
+    static std::atomic<bool> first_tr_send{true};
+    if (first_tr_send.exchange(false))
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    else
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     const auto t1 = clock::now();
     const double s =
@@ -214,7 +221,6 @@ struct TSRewriterSink : DataFilterTSSink {
         h.total_tr = static_cast<int>(total_ts);
         m_ctrl_sender->send(std::move(h), std::chrono::seconds(15));
         TLOG() << "TSRewriterSink: sent write_ts ctrl total_ts=" << total_ts;
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
       } catch (const std::exception &e) {
         TLOG() << "TSRewriterSink: ctrl send failed: " << e.what();
       }
@@ -233,6 +239,8 @@ struct TSRewriterSink : DataFilterTSSink {
       TLOG() << "TSRewriterSink: ERROR sending TS on " << m_data_uid << " : "
              << e.what();
     }
+// Pace burst sends to prevent ZMQ PUB/SUB drops on cold start
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     const auto t1 = clock::now();
     const double s =

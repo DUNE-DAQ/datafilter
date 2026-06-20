@@ -13,10 +13,15 @@
 #define DATAFILTER_PLUGINS_TRDISPATCHER_HPP_
 
 #include <atomic>
+#include <condition_variable>
 #include <execution>
-#include <functional>
 #include <limits>
+#include <mutex>
+#include <queue>
 #include <string>
+#include <unordered_set>
+#include <unordered_set>
+#include <unordered_map>
 
 #include "appfwk/DAQModule.hpp"
 #include "confmodel/DaqApplication.hpp"
@@ -81,8 +86,8 @@ public:
   void init(std::shared_ptr<appfwk::ConfigurationManager>) override;
   void receive(DispatchMode mode);
 
-  void send_tr_from_hdf5file();
-  void send_ts_from_hdf5file();
+  bool send_tr_from_hdf5file();
+  bool send_ts_from_hdf5file();
   void send_tr();
   void send_ts();
   void get_from_storage();
@@ -115,6 +120,18 @@ private:
   void do_start(const data_t &);
   void do_stop(const data_t &);
   void do_work(std::atomic<bool> &running_flag);
+
+  // In-flight file tracking: prevents re-dispatching the same HDF5 file
+  // when WriteJSON is deferred to the BK callback (fire-and-forget).
+  std::unordered_set<std::string> m_in_flight_files;
+  std::mutex m_in_flight_mtx;
+  std::condition_variable m_in_flight_cv;
+
+  // Per-file write-fail backoff: after kWriteFailed the file is held here
+  // until the retry window expires (30 s) before being re-dispatched.
+  std::unordered_map<std::string,
+                     std::chrono::steady_clock::time_point> m_backoff_files;
+  mutable std::mutex m_backoff_mtx;
 
   // Threading
   dunedaq::utilities::WorkerThread m_thread;
@@ -154,10 +171,56 @@ private:
   const size_t components_per_record = element_count_tpc + element_count_pds +
                                        element_count_ta + element_count_tc;
 
+  // Always-on BK confirmation routing.  Registered in do_start() before
+  // get_from_storage(); each send_tr/ts call inserts a CycleWaiter keyed by
+  // trd_bk_seq and returns immediately.  The always-on BK callback sends
+  // the final BK and writes WriteJSON when FRW confirms.
+  struct CycleWaiter {
+    std::mutex              cv_mtx;
+    std::condition_variable cv;
+    std::atomic<bool>       got_reply{false};
+    std::vector<std::pair<std::string, std::string>> file_attrs;
+    // For deferred WriteJSON in HDF5 mode
+    bool        is_hdf5_mode{false};
+    std::string h5_filename;
+    std::string storage_pathname;
+    std::string json_file;
+    std::vector<std::string> file_send_list;
+  };
+  std::unordered_map<uint64_t, std::shared_ptr<CycleWaiter>> m_bk_waiters;
+  std::mutex m_bk_waiters_mtx;
+  std::atomic<uint64_t> m_bk_seq{0};
+  std::shared_ptr<ReceiverConcept<dunedaq::datafilter::BookKeeping>> m_bk_always_on_rx;
+
+  // Always-on prebuf for "next_tr"/"next_ts" requests on trdispatcher_req_rx.
+  // Replaces transient add_callback/remove_callback to prevent between-cycle drops.
+  std::queue<dunedaq::datafilter::Handshake> m_req_prebuf;
+  std::mutex                                 m_req_prebuf_mtx;
+  std::condition_variable                    m_req_prebuf_cv;
+  std::shared_ptr<ReceiverConcept<dunedaq::datafilter::Handshake>> m_req_rx;
+
   std::atomic<bool> m_keep_running{false};
+  // Two-phase barrier to solve lost-wakeup problem:
+  // 1. WorkerThread sets m_worker_ready=true BEFORE waiting on the barrier CV.
+  // 2. do_start() WAITS for m_worker_ready, then sets m_start_barrier, then NOTIFIES.
+  // This guarantees the notification is never lost.
+  std::atomic<bool> m_start_barrier{false};
+  std::atomic<bool> m_worker_ready{false};
+  // Set true in do_start(); cleared on first TR dispatch.  Gives ZMQ time to
+  // reconnect DF's SUB socket after a TRD restart before the first kPubSub
+  // publish.
+  std::atomic<bool> m_pub_warmup_needed{false};
+  // Pointer to the WorkerThread's running_flag; valid only during do_work().
+  // Used as the primary loop condition so the loop cannot exit before the
+  // framework calls stop_working_thread().  m_keep_running remains the
+  // wake-up signal for receive()'s prebuf wait.
+  std::atomic<bool>* m_running_flag{nullptr};
   bool m_is_from_storage = false;
   bool m_generate_trigger_record = false;
   bool m_generate_time_slice = false;
+  bool m_parallel_send{false};
+  uint32_t m_number_generated_events{0};
+  std::atomic<uint32_t> m_events_remaining{0};
   std::string m_json_file;
   std::string m_input_h5_filename;
   std::string m_output_h5_filename;
@@ -186,8 +249,6 @@ private:
   std::atomic<int> m_amount_since_last_call{0};
   std::atomic<uint64_t> m_tr_seq_num{0}; // counter for generated TR numbers
   std::atomic<uint64_t> m_ts_seq_num{0}; // counter for generated TS numbers
-
-  bool m_parallel_send{false}; // set from DAL: mdal->get_parallel_send()
 };
 
 } // namespace dunedaq::datafilter

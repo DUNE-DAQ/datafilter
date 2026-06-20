@@ -36,10 +36,12 @@ struct HDF5FromStorage {
         const auto now = std::filesystem::file_time_type::clock::now();
         const auto one_hour_ago = now - std::chrono::hours(1);
 
-        // Validate the storage path
+        // If the storage path does not exist (e.g. filesystem not yet mounted),
+        // skip the scan and leave all lists empty.  WriteJSON can still run.
         if (!std::filesystem::exists(daq_storage_path)) {
-            throw std::runtime_error("Storage path does not exist: " +
-                                     storage_pathname);
+            TLOG() << "HDF5FromStorage: storage path does not exist, skipping"
+                      " scan: " << storage_pathname;
+            return;
         }
 
         for (auto const& entry :
@@ -106,43 +108,21 @@ struct HDF5FromStorage {
     }
 
     void ReadJSON() {
-        constexpr int max_retries = 10;
-        constexpr int retry_delay_ms = 1000;
-        int attempts = 0;
-        bool file_ready = false;
-
-        // Check if file exists and is not empty
-        while (attempts < max_retries) {
-            if (std::filesystem::exists(json_file) ||
-                std::filesystem::file_size(json_file) > 0) {
-                try {
-                    std::ifstream test_file(json_file);
-                    if (test_file.peek() != std::ifstream::traits_type::eof()) {
-                        file_ready = true;
-                        break;
-                    }
-                } catch (...) {
-                    // Ignore any errors during initial check
-                }
-            }
-            attempts++;
-            TLOG() << "Waiting for JSON file... (attempt " << attempts << "/"
-                   << max_retries << ")" << '\n';
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(retry_delay_ms));
+        // If the JSON file does not exist or is empty, start with an empty
+        // transfer list.  This is safe on a fresh or remounted filesystem --
+        // WriteJSON will create the file on the first successful write.
+        if (!std::filesystem::exists(json_file)) {
+            TLOG() << "HDF5FromStorage: JSON file not found, starting with"
+                      " empty transfer list: " << json_file;
+            return;
         }
 
-        if (!file_ready) {
-            throw std::runtime_error("Timeout waiting for JSON file: " +
-                                     json_file);
-        }
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-        //  Open the JSON file
         std::ifstream file_in(json_file);
-        if (!file_in.is_open()) {
-            throw std::runtime_error("Failed to open JSON file: " + json_file);
+        if (!file_in.is_open() ||
+            file_in.peek() == std::ifstream::traits_type::eof()) {
+            TLOG() << "HDF5FromStorage: JSON file empty or unreadable,"
+                      " starting fresh: " << json_file;
+            return;
         }
 
         try {
@@ -193,10 +173,8 @@ struct HDF5FromStorage {
                             hdf5_files_already_transfer.end()),
                 hdf5_files_already_transfer.end());
         } catch (const nlohmann::json::exception& e) {
-            // Handle JSON parsing errors
-            TLOG_DEBUG(7) << "JSON parsing error: " << e.what() << '\n';
-            throw std::runtime_error("Failed to parse JSON file: " +
-                                     std::string(e.what()));
+            TLOG() << "HDF5FromStorage: JSON parse error, starting fresh: " << e.what();
+            hdf5_files_already_transfer.clear();
         }
     }
     void WriteJSON(const std::string& filepath) {
@@ -206,17 +184,24 @@ struct HDF5FromStorage {
             std::string filename =
                 path_obj.filename().string();  // e.g., "file1.hdf5"
 
-            // Open the JSON file for reading
-            std::ifstream file_in(json_file);
-            if (!file_in.is_open()) {
-                throw std::runtime_error(
-                    "Failed to open JSON file for reading: " + json_file);
-            }
-
-            // Parse the existing JSON data
+            // Read and parse the existing JSON data.  If the file is absent
+            // or empty (e.g. fresh mount), start from an empty array so
+            // WriteJSON can still record the file and unblock the retry loop.
             nlohmann::json json_data;
-            file_in >> json_data;
-            file_in.close();
+            std::ifstream file_in(json_file);
+            if (!file_in.is_open() ||
+                file_in.peek() == std::ifstream::traits_type::eof()) {
+                json_data["hdf5_files"] = nlohmann::json::array();
+            } else {
+                try {
+                    file_in >> json_data;
+                } catch (const std::exception& e) {
+                    TLOG() << "HDF5FromStorage: WriteJSON JSON parse error, resetting: "
+                           << e.what();
+                    json_data["hdf5_files"] = nlohmann::json::array();
+                }
+                file_in.close();
+            }
 
             // Check if the "hdf5_files" key exists
             if (!json_data.contains("hdf5_files")) {
@@ -226,8 +211,8 @@ struct HDF5FromStorage {
 
             // Validate that "hdf5_files" is an array
             if (!json_data["hdf5_files"].is_array()) {
-                throw std::runtime_error(
-                    "Expected 'hdf5_files' to be an array in JSON file.");
+                TLOG() << "HDF5FromStorage: 'hdf5_files' is not an array, resetting.";
+                json_data["hdf5_files"] = nlohmann::json::array();
             }
 
             // Check if the filename already exists in the JSON data
@@ -285,9 +270,7 @@ struct HDF5FromStorage {
                     << '\n';
             }
         } catch (const std::exception& e) {
-            // Handle errors
-            TLOG_DEBUG(7) << "Failed to write JSON file: " << e.what() << '\n';
-            throw;
+            TLOG() << "HDF5FromStorage: WriteJSON error (not re-thrown): " << e.what();
         }
     }
 

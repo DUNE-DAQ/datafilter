@@ -32,6 +32,7 @@
 #include "opmonlib/TestOpMonManager.hpp"
 // #include "serialization/Serialization.hpp"
 #include "utilities/WorkerThread.hpp"
+#include "datafilter/transfer_info.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -84,8 +85,8 @@ public:
   std::string generate_hdf5file_pathname(std::string file_pathname_prefix,
                                          int run_number, int file_index,
                                          int trigger_number);
-  void receive_tr_single_connection();
-  void receive_ts_single_connection();
+  void receive_tr_single_connection(uint64_t df_cycle_id = UINT64_MAX, uint64_t trd_bk_seq = UINT64_MAX, int total_tr = 1);
+  void receive_ts_single_connection(uint64_t df_cycle_id = UINT64_MAX, uint64_t trd_bk_seq = UINT64_MAX);
   void send_next_tr();
   void receive_attrs_test();
   void start_receive_attrs_test_thread();
@@ -157,13 +158,23 @@ private:
   std::atomic<int64_t> m_total_amount{0};
   std::atomic<int> m_amount_since_last_call{0};
 
-  // Gate: do_start() waits here until DF signals a new dispatch via
-  // bookkeeping1. Prevents receive_tr_single_connection() from looping and
-  // sending repeated kFileCompleted messages when there is no active pipeline
-  // cycle.
-  std::atomic<bool> m_dispatch_ready{false};
-  std::mutex m_dispatch_mutex;
-  std::condition_variable m_dispatch_cv;
+  TransferInfo m_tr_write_rate;
+  TransferInfo m_ts_write_rate;
+
+  // Each BK1 from DF produces one DispatchEntry, carrying record_type and
+  // df_cycle_id so the dispatch loop can spawn only the relevant thread and
+  // echo the cycle_id back in the final kFileCompleted BK.
+  struct DispatchEntry {
+    std::string record_type; // "TR" or "TS"
+    uint64_t    df_cycle_id{UINT64_MAX};
+    uint64_t    trd_bk_seq{UINT64_MAX};
+    unsigned    run_number{0};
+    int         file_index{0};
+    int         total_tr{1};
+  };
+  std::queue<DispatchEntry> m_dispatch_queue;
+  std::mutex                m_dispatch_mtx;
+  std::condition_variable   m_dispatch_cv;
 
   std::atomic<bool> m_running{false};
 
@@ -186,6 +197,13 @@ private:
   std::mutex m_write_tr_prebuf_mtx;
   std::condition_variable m_write_tr_prebuf_cv;
   std::shared_ptr<ReceiverConcept<dunedaq::datafilter::Handshake>> m_write_tr_ctrl_rx;
+
+  // Pre-buffer for write_ts control handshake on tswriter_ctrl (kSendRecv).
+  // Same always-on pattern as write_tr to avoid transient callback races.
+  std::queue<dunedaq::datafilter::Handshake> m_write_ts_prebuf;
+  std::mutex m_write_ts_prebuf_mtx;
+  std::condition_variable m_write_ts_prebuf_cv;
+  std::shared_ptr<ReceiverConcept<dunedaq::datafilter::Handshake>> m_write_ts_ctrl_rx;
 
   // for testing only, not used and to be removed.
   std::thread m_attrs_test_thread;

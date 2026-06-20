@@ -640,9 +640,11 @@
  <attr name="is_from_storage" type="bool" val="1"/>
  <attr name="input_h5_filename" type="string" val="np04hd_run024552_0011_dataflow0_datawriter_0_20240320T143503.hdf5"/>
  <attr name="json_file" type="string" val="hdf5_files_list.json"/>
- <attr name="generate_trigger_record" type="bool" val="1"/>
- <attr name="generate_time_slice" type="bool" val="1"/>
- <rel name="inputs">
+<attr name="generate_trigger_record" type="bool" val="0"/>
+  <attr name="generate_time_slice" type="bool" val="0"/>
+  <attr name="parallel_send" type="bool" val="1"/>
+  <attr name="number_generated_events" type="u32" val="1000"/>
+  <rel name="inputs">
   <ref class="NetworkConnection" id="TR_tracking0"/>
   <ref class="NetworkConnection" id="trdispatcher0"/>
   <ref class="NetworkConnection" id="TR_tracking1"/>

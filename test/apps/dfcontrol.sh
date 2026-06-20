@@ -2,6 +2,7 @@
 # dfcontrol.sh -- manage the DataFilter V5 
 #
 # Usage:
+#   dfcontrol.sh build              -- build all four apps
 #   dfcontrol.sh start              -- start all four apps
 #   dfcontrol.sh stop               -- graceful stop all apps (SIGTERM, fallback SIGKILL)
 #   dfcontrol.sh restart            -- stop then start all apps
@@ -174,6 +175,9 @@ do_status() {
     done
 }
 
+do_build(){
+    dbt-build
+}
 do_monitor() {
     if ! command -v tmux &>/dev/null; then
         echo "tmux not found -- tailing all logs (interleaved):"
@@ -407,6 +411,7 @@ case "$cmd" in
     stop|kill)    do_stop  "${resolved_keys[@]}" ;;
     restart)      do_stop "${resolved_keys[@]}"; sleep 1; do_start "${resolved_keys[@]}" ;;
     status)       do_status ;;
+    build)        do_build ;;
     monitor)      do_monitor ;;
     *)
         echo "Usage: $0 {start|stop|restart|status|monitor|supervise} [app...]"
