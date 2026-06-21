@@ -61,6 +61,20 @@ declare -A LABEL=( [frw]=filterresultwriter [fo]=filterorchestrator [trd]=trdisp
 # start order (FRW/FO bind sockets first; TRD before DF so PUB socket is ready)
 START_ORDER=(frw fo trd df)
 
+# NetworkConnection id whose address (tcp://HOST:PORT) gives each app's host
+declare -A CONN_ID=( [frw]=trwriter0 [fo]=FO_ctrl0 [trd]=trdispatcher0 [df]=conn_A1_G0_C0_ )
+OKS_DATA_XML="$SCRIPT_DIR/../config/dfSession.data.xml"
+
+# Use supervisord if both supervisord and supervisorctl are available
+USE_SUPERVISORD=0
+if command -v supervisord &>/dev/null && command -v supervisorctl &>/dev/null; then
+    USE_SUPERVISORD=1
+fi
+SUPERVISORD_CONF="$SCRIPT_DIR/supervisord.conf"
+SUPERVISORD_SOCK="/tmp/datafilter-supervisor.sock"
+SUPERVISORD_PID="/tmp/datafilter-supervisord.pid"
+SUPERVISE_PID_FILE="/tmp/datafilter-supervise.pid"
+
 # Map user-friendly name (trdispatcher, df, datafilter, ...) to internal key
 resolve_key() {
     case "$1" in
@@ -72,7 +86,40 @@ resolve_key() {
     esac
 }
 
-pid_file() { echo "$PID_DIR/${1}.pid"; }
+pid_file()  { echo "$PID_DIR/${1}.pid"; }
+host_file() { echo "$PID_DIR/${1}.host"; }
+
+_is_local() {
+    local h="$1"
+    [ -z "$h" ] || [ "$h" = "localhost" ] || [ "$h" = "127.0.0.1" ] || \
+    [ "$h" = "$(hostname -s 2>/dev/null)" ] || [ "$h" = "$(hostname -f 2>/dev/null)" ]
+}
+
+_remote_alive() {
+    local host="$1" pid="$2"
+    [ -n "$pid" ] || return 1
+    if _is_local "$host"; then
+        kill -0 "$pid" 2>/dev/null
+    else
+        ssh "$host" "kill -0 $pid" 2>/dev/null
+    fi
+}
+
+# Extract host from tcp://HOST:PORT address of the app's canonical NetworkConnection.
+get_app_host() {
+    local key="$1"
+    python3 -c "
+import xml.etree.ElementTree as ET, re, sys
+root = ET.parse('$OKS_DATA_XML').getroot()
+cid = '${CONN_ID[$key]}'
+for obj in root.findall(\"obj[@class='NetworkConnection'][@id='\" + cid + \"']\"):
+    a = obj.find(\"attr[@name='address']\")
+    if a is not None:
+        m = re.match(r'tcp://([^:]+):', a.get('val', ''))
+        if m: print(m.group(1)); sys.exit(0)
+print('localhost')
+" 2>/dev/null || echo "localhost"
+}
 
 # max log archives to keep per app
 declare -A LOG_KEEP=( [frw]=20 [df]=20 [trd]=5 [fo]=5 )
@@ -91,49 +138,57 @@ rotate_log() {
 
 start_one() {
     local key="$1"
+    local host; host=$(get_app_host "$key")
     local pf; pf="$(pid_file "$key")"
-    if [ -f "$pf" ] && kill -0 "$(cat "$pf")" 2>/dev/null; then
-        echo "  $key already running (PID $(cat "$pf"))"
+    local hf; hf="$(host_file "$key")"
+    if [ -f "$pf" ] && _remote_alive "$host" "$(cat "$pf" 2>/dev/null)"; then
+        echo "  $key already running (PID $(cat "$pf") on ${host})"
         return
     fi
     mkdir -p "$LOG_DIR" "$PID_DIR"
     rotate_log "$key"
     local logfile="$LOG_DIR/${key}.log"
-    "$BUILD_DIR/${BIN[$key]}" \
-        -n "${APP[$key]}" -s "$SESSION" -x "$OKS_CFG" \
-        > "$logfile" 2>&1 &
-    local pid=$!
+    local cmd="\"$BUILD_DIR/${BIN[$key]}\" -n \"${APP[$key]}\" -s \"$SESSION\" -x \"$OKS_CFG\""
+    local pid
+    if _is_local "$host"; then
+        eval "$cmd > \"$logfile\" 2>&1 &"
+        pid=$!
+    else
+        pid=$(ssh "$host" "bash -c '$cmd > \"$logfile\" 2>&1 & echo \$!'")
+    fi
     echo "$pid" > "$pf"
-    echo "  started ${BIN[$key]} as ${APP[$key]}  PID=$pid  log=$logfile"
+    echo "$host" > "$hf"
+    echo "  started ${BIN[$key]} as ${APP[$key]} on ${host}  PID=$pid  log=$logfile"
 }
 
 stop_one() {
     local key="$1"
     local pf; pf="$(pid_file "$key")"
-    local pid
-    if [ -f "$pf" ]; then
-        pid=$(cat "$pf")
-    else
-        # fallback: find by binary label
-        pid=$(pgrep -f "${LABEL[$key]}" 2>/dev/null | head -1)
-    fi
-    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+    local hf; hf="$(host_file "$key")"
+    local host="" pid=""
+    [ -f "$hf" ] && host=$(cat "$hf")
+    [ -f "$pf" ] && pid=$(cat "$pf")
+    if [ -z "$pid" ] || ! _remote_alive "$host" "$pid"; then
         echo "  ${key} not running"
-        rm -f "$pf"
+        rm -f "$pf" "$hf"
         return
     fi
-    echo "  stopping ${key} (PID $pid)..."
-    kill -TERM "$pid"
-    local deadline=$(( $(date +%s) + 10 ))
-    while kill -0 "$pid" 2>/dev/null; do
-        if [ "$(date +%s)" -ge "$deadline" ]; then
-            echo "  timeout -- force-killing ${key} (PID $pid)"
-            kill -9 "$pid" 2>/dev/null
-            break
-        fi
-        sleep 0.3
-    done
-    rm -f "$pf"
+    echo "  stopping ${key} (PID $pid on ${host:-localhost})..."
+    if _is_local "$host"; then
+        kill -TERM "$pid"
+        local deadline=$(( $(date +%s) + 10 ))
+        while kill -0 "$pid" 2>/dev/null; do
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "  timeout -- force-killing ${key} (PID $pid)"
+                kill -9 "$pid" 2>/dev/null
+                break
+            fi
+            sleep 0.3
+        done
+    else
+        ssh "$host" "kill -TERM $pid; sleep 5; kill -0 $pid 2>/dev/null && kill -9 $pid 2>/dev/null; true"
+    fi
+    rm -f "$pf" "$hf"
     echo "  ${key} stopped"
 }
 
@@ -163,12 +218,15 @@ do_stop() {
 do_status() {
     for k in "${START_ORDER[@]}"; do
         local pf; pf="$(pid_file "$k")"
-        local pid=""
+        local hf; hf="$(host_file "$k")"
+        local pid="" host=""
         [ -f "$pf" ] && pid=$(cat "$pf")
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            echo "  RUNNING  ${k} (${BIN[$k]})  PID=$pid"
+        [ -f "$hf" ] && host=$(cat "$hf")
+        host="${host:-localhost}"
+        if [ -n "$pid" ] && _remote_alive "$host" "$pid"; then
+            echo "  RUNNING  ${k} (${BIN[$k]})  PID=$pid  host=$host"
         elif [ -n "$pid" ]; then
-            echo "  DEAD     ${k} (${BIN[$k]})  PID=$pid (stale)"
+            echo "  DEAD     ${k} (${BIN[$k]})  PID=$pid  host=$host (stale)"
         else
             echo "  STOPPED  ${k} (${BIN[$k]})"
         fi
@@ -210,6 +268,105 @@ do_monitor() {
 
     tmux select-pane -t "$sn:0.0"
     tmux attach-session -t "$sn"
+}
+
+# --- supervisord integration ---
+
+generate_supervisord_conf() {
+    mkdir -p "$LOG_DIR"
+    cat > "$SUPERVISORD_CONF" <<EOF
+[unix_http_server]
+file=$SUPERVISORD_SOCK
+
+[supervisord]
+logfile=$LOG_DIR/supervisord.log
+pidfile=$SUPERVISORD_PID
+nodaemon=false
+
+[rpcinterface:supervisor]
+supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
+
+[supervisorctl]
+serverurl=unix://$SUPERVISORD_SOCK
+
+[program:frw]
+command=$BUILD_DIR/${BIN[frw]} -n ${APP[frw]} -s $SESSION -x $OKS_CFG
+directory=$SCRIPT_DIR
+autostart=false
+autorestart=true
+priority=10
+stdout_logfile=$LOG_DIR/frw.log
+redirect_stderr=true
+
+[program:fo]
+command=$BUILD_DIR/${BIN[fo]} -n ${APP[fo]} -s $SESSION -x $OKS_CFG
+directory=$SCRIPT_DIR
+autostart=false
+autorestart=true
+priority=20
+stdout_logfile=$LOG_DIR/fo.log
+redirect_stderr=true
+
+[program:trd]
+command=$BUILD_DIR/${BIN[trd]} -n ${APP[trd]} -s $SESSION -x $OKS_CFG
+directory=$SCRIPT_DIR
+autostart=false
+autorestart=true
+priority=30
+stdout_logfile=$LOG_DIR/trd.log
+redirect_stderr=true
+
+[program:df]
+command=$BUILD_DIR/${BIN[df]} -n ${APP[df]} -s $SESSION -x $OKS_CFG
+directory=$SCRIPT_DIR
+autostart=false
+autorestart=true
+priority=40
+stdout_logfile=$LOG_DIR/df.log
+redirect_stderr=true
+EOF
+    echo "supervisord config written to $SUPERVISORD_CONF"
+}
+
+_supervisord_running() {
+    [ -f "$SUPERVISORD_PID" ] && kill -0 "$(cat "$SUPERVISORD_PID")" 2>/dev/null
+}
+
+do_start_supervisord() {
+    cd "$SCRIPT_DIR" || { echo "Cannot cd to $SCRIPT_DIR"; exit 1; }
+    generate_supervisord_conf
+    if ! _supervisord_running; then
+        supervisord -c "$SUPERVISORD_CONF"
+        sleep 1
+    fi
+    for key in "${START_ORDER[@]}"; do
+        supervisorctl -c "$SUPERVISORD_CONF" start "$key"
+        sleep 0.4
+    done
+}
+
+do_stop_supervisord() {
+    if ! _supervisord_running; then
+        echo "supervisord is not running"
+        return
+    fi
+    supervisorctl -c "$SUPERVISORD_CONF" stop all
+    supervisorctl -c "$SUPERVISORD_CONF" shutdown
+}
+
+do_status_supervisord() {
+    if ! _supervisord_running; then
+        echo "supervisord is not running"
+        return
+    fi
+    for k in "${START_ORDER[@]}"; do
+        local hf; hf="$(host_file "$k")"
+        local host="localhost"
+        [ -f "$hf" ] && host=$(cat "$hf")
+        local state
+        state=$(supervisorctl -c "$SUPERVISORD_CONF" status "$k" 2>/dev/null | awk '{print $2}')
+        printf "  %-8s %s (%s)  host=%s\n" "${state:-UNKNOWN}" "$k" "${BIN[$k]}" "$host"
+    done
 }
 
 # --- supervise: auto-restart crashed apps ---
@@ -285,10 +442,11 @@ restart_count() {
 # 0=alive, 1=PID file present but process dead, 2=PID file absent (user-stopped)
 app_pid_alive() {
     local key="$1" pf pid
-    pf="$(pid_file "$key")"
-    if [ ! -f "$pf" ]; then return 2; fi
+    pf="$(pid_file "$key")"; hf="$(host_file "$key")"
+    [ -f "$pf" ] || return 2
     pid=$(cat "$pf" 2>/dev/null)
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then return 0; fi
+    host=""; [ -f "$hf" ] && host=$(cat "$hf")
+    [ -n "$pid" ] && _remote_alive "$host" "$pid" && return 0
     return 1
 }
 
@@ -365,11 +523,12 @@ supervise_one_cycle() {
     done
 }
 
-cmd_supervise() {
+_cmd_supervise_inhouse() {
     parse_supervise_args "$@"
     mkdir -p "$LOG_DIR" "$PID_DIR"
     cd "$SCRIPT_DIR" || { echo "Cannot cd to $SCRIPT_DIR"; exit 1; }
     rotate_supervise_log
+    echo "$$" > "$SUPERVISE_PID_FILE"
     local k
     for k in "${!SUP_WATCH[@]}"; do
         SUP_BACKOFF[$k]=1
@@ -377,12 +536,52 @@ cmd_supervise() {
         SUP_LAST_START[$k]=0
         SUP_LAST_STATE[$k]=""
     done
-    trap 'sup_log "supervisor exiting (apps left running)"; exit 0' INT TERM
+    trap 'sup_log "supervisor exiting (apps left running)"; rm -f "$SUPERVISE_PID_FILE"; exit 0' INT TERM
     sup_log "supervisor started; watching=${!SUP_WATCH[*]} interval=${SUPERVISE_INTERVAL}s max=${SUPERVISE_MAX_RESTARTS}/${SUPERVISE_WINDOW}s backoff_cap=${SUPERVISE_BACKOFF_MAX}s healthy_after=${SUPERVISE_HEALTHY_AFTER}s"
     while true; do
         supervise_one_cycle "$(date +%s)"
         sleep "$SUPERVISE_INTERVAL"
     done
+}
+
+do_stop_supervise() {
+    if _supervisord_running; then
+        supervisorctl -c "$SUPERVISORD_CONF" stop all
+        supervisorctl -c "$SUPERVISORD_CONF" shutdown
+        echo "supervisord stopped"
+    elif [ -f "$SUPERVISE_PID_FILE" ]; then
+        local pid; pid=$(cat "$SUPERVISE_PID_FILE")
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -TERM "$pid"
+            echo "supervise watchdog (PID $pid) stopped"
+        else
+            echo "supervise watchdog not running (stale PID file)"
+        fi
+        rm -f "$SUPERVISE_PID_FILE"
+    else
+        echo "no supervise watchdog running"
+    fi
+}
+
+cmd_supervise() {
+    if [ "$USE_SUPERVISORD" -eq 1 ]; then
+        cd "$SCRIPT_DIR" || { echo "Cannot cd to $SCRIPT_DIR"; exit 1; }
+        generate_supervisord_conf
+        if ! _supervisord_running; then
+            supervisord -c "$SUPERVISORD_CONF"
+            sleep 1   # wait for daemon socket to be ready
+        fi
+        for key in "${START_ORDER[@]}"; do
+            local host; host=$(get_app_host "$key")
+            stop_one "$key"   # hand over: stop direct instance if running
+            supervisorctl -c "$SUPERVISORD_CONF" start "$key"
+            echo "$host" > "$(host_file "$key")"
+            sleep 0.4
+        done
+        echo "supervisord managing apps. Use: supervisorctl -c $SUPERVISORD_CONF status"
+    else
+        _cmd_supervise_inhouse "$@"
+    fi
 }
 
 # --- main ---
@@ -391,7 +590,11 @@ shift || true
 
 # supervise uses --key=value flags, not bare app names; bypass the resolve loop
 if [ "$cmd" = "supervise" ]; then
-    cmd_supervise "$@"
+    if [ "${1:-}" = "stop" ]; then
+        do_stop_supervise
+    else
+        cmd_supervise "$@"
+    fi
     exit 0
 fi
 
@@ -408,9 +611,16 @@ done
 
 case "$cmd" in
     start)        do_start "${resolved_keys[@]}" ;;
-    stop|kill)    do_stop  "${resolved_keys[@]}" ;;
-    restart)      do_stop "${resolved_keys[@]}"; sleep 1; do_start "${resolved_keys[@]}" ;;
-    status)       do_status ;;
+    stop|kill)
+        if _supervisord_running; then do_stop_supervisord
+        else do_stop "${resolved_keys[@]}"; fi ;;
+    restart)
+        if _supervisord_running; then
+            supervisorctl -c "$SUPERVISORD_CONF" restart all
+        else do_stop "${resolved_keys[@]}"; sleep 1; do_start "${resolved_keys[@]}"; fi ;;
+    status)
+        if _supervisord_running; then do_status_supervisord
+        else do_status; fi ;;
     build)        do_build ;;
     monitor)      do_monitor ;;
     *)
@@ -420,9 +630,11 @@ case "$cmd" in
         echo
         echo "  supervise [--apps=df,frw,trd,fo] [--interval=2] [--max-restarts=3] \\"
         echo "            [--window=60] [--backoff-max=16] [--healthy-after=30]"
-        echo "    Foreground watchdog: restarts apps that crashed (PID file present,"
-        echo "    process dead). Apps you stopped via 'stop' are not restarted."
-        echo "    Ctrl+C exits the supervisor without stopping the apps."
+        echo "    Watchdog: restarts apps that crashed (PID file present, process dead)."
+        echo "    Uses supervisord if available, else in-house foreground loop."
+        echo "    Ctrl+C or 'dfcontrol.sh supervise stop' exits the watchdog."
+        echo "  supervise stop"
+        echo "    Stop the running watchdog (supervisord or in-house)."
         exit 1
         ;;
 esac

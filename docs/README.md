@@ -22,6 +22,9 @@ Open a terminals and run the apps from `test/apps/`,
 you need to run trdispatcher, filterorchestrator, datafilter2 and filterresultwriter:
 
 ```bash
+
+export DATAFILTER_WORK_DIR=/your/installation/path
+
 cd test/apps   # in each terminal
 
 # to build DF (if dfcontrol.sh is installed, use dfcontrol.sh, if not use ./dfcontrol.sh)
@@ -39,6 +42,10 @@ dfcontrol.sh stop
 # you can also start an individual app, for example trdispatcher (trd)
 
 dfcontrol.sh start trd # this is the short name. You can use the long name, trdispatcher if you want. 
+
+# if you want the apps to be supervise
+
+dfcontrol.sh supervise
 
 # you can monitor the logs and the outputs, tmux is required.
 
