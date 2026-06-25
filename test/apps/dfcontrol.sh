@@ -1,22 +1,34 @@
 #!/usr/bin/env bash
-# dfcontrol.sh -- manage the DataFilter V5 
+# dfcontrol.sh -- manage the DataFilter V5 pipeline
 #
-# Usage:
-#   dfcontrol.sh build              -- build all four apps
-#   dfcontrol.sh start              -- start all four apps
-#   dfcontrol.sh stop               -- graceful stop all apps (SIGTERM, fallback SIGKILL)
-#   dfcontrol.sh restart            -- stop then start all apps
-#   dfcontrol.sh status             -- show running/stopped state of each app
-#   dfcontrol.sh stop  trdispatcher -- stop only TRD (for restart with new files)
-#   dfcontrol.sh start trdispatcher -- start only TRD
-#   dfcontrol.sh monitor            -- tmux view: HDF5 output dir + 4 log tails
+# Commands:
+#   build                    -- build all four apps (dbt-build)
+#   start   [app...]         -- start all apps (or named subset) in order
+#   stop    [app...]         -- graceful stop (SIGTERM then SIGKILL after 10 s)
+#   restart [app...]         -- stop then start
+#   status                   -- show RUNNING/DEAD/STOPPED with PID and host
+#   log     [app...]         -- tail live logs (all apps if none named)
+#   monitor                  -- tmux split: HDF5 dir watch + 4 log tails
+#   supervise [--opts]       -- watchdog: restarts crashed apps
+#                               uses supervisord if available, else in-house loop
+#   supervise stop           -- stop the active watchdog
 #
-# The working directory (where hdf5_files_list.json lives) is resolved in order:
-#   1. DATAFILTER_WORK_DIR environment variable
-#   2. Default hardcoded path (if it exists)
-#   3. Current directory (pwd)
+# Apps:  frw (FilterResultWriter)  fo (FilterOrchestrator)
+#        trd (TRDispatcher)        df (DataFilter)
+# Full names and OKS app names are also accepted.
 #
-# BUILD_DIR is derived from WORK_DIR unless DATAFILTER_BUILD_DIR is set.
+# Environment:
+#   DATAFILTER_WORK_DIR      -- override default work dir
+#   DATAFILTER_BUILD_DIR     -- override build dir (default: WORK_DIR/build/datafilter/apps)
+#   DATAFILTER_OUTPUT_DIR    -- HDF5 output dir shown in monitor
+#   SSH_KEY                  -- private key for remote SSH
+#                               e.g. SSH_KEY=~/.ssh/id_ed25519 dfcontrol.sh start
+#   SETUP_SCRIPT             -- sourced on remote hosts to load the DUNE DAQ environment
+#                               default: WORK_DIR/env.sh
+#
+# Multi-host: each app's host is read from the tcp://HOST:PORT address of its
+# canonical NetworkConnection in test/config/dfSession.data.xml.
+# Passwordless SSH required; run 'dfcontrol.sh' with no args for setup instructions.
 
 DEFAULT_WORK_DIR="/lcg/storage19/test-area/fddaq-v5-work_dir"
 if [ -n "${DATAFILTER_WORK_DIR:-}" ]; then
@@ -75,6 +87,14 @@ SUPERVISORD_SOCK="/tmp/datafilter-supervisor.sock"
 SUPERVISORD_PID="/tmp/datafilter-supervisord.pid"
 SUPERVISE_PID_FILE="/tmp/datafilter-supervise.pid"
 
+# SSH_KEY: path to private key for remote operations; empty = agent/default
+SSH_KEY="${SSH_KEY:-}"
+# SETUP_SCRIPT: sourced on remote hosts to load the DUNE DAQ environment
+SETUP_SCRIPT="${SETUP_SCRIPT:-$WORK_DIR/env.sh}"
+# _SSH_OPTS: common flags for all ssh calls (avoids GSSAPI/hostbased consuming MaxAuthTries)
+_SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ControlMaster=no -o GSSAPIAuthentication=no -o HostbasedAuthentication=no -o BatchMode=yes"
+[ -n "$SSH_KEY" ] && _SSH_OPTS="$_SSH_OPTS -o IdentitiesOnly=yes -i $SSH_KEY"
+
 # Map user-friendly name (trdispatcher, df, datafilter, ...) to internal key
 resolve_key() {
     case "$1" in
@@ -92,7 +112,8 @@ host_file() { echo "$PID_DIR/${1}.host"; }
 _is_local() {
     local h="$1"
     [ -z "$h" ] || [ "$h" = "localhost" ] || [ "$h" = "127.0.0.1" ] || \
-    [ "$h" = "$(hostname -s 2>/dev/null)" ] || [ "$h" = "$(hostname -f 2>/dev/null)" ]
+    [ "$h" = "$(hostname -s 2>/dev/null)" ] || [ "$h" = "$(hostname -f 2>/dev/null)" ] || \
+    hostname -I 2>/dev/null | tr ' ' '\n' | grep -qFx "$h"
 }
 
 _remote_alive() {
@@ -101,7 +122,7 @@ _remote_alive() {
     if _is_local "$host"; then
         kill -0 "$pid" 2>/dev/null
     else
-        ssh "$host" "kill -0 $pid" 2>/dev/null
+        ssh $_SSH_OPTS "$host" "kill -0 $pid" 2>/dev/null
     fi
 }
 
@@ -154,7 +175,8 @@ start_one() {
         eval "$cmd > \"$logfile\" 2>&1 &"
         pid=$!
     else
-        pid=$(ssh "$host" "bash -c '$cmd > \"$logfile\" 2>&1 & echo \$!'")
+        local env_cmd="[ -f \"$SETUP_SCRIPT\" ] && source \"$SETUP_SCRIPT\" 2>/dev/null || true"
+        pid=$(ssh $_SSH_OPTS "$host" "bash -c '$env_cmd; $cmd > \"$logfile\" 2>&1 & echo \$!'")
     fi
     echo "$pid" > "$pf"
     echo "$host" > "$hf"
@@ -186,7 +208,7 @@ stop_one() {
             sleep 0.3
         done
     else
-        ssh "$host" "kill -TERM $pid; sleep 5; kill -0 $pid 2>/dev/null && kill -9 $pid 2>/dev/null; true"
+        ssh $_SSH_OPTS "$host" "kill -TERM $pid; sleep 5; kill -0 $pid 2>/dev/null && kill -9 $pid 2>/dev/null; true"
     fi
     rm -f "$pf" "$hf"
     echo "  ${key} stopped"
@@ -231,6 +253,17 @@ do_status() {
             echo "  STOPPED  ${k} (${BIN[$k]})"
         fi
     done
+}
+
+do_log() {
+    local keys=("$@")
+    [ ${#keys[@]} -eq 0 ] && keys=("${START_ORDER[@]}")
+    local files=()
+    for k in "${keys[@]}"; do
+        [ -f "$LOG_DIR/${k}.log" ] && files+=("$LOG_DIR/${k}.log")
+    done
+    [ ${#files[@]} -eq 0 ] && { echo "No log files found in $LOG_DIR"; return; }
+    tail -f "${files[@]}"
 }
 
 do_build(){
@@ -441,7 +474,7 @@ restart_count() {
 
 # 0=alive, 1=PID file present but process dead, 2=PID file absent (user-stopped)
 app_pid_alive() {
-    local key="$1" pf pid
+    local key="$1" pf pid host
     pf="$(pid_file "$key")"; hf="$(host_file "$key")"
     [ -f "$pf" ] || return 2
     pid=$(cat "$pf" 2>/dev/null)
@@ -566,6 +599,13 @@ do_stop_supervise() {
 cmd_supervise() {
     if [ "$USE_SUPERVISORD" -eq 1 ]; then
         cd "$SCRIPT_DIR" || { echo "Cannot cd to $SCRIPT_DIR"; exit 1; }
+        for key in "${START_ORDER[@]}"; do
+            local rhost; rhost=$(get_app_host "$key")
+            if ! _is_local "$rhost"; then
+                echo "WARNING: supervisord cannot manage remote apps ($key on $rhost)."
+                echo "  For multi-host deployments use: dfcontrol.sh supervise (in-house mode)"
+            fi
+        done
         generate_supervisord_conf
         if ! _supervisord_running; then
             supervisord -c "$SUPERVISORD_CONF"
@@ -621,20 +661,12 @@ case "$cmd" in
     status)
         if _supervisord_running; then do_status_supervisord
         else do_status; fi ;;
+    log)          do_log "${resolved_keys[@]}" ;;
     build)        do_build ;;
     monitor)      do_monitor ;;
     *)
-        echo "Usage: $0 {start|stop|restart|status|monitor|supervise} [app...]"
-        echo "  Apps: frw  fo  trd  df  (or full names like trdispatcher)"
-        echo "  Env:  DATAFILTER_WORK_DIR  DATAFILTER_BUILD_DIR  DATAFILTER_OUTPUT_DIR"
-        echo
-        echo "  supervise [--apps=df,frw,trd,fo] [--interval=2] [--max-restarts=3] \\"
-        echo "            [--window=60] [--backoff-max=16] [--healthy-after=30]"
-        echo "    Watchdog: restarts apps that crashed (PID file present, process dead)."
-        echo "    Uses supervisord if available, else in-house foreground loop."
-        echo "    Ctrl+C or 'dfcontrol.sh supervise stop' exits the watchdog."
-        echo "  supervise stop"
-        echo "    Stop the running watchdog (supervisord or in-house)."
+        awk 'NR==1{next} !/^#/{exit} {sub(/^# ?/,""); print}' \
+            "${BASH_SOURCE[0]}"
         exit 1
         ;;
 esac
