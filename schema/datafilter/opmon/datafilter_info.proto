@@ -6,6 +6,12 @@ message DataFilterInfo {
 
   uint64 total_amount = 1;
   uint32 amount_since_last_call = 2;
-    
+
+  // Per-bin counts of max_adc for WIBEth fragments, accumulated since the
+  // last publish. Bin i covers [i * HIST_BIN_WIDTH, (i+1) * HIST_BIN_WIDTH)
+  // of the 14-bit ADC range -- see DataFilterAlgothrims::HIST_BIN_WIDTH.
+  repeated uint32 accepted_adc_histogram = 3;
+  repeated uint32 rejected_adc_histogram = 4;
+
 }
 

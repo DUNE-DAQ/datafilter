@@ -21,6 +21,8 @@
 #   DATAFILTER_WORK_DIR      -- override default work dir
 #   DATAFILTER_BUILD_DIR     -- override build dir (default: WORK_DIR/build/datafilter/apps)
 #   DATAFILTER_OUTPUT_DIR    -- HDF5 output dir shown in monitor
+#   DATAFILTER_OKS_DATA_XML  -- override path to dfSession.data.xml
+#                               (default: WORK_DIR/sourcecode/datafilter/test/config/dfSession.data.xml)
 #   SSH_KEY                  -- private key for remote SSH
 #                               e.g. SSH_KEY=~/.ssh/id_ed25519 dfcontrol.sh start
 #   SETUP_SCRIPT             -- sourced on remote hosts to load the DUNE DAQ environment
@@ -29,6 +31,12 @@
 # Multi-host: each app's host is read from the tcp://HOST:PORT address of its
 # canonical NetworkConnection in test/config/dfSession.data.xml.
 # Passwordless SSH required; run 'dfcontrol.sh' with no args for setup instructions.
+#
+# (logs/ and bookkeeping_*.json land in the directory dfcontrol.sh is run from)
+
+# Directory the user invoked dfcontrol.sh from -- logs and bookkeeping JSON
+# output land here, so different runs can use separate scratch directories.
+INVOKE_DIR="$(pwd)"
 
 DEFAULT_WORK_DIR="/lcg/storage19/test-area/fddaq-v5-work_dir"
 if [ -n "${DATAFILTER_WORK_DIR:-}" ]; then
@@ -46,7 +54,7 @@ SESSION="test-session"
 OUTPUT_DIR="${DATAFILTER_OUTPUT_DIR:-/lcg/storage18/dune/chen}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOG_DIR="$SCRIPT_DIR/logs"
+LOG_DIR="$INVOKE_DIR/logs"
 PID_DIR="/tmp/datafilter-pids"
 
 # --- supervise defaults (overridable via supervise CLI flags) ---
@@ -75,7 +83,11 @@ START_ORDER=(frw fo trd df)
 
 # NetworkConnection id whose address (tcp://HOST:PORT) gives each app's host
 declare -A CONN_ID=( [frw]=trwriter0 [fo]=FO_ctrl0 [trd]=trdispatcher0 [df]=conn_A1_G0_C0_ )
-OKS_DATA_XML="$SCRIPT_DIR/../config/dfSession.data.xml"
+# WORK_DIR-relative, not SCRIPT_DIR-relative: dfSession.data.xml only ever lives
+# in the sourcecode tree (never installed), but SCRIPT_DIR varies depending on
+# whether this dfcontrol.sh copy is the sourcecode one or the installed one on
+# PATH -- WORK_DIR resolves identically either way.
+OKS_DATA_XML="${DATAFILTER_OKS_DATA_XML:-$WORK_DIR/sourcecode/datafilter/test/config/dfSession.data.xml}"
 
 # Use supervisord if both supervisord and supervisorctl are available
 USE_SUPERVISORD=0
@@ -176,7 +188,7 @@ start_one() {
         pid=$!
     else
         local env_cmd="[ -f \"$SETUP_SCRIPT\" ] && source \"$SETUP_SCRIPT\" 2>/dev/null || true"
-        pid=$(ssh $_SSH_OPTS "$host" "bash -c '$env_cmd; $cmd > \"$logfile\" 2>&1 & echo \$!'")
+        pid=$(ssh $_SSH_OPTS "$host" "bash -c 'cd \"$INVOKE_DIR\" 2>/dev/null || true; $env_cmd; $cmd > \"$logfile\" 2>&1 & echo \$!'")
     fi
     echo "$pid" > "$pf"
     echo "$host" > "$hf"
@@ -214,20 +226,86 @@ stop_one() {
     echo "  ${key} stopped"
 }
 
+# --- opmon-to-influx bridge (optional; enabled via OKS DataFilter.enable_opmon_influx) ---
+
+opmon_influx_pid_file() { echo "$PID_DIR/opmoninflux.pid"; }
+
+_opmon_influx_enabled() {
+    if [ ! -f "$OKS_DATA_XML" ]; then
+        echo "WARNING: OKS_DATA_XML not found at $OKS_DATA_XML -- treating opmon-influx as disabled" >&2
+        echo "0"
+        return
+    fi
+    python3 "$SCRIPT_DIR/opmon_to_influx.py" --oks-config "$OKS_DATA_XML" \
+        --app-id DataFilter_0 --check-enabled 2>/dev/null
+}
+
+start_opmon_influx() {
+    local pf; pf="$(opmon_influx_pid_file)"
+    if [ -f "$pf" ] && kill -0 "$(cat "$pf" 2>/dev/null)" 2>/dev/null; then
+        echo "  opmon-influx already running (PID $(cat "$pf"))"
+        return
+    fi
+    if [ "$(_opmon_influx_enabled)" != "1" ]; then
+        echo "  opmon-influx: disabled (DataFilter.enable_opmon_influx=false in OKS config)"
+        return
+    fi
+    mkdir -p "$LOG_DIR" "$PID_DIR"
+    rotate_log "opmoninflux"
+    local logfile="$LOG_DIR/opmoninflux.log"
+    python3 "$SCRIPT_DIR/opmon_to_influx.py" \
+        --oks-config "$OKS_DATA_XML" --app-id DataFilter_0 \
+        --file "$INVOKE_DIR/info.json" \
+        > "$logfile" 2>&1 &
+    local pid=$!
+    echo "$pid" > "$pf"
+    echo "  started opmon-influx bridge  PID=$pid  log=$logfile"
+}
+
+stop_opmon_influx() {
+    local pf; pf="$(opmon_influx_pid_file)"
+    local pid=""
+    [ -f "$pf" ] && pid=$(cat "$pf")
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
+        rm -f "$pf"
+        return
+    fi
+    echo "  stopping opmon-influx (PID $pid)..."
+    kill -TERM "$pid" 2>/dev/null
+    local deadline=$(( $(date +%s) + 10 ))
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ "$(date +%s)" -ge "$deadline" ]; then
+            kill -9 "$pid" 2>/dev/null
+            break
+        fi
+        sleep 0.3
+    done
+    rm -f "$pf"
+    echo "  opmon-influx stopped"
+}
+
 do_start() {
     local keys=("$@")
-    [ ${#keys[@]} -eq 0 ] && keys=("${START_ORDER[@]}")
-    cd "$SCRIPT_DIR" || { echo "Cannot cd to $SCRIPT_DIR"; exit 1; }
+    local start_extras=0
+    if [ ${#keys[@]} -eq 0 ]; then
+        keys=("${START_ORDER[@]}")
+        start_extras=1
+    fi
+    cd "$INVOKE_DIR" || { echo "Cannot cd to $INVOKE_DIR"; exit 1; }
     for k in "${keys[@]}"; do
         start_one "$k"
         # brief pause between apps so sockets bind before the next connects
         sleep 0.4
     done
+    # Only auto-manage the opmon-influx bridge on a full (no-args) start/stop,
+    # so named-subset commands stay surgical.
+    [ "$start_extras" -eq 1 ] && start_opmon_influx
 }
 
 do_stop() {
     local keys=("$@")
     if [ ${#keys[@]} -eq 0 ]; then
+        stop_opmon_influx
         # stop in reverse order
         for (( i=${#START_ORDER[@]}-1; i>=0; i-- )); do
             stop_one "${START_ORDER[$i]}"
@@ -253,6 +331,16 @@ do_status() {
             echo "  STOPPED  ${k} (${BIN[$k]})"
         fi
     done
+    # opmon-influx bridge is optional (OKS-gated); only show a line if it has
+    # ever been started, to avoid clutter when the feature is left disabled.
+    local oi_pf; oi_pf="$(opmon_influx_pid_file)"
+    local oi_pid=""
+    [ -f "$oi_pf" ] && oi_pid=$(cat "$oi_pf")
+    if [ -n "$oi_pid" ] && kill -0 "$oi_pid" 2>/dev/null; then
+        echo "  RUNNING  opmoninflux (opmon_to_influx.py)  PID=$oi_pid  host=localhost"
+    elif [ -n "$oi_pid" ]; then
+        echo "  DEAD     opmoninflux (opmon_to_influx.py)  PID=$oi_pid  host=localhost (stale)"
+    fi
 }
 
 do_log() {
@@ -324,7 +412,7 @@ serverurl=unix://$SUPERVISORD_SOCK
 
 [program:frw]
 command=$BUILD_DIR/${BIN[frw]} -n ${APP[frw]} -s $SESSION -x $OKS_CFG
-directory=$SCRIPT_DIR
+directory=$INVOKE_DIR
 autostart=false
 autorestart=true
 priority=10
@@ -333,7 +421,7 @@ redirect_stderr=true
 
 [program:fo]
 command=$BUILD_DIR/${BIN[fo]} -n ${APP[fo]} -s $SESSION -x $OKS_CFG
-directory=$SCRIPT_DIR
+directory=$INVOKE_DIR
 autostart=false
 autorestart=true
 priority=20
@@ -342,7 +430,7 @@ redirect_stderr=true
 
 [program:trd]
 command=$BUILD_DIR/${BIN[trd]} -n ${APP[trd]} -s $SESSION -x $OKS_CFG
-directory=$SCRIPT_DIR
+directory=$INVOKE_DIR
 autostart=false
 autorestart=true
 priority=30
@@ -351,7 +439,7 @@ redirect_stderr=true
 
 [program:df]
 command=$BUILD_DIR/${BIN[df]} -n ${APP[df]} -s $SESSION -x $OKS_CFG
-directory=$SCRIPT_DIR
+directory=$INVOKE_DIR
 autostart=false
 autorestart=true
 priority=40
@@ -366,7 +454,7 @@ _supervisord_running() {
 }
 
 do_start_supervisord() {
-    cd "$SCRIPT_DIR" || { echo "Cannot cd to $SCRIPT_DIR"; exit 1; }
+    cd "$INVOKE_DIR" || { echo "Cannot cd to $INVOKE_DIR"; exit 1; }
     generate_supervisord_conf
     if ! _supervisord_running; then
         supervisord -c "$SUPERVISORD_CONF"
@@ -559,7 +647,7 @@ supervise_one_cycle() {
 _cmd_supervise_inhouse() {
     parse_supervise_args "$@"
     mkdir -p "$LOG_DIR" "$PID_DIR"
-    cd "$SCRIPT_DIR" || { echo "Cannot cd to $SCRIPT_DIR"; exit 1; }
+    cd "$INVOKE_DIR" || { echo "Cannot cd to $INVOKE_DIR"; exit 1; }
     rotate_supervise_log
     echo "$$" > "$SUPERVISE_PID_FILE"
     local k
@@ -598,7 +686,7 @@ do_stop_supervise() {
 
 cmd_supervise() {
     if [ "$USE_SUPERVISORD" -eq 1 ]; then
-        cd "$SCRIPT_DIR" || { echo "Cannot cd to $SCRIPT_DIR"; exit 1; }
+        cd "$INVOKE_DIR" || { echo "Cannot cd to $INVOKE_DIR"; exit 1; }
         for key in "${START_ORDER[@]}"; do
             local rhost; rhost=$(get_app_host "$key")
             if ! _is_local "$rhost"; then

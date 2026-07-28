@@ -85,6 +85,15 @@ void DataFilter::generate_opmon_data() {
   opmon::DataFilterInfo info;
   info.set_total_amount(m_total_amount.load());
   info.set_amount_since_last_call(m_amount_since_last_call.exchange(0));
+
+  if (m_rx && m_rx->m_alg.enable_histogram) {
+    auto [accepted, rejected] = m_rx->m_alg.take_histograms();
+    for (auto v : accepted)
+      info.add_accepted_adc_histogram(v);
+    for (auto v : rejected)
+      info.add_rejected_adc_histogram(v);
+  }
+
   publish(std::move(info));
 }
 
@@ -119,7 +128,9 @@ void DataFilter::do_conf(const data_t &cfg) {
   m_datafilter_id = mdal->get_datafilter_id();
   const uint16_t adc_threshold =
       static_cast<uint16_t>(mdal->get_adc_threshold());
-  TLOG() << "DataFilter: adc_threshold=" << adc_threshold;
+  const bool enable_opmon_influx = mdal->get_enable_opmon_influx();
+  TLOG() << "DataFilter: adc_threshold=" << adc_threshold
+         << " enable_opmon_influx=" << enable_opmon_influx;
 
   // bookkeeping first
   m_bk = std::make_shared<dunedaq::datafilter::BookkeepingReceiver>(
@@ -153,6 +164,7 @@ void DataFilter::do_conf(const data_t &cfg) {
       std::make_unique<DataFilterReceiver>(m_connections, m_organiser, *m_bk,
                                            /* attach_tracking_inputs */ true);
   m_rx->m_alg.adc_threshold = adc_threshold;
+  m_rx->m_alg.enable_histogram = enable_opmon_influx;
 
   TLOG() << "DF Connections summary: "
          << "TR data inputs=" << m_rx->cx.tr_data_rx.size()

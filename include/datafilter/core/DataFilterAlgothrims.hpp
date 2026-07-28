@@ -15,9 +15,11 @@
 // ============================================================================
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -42,6 +44,35 @@ struct DataFilterAlgothrims {
   // A WIBEth fragment is KEPT if any channel/sample has ADC >= this value.
   // Set to 0 to keep all fragments (pass-through behaviour).
   uint16_t adc_threshold{0};
+
+  // To influx only true
+  bool enable_histogram{false};
+
+  // Histogram binning: fixed number of bins spanning the 14-bit ADC range
+  // [0, 16383]. Bump N_HIST_BINS to raise resolution if needed later.
+  static constexpr int N_HIST_BINS = 128;
+  static constexpr uint16_t MAX_ADC_14BIT = 16383;
+  static constexpr int HIST_BIN_WIDTH = (MAX_ADC_14BIT + 1) / N_HIST_BINS;
+
+  using histogram_t = std::array<uint32_t, N_HIST_BINS>;
+
+  // Accept/reject max_adc histograms, accumulated since the last
+  // take_histograms() call -- same reset-on-read pattern as opmon's
+  // "amount_since_last_call" counters. Written from the TR-processing
+  // thread, read from the opmon-timer thread, hence the mutex.
+  mutable std::mutex m_hist_mtx;
+  mutable histogram_t m_accepted_hist{};
+  mutable histogram_t m_rejected_hist{};
+
+  // Copies out and resets both histograms; call from generate_opmon_data().
+  std::pair<histogram_t, histogram_t> take_histograms() {
+    std::lock_guard<std::mutex> lk(m_hist_mtx);
+    auto accepted = m_accepted_hist;
+    auto rejected = m_rejected_hist;
+    m_accepted_hist.fill(0);
+    m_rejected_hist.fill(0);
+    return {accepted, rejected};
+  }
 
   // --------------------------------------------------------------------------
   // Entry point called by DataFilterReceiver for every incoming TR
@@ -75,8 +106,9 @@ struct DataFilterAlgothrims {
     // Policy: if the TR contains WIBEth fragments and ALL of them fail the ADC
     // threshold, drop the entire TR (including non-WIBEth payload fragments).
     // If there are no WIBEth fragments at all, keep the TR as-is.
-    std::vector<std::size_t> wibeth_keep;   // WIBEth indices that passed
-    std::vector<std::size_t> nonwibeth_idx; // non-WIBEth indices (kept if any WIBEth passes)
+    std::vector<std::size_t> wibeth_keep; // WIBEth indices that passed
+    std::vector<std::size_t>
+        nonwibeth_idx; // non-WIBEth indices (kept if any WIBEth passes)
     std::size_t n_wibeth = 0;
 
     for (std::size_t i = 0; i < frags.size(); ++i) {
@@ -90,9 +122,9 @@ struct DataFilterAlgothrims {
       const auto ftype = fptr->get_fragment_type();
       if (ftype != daqdataformats::FragmentType::kWIBEth) {
         TLOG_DEBUG(5) << "DataFilterAlgothrims: non-WIBEth fragment"
-               << " source_id=" << fptr->get_element_id()
-               << " fragment_type=" << static_cast<int>(ftype)
-               << " trigger=" << trig_num;
+                      << " source_id=" << fptr->get_element_id()
+                      << " fragment_type=" << static_cast<int>(ftype)
+                      << " trigger=" << trig_num;
         nonwibeth_idx.push_back(i);
         continue;
       }
@@ -119,8 +151,10 @@ struct DataFilterAlgothrims {
     // Build final keep list: passing WIBEth + non-WIBEth
     std::vector<std::size_t> keep_indices;
     keep_indices.reserve(wibeth_keep.size() + nonwibeth_idx.size());
-    keep_indices.insert(keep_indices.end(), wibeth_keep.begin(), wibeth_keep.end());
-    keep_indices.insert(keep_indices.end(), nonwibeth_idx.begin(), nonwibeth_idx.end());
+    keep_indices.insert(keep_indices.end(), wibeth_keep.begin(),
+                        wibeth_keep.end());
+    keep_indices.insert(keep_indices.end(), nonwibeth_idx.begin(),
+                        nonwibeth_idx.end());
 
     if (keep_indices.empty()) {
       TLOG() << "DataFilterAlgothrims: no fragments to keep for trigger="
@@ -163,6 +197,33 @@ private:
     const std::size_t n_frames = n_bytes / sizeof(WIBEthFrame);
     uint16_t max_adc = 0;
 
+    if (!enable_histogram) {
+      // Original fast path: early-exit as soon as the threshold is crossed.
+      // No histogram bookkeeping -- this is the only work done when the
+      // opmon-to-influx feature is disabled (the default).
+      for (std::size_t fi = 0; fi < n_frames; ++fi) {
+        const auto *frame = reinterpret_cast<const WIBEthFrame *>(
+            payload + fi * sizeof(WIBEthFrame));
+
+        for (int ch = 0; ch < WIBEthFrame::s_num_channels; ++ch) {
+          for (int sample = 0; sample < WIBEthFrame::s_time_samples_per_frame;
+               ++sample) {
+            const uint16_t adc = frame->get_adc(ch, sample);
+            if (adc > max_adc)
+              max_adc = adc;
+            if (max_adc >= adc_threshold)
+              return true; // early exit
+          }
+        }
+      }
+
+      TLOG_DEBUG(5) << "DataFilterAlgothrims: fragment max_adc=" << max_adc
+                    << " < threshold=" << adc_threshold;
+      return false;
+    }
+
+    // Histogram path: full scan, no early exit -- needs the true max_adc,
+    // not just whether the threshold was crossed.
     for (std::size_t fi = 0; fi < n_frames; ++fi) {
       const auto *frame = reinterpret_cast<const WIBEthFrame *>(
           payload + fi * sizeof(WIBEthFrame));
@@ -173,15 +234,23 @@ private:
           const uint16_t adc = frame->get_adc(ch, sample);
           if (adc > max_adc)
             max_adc = adc;
-          if (max_adc >= adc_threshold)
-            return true; // early exit
         }
       }
     }
 
-    TLOG_DEBUG(5) << "DataFilterAlgothrims: fragment max_adc=" << max_adc
-                  << " < threshold=" << adc_threshold;
-    return false;
+    const bool passed = max_adc >= adc_threshold;
+    const int bin =
+        std::min(static_cast<int>(max_adc) / HIST_BIN_WIDTH, N_HIST_BINS - 1);
+    {
+      std::lock_guard<std::mutex> lk(m_hist_mtx);
+      (passed ? m_accepted_hist : m_rejected_hist)[bin]++;
+    }
+
+    if (!passed) {
+      TLOG_DEBUG(5) << "DataFilterAlgothrims: fragment max_adc=" << max_adc
+                    << " < threshold=" << adc_threshold;
+    }
+    return passed;
   }
 };
 
