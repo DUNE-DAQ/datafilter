@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
 """
-Forward DataFilter's accept/reject ADC histograms from the opmon file sink
-(./info.json, per the session's OpMonURI config in dfSession.data.xml) to
-InfluxDB 2.x/3.x.
+Forward DataFilter's accept/reject ADC histograms to InfluxDB 2.x/3.x.
 
-The exact JSON envelope opmonlib writes wasn't verifiable when this script was
-written (tool outage mid-session), so records are searched recursively for the
-accepted_adc_histogram/rejected_adc_histogram fields rather than assuming a
-fixed shape -- this also naturally filters out the other three apps' opmon
-records, since only DataFilterInfo carries these fields.
+DataFilter writes these directly to its own dedicated JSON file
+(datafilter_adc_histogram.json, in the directory dfcontrol.sh was run from --
+same convention as bookkeeping_*.json), rewriting it in full on every opmon
+publish cycle. This bypasses opmonlib's normal opmon file sink entirely:
+opmonlib's OpMonValue (opmon_entry.proto) only supports scalar field types
+(int/uint/double/float/bool/string) -- repeated fields are silently dropped by
+the reflection-based Message -> OpMonEntry conversion, so there was no way to
+get the full histogram through the real opmon pipeline. See
+DataFilter::generate_opmon_data() (plugins/DataFilter.cpp) for the writer side.
+
+File format (flat, single JSON object, fully rewritten each cycle):
+  {
+    "session": "test-session",
+    "app": "DataFilter_0",
+    "accepted_adc_histogram": [0, 0, 3, 15, ...],
+    "rejected_adc_histogram": [1, 0, 0, 0, ...]
+  }
 
 Usage:
   INFLUXDB_URL=https://host:8086 INFLUXDB_TOKEN=... INFLUXDB_ORG=... \\
-      INFLUXDB_BUCKET=... python3 opmon_to_influx.py [--file info.json]
+      INFLUXDB_BUCKET=... python3 df_to_influx.py [--file datafilter_adc_histogram.json]
 """
 
 import argparse
@@ -25,8 +35,6 @@ import xml.etree.ElementTree as ET
 # influxdb_client is imported lazily (inside main()/histogram_points()) so that
 # --check-enabled -- used by dfcontrol.sh purely to read a boolean from OKS
 # config -- works even when the influxdb-client pip package isn't installed.
-
-HIST_FIELDS = ("accepted_adc_histogram", "rejected_adc_histogram")
 
 
 def read_oks_attrs(oks_file, obj_class, obj_id):
@@ -48,18 +56,6 @@ def oks_bool(val):
     return str(val).strip().lower() not in ("0", "false", "", "none")
 
 
-def find_histogram_records(obj, path=()):
-    """Recursively yield (path, dict) for any dict containing a histogram field."""
-    if isinstance(obj, dict):
-        if any(k in obj for k in HIST_FIELDS):
-            yield path, obj
-        for k, v in obj.items():
-            yield from find_histogram_records(v, path + (str(k),))
-    elif isinstance(obj, list):
-        for v in obj:
-            yield from find_histogram_records(v, path)
-
-
 def histogram_points(app_name, record):
     from influxdb_client import Point
 
@@ -79,33 +75,11 @@ def histogram_points(app_name, record):
     return points
 
 
-def process_chunk(write_api, bucket, org, text):
-    """Parse complete JSON-lines from `text` and write any histogram points found."""
-    n_written = 0
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            record = json.loads(line)
-        except json.JSONDecodeError:
-            print(f"WARNING: skipping unparseable line: {line[:200]}", file=sys.stderr)
-            continue
-        for path, hist_record in find_histogram_records(record):
-            app_name = path[-1] if path else "DataFilter"
-            points = histogram_points(app_name, hist_record)
-            if points:
-                write_api.write(bucket=bucket, org=org, record=points)
-                n_written += len(points)
-    return n_written
-
-
-def tail_forward(path, write_api, bucket, org, poll_interval, once):
-    pos = 0
-    size = 0
+def poll_and_forward(path, write_api, bucket, org, poll_interval, once):
+    last_mtime = None
     while True:
         try:
-            cur_size = os.path.getsize(path)
+            mtime = os.path.getmtime(path)
         except FileNotFoundError:
             print(f"waiting for {path} to appear...")
             if once:
@@ -113,24 +87,21 @@ def tail_forward(path, write_api, bucket, org, poll_interval, once):
             time.sleep(poll_interval)
             continue
 
-        if cur_size < size:
-            # File was truncated/rewritten (e.g. app restart) -- start over.
-            print(f"{path} shrank ({size} -> {cur_size} bytes), re-reading from start")
-            pos = 0
-        size = cur_size
-
-        if size > pos:
-            with open(path, "rb") as f:
-                f.seek(pos)
-                chunk = f.read()
-            last_nl = chunk.rfind(b"\n")
-            if last_nl != -1:
-                complete, _partial = chunk[:last_nl], chunk[last_nl + 1:]
-                pos += last_nl + 1
-                n = process_chunk(write_api, bucket, org,
-                                   complete.decode("utf-8", errors="replace"))
-                if n:
-                    print(f"wrote {n} points")
+        if mtime != last_mtime:
+            last_mtime = mtime
+            try:
+                with open(path, "r") as f:
+                    record = json.load(f)
+            except (OSError, json.JSONDecodeError) as e:
+                # File may be mid-write (DataFilter rewrites it in full each
+                # cycle); just retry next poll rather than treating this as fatal.
+                print(f"WARNING: could not read/parse {path}: {e}", file=sys.stderr)
+            else:
+                app_name = record.get("app", "DataFilter")
+                points = histogram_points(app_name, record)
+                if points:
+                    write_api.write(bucket=bucket, org=org, record=points)
+                    print(f"wrote {len(points)} points")
 
         if once:
             return
@@ -139,26 +110,26 @@ def tail_forward(path, write_api, bucket, org, poll_interval, once):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Forward DataFilter accept/reject ADC histograms (from the "
-                    "opmon file sink) to InfluxDB")
-    ap.add_argument("--file", default="./info.json",
-                    help="opmon file sink path (default: ./info.json, matching "
-                         "the session's OpMonURI config)")
+        description="Forward DataFilter accept/reject ADC histograms "
+                    "(from its own dedicated JSON file) to InfluxDB")
+    ap.add_argument("--file", default="./datafilter_adc_histogram.json",
+                    help="path to the histogram file DataFilter writes "
+                         "(default: ./datafilter_adc_histogram.json)")
     ap.add_argument("--poll-interval", type=float, default=5.0,
-                    help="seconds between polls when the file hasn't grown (default: 5, "
-                         "overridden by opmon_influx_poll_interval_s when --oks-config is used)")
+                    help="seconds between polls when the file hasn't changed (default: 5, "
+                         "overridden by df_influx_poll_interval_s when --oks-config is used)")
     ap.add_argument("--once", action="store_true",
-                    help="process what's currently new in the file once, then exit")
+                    help="process the file once (if changed), then exit")
     ap.add_argument("--oks-config", default=None,
                     help="Path to an OKS data XML file (e.g. dfSession.data.xml) to read "
-                         "enable_opmon_influx/opmon_influx_poll_interval_s from, instead "
+                         "enable_df_influx/df_influx_poll_interval_s from, instead "
                          "of requiring --poll-interval. InfluxDB connection details "
                          "(URL/org/bucket/token) always come from INFLUXDB_* environment "
                          "variables -- that's this script's own concern, not DataFilter's.")
     ap.add_argument("--app-id", default="DataFilter_0",
                     help="OKS object id to read attributes from (default: DataFilter_0)")
     ap.add_argument("--check-enabled", action="store_true",
-                    help="Print 1/0 for enable_opmon_influx from --oks-config and exit "
+                    help="Print 1/0 for enable_df_influx from --oks-config and exit "
                          "immediately, without connecting to InfluxDB or polling")
     args = ap.parse_args()
 
@@ -176,16 +147,16 @@ def main():
             sys.exit(1)
 
     if args.check_enabled:
-        print("1" if oks_bool(oks_attrs.get("enable_opmon_influx", "0")) else "0")
+        print("1" if oks_bool(oks_attrs.get("enable_df_influx", "0")) else "0")
         sys.exit(0)
 
     poll_interval = args.poll_interval
     if args.oks_config:
-        if not oks_bool(oks_attrs.get("enable_opmon_influx", "0")):
-            print(f"opmon_to_influx: disabled via OKS config "
-                  f"(enable_opmon_influx=false for {args.app_id}), exiting")
+        if not oks_bool(oks_attrs.get("enable_df_influx", "0")):
+            print(f"df_to_influx: disabled via OKS config "
+                  f"(enable_df_influx=false for {args.app_id}), exiting")
             sys.exit(0)
-        poll_interval = float(oks_attrs.get("opmon_influx_poll_interval_s",
+        poll_interval = float(oks_attrs.get("df_influx_poll_interval_s",
                                             args.poll_interval))
 
     url = os.environ.get("INFLUXDB_URL")
@@ -207,7 +178,7 @@ def main():
     write_api = client.write_api(write_options=SYNCHRONOUS)
 
     print(f"forwarding {args.file} -> bucket={bucket} org={org} ({url})")
-    tail_forward(args.file, write_api, bucket, org, poll_interval, args.once)
+    poll_and_forward(args.file, write_api, bucket, org, poll_interval, args.once)
 
 
 if __name__ == "__main__":

@@ -49,8 +49,10 @@ struct DataFilterAlgothrims {
   bool enable_histogram{false};
 
   // Histogram binning: fixed number of bins spanning the 14-bit ADC range
-  // [0, 16383]. Bump N_HIST_BINS to raise resolution if needed later.
-  static constexpr int N_HIST_BINS = 128;
+  // [0, 16383]. N_HIST_BINS=16384 gives full resolution (1 bin per exact ADC
+  // value, since HIST_BIN_WIDTH = 16384 / N_HIST_BINS = 1) -- lower this to
+  // trade resolution for a smaller datafilter_adc_histogram.json if needed.
+  static constexpr int N_HIST_BINS = 16384;
   static constexpr uint16_t MAX_ADC_14BIT = 16383;
   static constexpr int HIST_BIN_WIDTH = (MAX_ADC_14BIT + 1) / N_HIST_BINS;
 

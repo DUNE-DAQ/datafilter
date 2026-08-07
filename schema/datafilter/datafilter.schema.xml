@@ -93,8 +93,8 @@
   <attribute name="recv_timeout_ms" type="bool" init-value="1000" is-not-null="yes"/>
   <attribute name="datafilter_id" type="u32" init-value="0" is-not-null="yes"/>
   <attribute name="adc_threshold" description="ADC threshold for WIBEth fragment filtering. Fragment kept if any channel/sample ADC &gt;= this value. Set 0 for pass-through (keep all). WIBEth ADC is 14-bit (max 16383); set &gt;= 16384 to reject all WIBEth fragments." type="u16" init-value="0" is-not-null="yes"/>
-  <attribute name="enable_opmon_influx" description="If true, dfcontrol.sh launches opmon_to_influx.py alongside this app to forward its accept/reject ADC histograms to InfluxDB. Connection details (URL/org/bucket/token) are opmon_to_influx.py's own concern, not DataFilter's." type="bool" init-value="false" is-not-null="yes"/>
-  <attribute name="opmon_influx_poll_interval_s" description="Seconds between polls of the opmon file sink by opmon_to_influx.py." type="u32" init-value="5" is-not-null="yes"/>
+  <attribute name="enable_df_influx" description="If true, dfcontrol.sh launches df_to_influx.py alongside this app to forward its accept/reject ADC histograms to InfluxDB. Connection details (URL/org/bucket/token) are df_to_influx.py's own concern, not DataFilter's." type="bool" init-value="false" is-not-null="yes"/>
+  <attribute name="df_influx_poll_interval_s" description="Seconds between DataFilter's own histogram-file writes / df_to_influx.py's polls." type="u32" init-value="5" is-not-null="yes"/>
  </class>
 
  <class name="DataFilterBuffered">

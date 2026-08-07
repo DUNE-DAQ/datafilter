@@ -102,8 +102,8 @@ automatically after a successful run. You can also add new HDF5 files, it will p
 | Attribute | Type | Current value | Description |
 |---|---|---|---|
 | `adc_threshold` | u16 | `9145` | ADC threshold for TR filtering |
-| `enable_opmon_influx` | bool | `false` | If `true`, `dfcontrol.sh` launches `opmon_to_influx.py` alongside DataFilter to forward its accept/reject ADC histograms to InfluxDB |
-| `opmon_influx_poll_interval_s` | u32 | `5` | Seconds between polls of the opmon file sink by `opmon_to_influx.py` |
+| `enable_df_influx` | bool | `false` | If `true`, `dfcontrol.sh` launches `df_to_influx.py` alongside DataFilter to forward its accept/reject ADC histograms to InfluxDB |
+| `df_influx_poll_interval_s` | u32 | `5` | Seconds between DataFilter's histogram-file writes / `df_to_influx.py`'s polls |
 
 **ADC threshold semantics:** A trigger record is kept if any channel/sample in any WIBEth
 fragment has a 14-bit ADC value `>= adc_threshold`. A TR is dropped only when **all** its
@@ -119,24 +119,27 @@ WIBEth fragments fail the threshold.
 For fully saturated ADC data (e.g. `swtest_run001039`), max ADC = 16383; use a threshold
 `> 16383` to drop all, or any value `≤ 16383` to keep all.
 
-**Forwarding accept/reject ADC histograms to InfluxDB (`opmon_to_influx.py`):**
+**Forwarding accept/reject ADC histograms to InfluxDB (`df_to_influx.py`):**
 DataFilter accumulates two histograms of `max_adc` per WIBEth fragment (one for accepted,
-one for rejected fragments), published via opmon at `opmon_influx_poll_interval_s`. This
-is opt-in and off by default (`enable_opmon_influx=false`), since computing it disables
-the early-exit optimization in the ADC threshold check. To enable:
+one for rejected fragments), written to its own `datafilter_adc_histogram.json` file every
+`df_influx_poll_interval_s`. This bypasses the normal opmon pipeline entirely —
+opmonlib's `OpMonValue` only supports scalar field types, so a `repeated` field would be
+silently dropped by the reflection-based conversion to `OpMonEntry`. This is opt-in and
+off by default (`enable_df_influx=false`), since computing it disables the early-exit
+optimization in the ADC threshold check. To enable:
 
-1. Set `enable_opmon_influx=true` on `DataFilter_0` in `dfSession.data.xml`.
+1. Set `enable_df_influx=true` on `DataFilter_0` in `dfSession.data.xml`.
 2. Export the InfluxDB 2.x/3.x connection details as environment variables before
-   running `dfcontrol.sh` — these are `opmon_to_influx.py`'s own concern, not stored in
+   running `dfcontrol.sh` — these are `df_to_influx.py`'s own concern, not stored in
    OKS config: `INFLUXDB_URL`, `INFLUXDB_TOKEN`, `INFLUXDB_ORG`, `INFLUXDB_BUCKET`.
    `test/apps/setup_influx.sh` does this for you: copy
    `setup_influx.local.sh.example` to `setup_influx.local.sh` (gitignored) with your
    real values, then `source setup_influx.sh` each session.
-3. `dfcontrol.sh start` (or `restart`) will then also launch `opmon_to_influx.py`
+3. `dfcontrol.sh start` (or `restart`) will then also launch `df_to_influx.py`
    automatically; `dfcontrol.sh status` shows it alongside the four apps.
 
-If any `INFLUXDB_*` variable is missing while `enable_opmon_influx=true`,
-`opmon_to_influx.py` logs a clear error and exits rather than silently doing nothing.
+If any `INFLUXDB_*` variable is missing while `enable_df_influx=true`,
+`df_to_influx.py` logs a clear error and exits rather than silently doing nothing.
 
 ---
 

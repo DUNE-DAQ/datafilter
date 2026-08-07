@@ -226,51 +226,57 @@ stop_one() {
     echo "  ${key} stopped"
 }
 
-# --- opmon-to-influx bridge (optional; enabled via OKS DataFilter.enable_opmon_influx) ---
+# --- df-to-influx bridge (optional; enabled via OKS DataFilter.enable_df_influx) ---
 
-opmon_influx_pid_file() { echo "$PID_DIR/opmoninflux.pid"; }
+df_influx_pid_file() { echo "$PID_DIR/dfinflux.pid"; }
 
-_opmon_influx_enabled() {
+# --app-id is used only to look up enable_df_influx/df_influx_poll_interval_s
+# in the OKS config below -- DataFilter writes datafilter_adc_histogram.json
+# directly (bypassing opmon entirely, see DataFilter::generate_opmon_data()),
+# so unlike a real opmon file sink there's no app-name-derived filename here.
+DF_INFLUX_APP_ID="DataFilter_0"
+
+_df_influx_enabled() {
     if [ ! -f "$OKS_DATA_XML" ]; then
-        echo "WARNING: OKS_DATA_XML not found at $OKS_DATA_XML -- treating opmon-influx as disabled" >&2
+        echo "WARNING: OKS_DATA_XML not found at $OKS_DATA_XML -- treating df-influx as disabled" >&2
         echo "0"
         return
     fi
-    python3 "$SCRIPT_DIR/opmon_to_influx.py" --oks-config "$OKS_DATA_XML" \
-        --app-id DataFilter_0 --check-enabled 2>/dev/null
+    python3 "$SCRIPT_DIR/df_to_influx.py" --oks-config "$OKS_DATA_XML" \
+        --app-id "$DF_INFLUX_APP_ID" --check-enabled 2>/dev/null
 }
 
-start_opmon_influx() {
-    local pf; pf="$(opmon_influx_pid_file)"
+start_df_influx() {
+    local pf; pf="$(df_influx_pid_file)"
     if [ -f "$pf" ] && kill -0 "$(cat "$pf" 2>/dev/null)" 2>/dev/null; then
-        echo "  opmon-influx already running (PID $(cat "$pf"))"
+        echo "  df-influx already running (PID $(cat "$pf"))"
         return
     fi
-    if [ "$(_opmon_influx_enabled)" != "1" ]; then
-        echo "  opmon-influx: disabled (DataFilter.enable_opmon_influx=false in OKS config)"
+    if [ "$(_df_influx_enabled)" != "1" ]; then
+        echo "  df-influx: disabled (DataFilter.enable_df_influx=false in OKS config)"
         return
     fi
     mkdir -p "$LOG_DIR" "$PID_DIR"
-    rotate_log "opmoninflux"
-    local logfile="$LOG_DIR/opmoninflux.log"
-    python3 "$SCRIPT_DIR/opmon_to_influx.py" \
-        --oks-config "$OKS_DATA_XML" --app-id DataFilter_0 \
-        --file "$INVOKE_DIR/info.json" \
+    rotate_log "dfinflux"
+    local logfile="$LOG_DIR/dfinflux.log"
+    python3 "$SCRIPT_DIR/df_to_influx.py" \
+        --oks-config "$OKS_DATA_XML" --app-id "$DF_INFLUX_APP_ID" \
+        --file "$INVOKE_DIR/datafilter_adc_histogram.json" \
         > "$logfile" 2>&1 &
     local pid=$!
     echo "$pid" > "$pf"
-    echo "  started opmon-influx bridge  PID=$pid  log=$logfile"
+    echo "  started df-influx bridge  PID=$pid  log=$logfile"
 }
 
-stop_opmon_influx() {
-    local pf; pf="$(opmon_influx_pid_file)"
+stop_df_influx() {
+    local pf; pf="$(df_influx_pid_file)"
     local pid=""
     [ -f "$pf" ] && pid=$(cat "$pf")
     if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; then
         rm -f "$pf"
         return
     fi
-    echo "  stopping opmon-influx (PID $pid)..."
+    echo "  stopping df-influx (PID $pid)..."
     kill -TERM "$pid" 2>/dev/null
     local deadline=$(( $(date +%s) + 10 ))
     while kill -0 "$pid" 2>/dev/null; do
@@ -281,7 +287,7 @@ stop_opmon_influx() {
         sleep 0.3
     done
     rm -f "$pf"
-    echo "  opmon-influx stopped"
+    echo "  df-influx stopped"
 }
 
 do_start() {
@@ -297,15 +303,15 @@ do_start() {
         # brief pause between apps so sockets bind before the next connects
         sleep 0.4
     done
-    # Only auto-manage the opmon-influx bridge on a full (no-args) start/stop,
+    # Only auto-manage the df-influx bridge on a full (no-args) start/stop,
     # so named-subset commands stay surgical.
-    [ "$start_extras" -eq 1 ] && start_opmon_influx
+    [ "$start_extras" -eq 1 ] && start_df_influx
 }
 
 do_stop() {
     local keys=("$@")
     if [ ${#keys[@]} -eq 0 ]; then
-        stop_opmon_influx
+        stop_df_influx
         # stop in reverse order
         for (( i=${#START_ORDER[@]}-1; i>=0; i-- )); do
             stop_one "${START_ORDER[$i]}"
@@ -331,15 +337,15 @@ do_status() {
             echo "  STOPPED  ${k} (${BIN[$k]})"
         fi
     done
-    # opmon-influx bridge is optional (OKS-gated); only show a line if it has
+    # df-influx bridge is optional (OKS-gated); only show a line if it has
     # ever been started, to avoid clutter when the feature is left disabled.
-    local oi_pf; oi_pf="$(opmon_influx_pid_file)"
+    local oi_pf; oi_pf="$(df_influx_pid_file)"
     local oi_pid=""
     [ -f "$oi_pf" ] && oi_pid=$(cat "$oi_pf")
     if [ -n "$oi_pid" ] && kill -0 "$oi_pid" 2>/dev/null; then
-        echo "  RUNNING  opmoninflux (opmon_to_influx.py)  PID=$oi_pid  host=localhost"
+        echo "  RUNNING  dfinflux (df_to_influx.py)  PID=$oi_pid  host=localhost"
     elif [ -n "$oi_pid" ]; then
-        echo "  DEAD     opmoninflux (opmon_to_influx.py)  PID=$oi_pid  host=localhost (stale)"
+        echo "  DEAD     dfinflux (df_to_influx.py)  PID=$oi_pid  host=localhost (stale)"
     fi
 }
 

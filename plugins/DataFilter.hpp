@@ -13,7 +13,9 @@
 #define DATAFILTER_PLUGINS_DATAFILTER_HPP_
 
 #include "appfwk/DAQModule.hpp"
-#include "opmonlib/TestOpMonManager.hpp"
+#include "confmodel/OpMonConf.hpp"
+#include "confmodel/OpMonURI.hpp"
+#include "opmonlib/OpMonManager.hpp"
 #include "utilities/WorkerThread.hpp"
 
 #include "iomanager/IOManager.hpp"
@@ -33,7 +35,8 @@
 
 namespace dunedaq::datafilter {
 
-class DataFilter : public dunedaq::appfwk::DAQModule {
+class DataFilter : public dunedaq::appfwk::DAQModule,
+                    public std::enable_shared_from_this<DataFilter> {
 public:
   explicit DataFilter(const std::string &name);
   void init(std::shared_ptr<appfwk::ConfigurationManager>) override;
@@ -54,6 +57,11 @@ private:
   void do_stop(const data_t &);
   void do_work(std::atomic<bool> &running_flag);
 
+  // Writes datafilter_adc_histogram.json for df_to_influx.py -- bypasses
+  // opmon entirely (OpMonValue can't carry arrays), called from within
+  // generate_opmon_data() but kept separate since it isn't opmon data.
+  void generate_influx_data();
+
   void print_attrs();
 
   dunedaq::datafilter::RunInfo m_run_info{};
@@ -66,6 +74,13 @@ private:
   std::shared_ptr<DataFilterOrganiser> m_organiser;
   std::unique_ptr<DataFilterReceiver> m_rx;
   std::shared_ptr<dunedaq::datafilter::BookkeepingReceiver> m_bk;
+
+  // Real opmon manager -- owns a std::jthread, so it must live as long as
+  // the module does. Registered via register_node()/start_monitoring() in
+  // do_conf()/do_start() so generate_opmon_data() actually gets called
+  // periodically (the framework's own Application/DAQModuleManager wiring
+  // that would normally do this doesn't run in this app's bespoke main()).
+  std::shared_ptr<dunedaq::opmonlib::OpMonManager> m_opmgr;
 
   std::vector<const dunedaq::confmodel::Queue *> m_queues;
   std::vector<const confmodel::NetworkConnection *> m_networkconnections;

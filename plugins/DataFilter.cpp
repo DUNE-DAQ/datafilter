@@ -10,6 +10,8 @@
 
 #include "DataFilter.hpp"
 
+#include <fstream>
+
 namespace dunedaq::datafilter {
 
 DataFilter::DataFilter(const std::string &name)
@@ -85,25 +87,57 @@ void DataFilter::generate_opmon_data() {
   opmon::DataFilterInfo info;
   info.set_total_amount(m_total_amount.load());
   info.set_amount_since_last_call(m_amount_since_last_call.exchange(0));
+  publish(std::move(info));
 
+  generate_influx_data();
+}
+
+void DataFilter::generate_influx_data() {
+  // Accept/reject ADC histograms bypass opmon entirely: OpMonValue only
+  // supports scalars, so a repeated field here would be silently dropped
+  // (see datafilter_info.proto). Written directly to our own file instead,
+  // on the same cadence as the opmon publish above. Bare relative filename
+  // -> lands in the process's cwd, i.e. dfcontrol.sh's "running directory"
+  // (INVOKE_DIR), same convention as the bookkeeping_*.json files.
   if (m_rx && m_rx->m_alg.enable_histogram) {
     auto [accepted, rejected] = m_rx->m_alg.take_histograms();
-    for (auto v : accepted)
-      info.add_accepted_adc_histogram(v);
-    for (auto v : rejected)
-      info.add_rejected_adc_histogram(v);
+    nlohmann::json j;
+    j["session"] = m_session_name;
+    j["app"] = get_name();
+    j["accepted_adc_histogram"] = accepted;
+    j["rejected_adc_histogram"] = rejected;
+    std::ofstream f("datafilter_adc_histogram.json");
+    if (f.is_open()) {
+      f << j.dump(2);
+    } else {
+      TLOG() << "generate_influx_data: failed to open "
+                "datafilter_adc_histogram.json for writing";
+    }
   }
-
-  publish(std::move(info));
 }
 
 void DataFilter::do_conf(const data_t &cfg) {
   TLOG() << get_name() << " do_conf()";
-  dunedaq::opmonlib::TestOpMonManager opmgr;
+
+  // Real opmon manager -- this app's main() bypasses appfwk::Application, so
+  // there is no framework-provided OpMonManager/register_node/start_monitoring
+  // wiring anywhere else. Build it here so generate_opmon_data() actually
+  // fires. m_mcfg->session() works without initialize() (DataFilter_0 isn't
+  // an Application-typed OKS object); get_dal<T>(name) is a generic by-name
+  // fetch, so the OpMonConf lookup below doesn't need one either.
+  const std::string opmon_uri =
+      m_mcfg->session()->get_opmon_uri()->get_URI(get_name());
+  m_opmgr = std::make_shared<dunedaq::opmonlib::OpMonManager>(
+      m_session_name, get_name(), opmon_uri);
+  auto opmon_conf = m_mcfg->get_dal<dunedaq::confmodel::OpMonConf>(
+      "datafilter-opmon-conf");
+  m_opmgr->set_opmon_conf(opmon_conf);
+  m_opmgr->register_node(get_name(), shared_from_this());
+
   try {
     TLOG() << "Configure IOManager...";
     get_iomanager()->configure(m_session_name, m_queues, m_networkconnections,
-                               nullptr, opmgr);
+                               nullptr, *m_opmgr);
   } catch (const std::exception &e) {
     TLOG() << "Failed to configure IOManager. " << e.what();
     throw;
@@ -128,9 +162,9 @@ void DataFilter::do_conf(const data_t &cfg) {
   m_datafilter_id = mdal->get_datafilter_id();
   const uint16_t adc_threshold =
       static_cast<uint16_t>(mdal->get_adc_threshold());
-  const bool enable_opmon_influx = mdal->get_enable_opmon_influx();
+  const bool enable_df_influx = mdal->get_enable_df_influx();
   TLOG() << "DataFilter: adc_threshold=" << adc_threshold
-         << " enable_opmon_influx=" << enable_opmon_influx;
+         << " enable_df_influx=" << enable_df_influx;
 
   // bookkeeping first
   m_bk = std::make_shared<dunedaq::datafilter::BookkeepingReceiver>(
@@ -164,7 +198,7 @@ void DataFilter::do_conf(const data_t &cfg) {
       std::make_unique<DataFilterReceiver>(m_connections, m_organiser, *m_bk,
                                            /* attach_tracking_inputs */ true);
   m_rx->m_alg.adc_threshold = adc_threshold;
-  m_rx->m_alg.enable_histogram = enable_opmon_influx;
+  m_rx->m_alg.enable_histogram = enable_df_influx;
 
   TLOG() << "DF Connections summary: "
          << "TR data inputs=" << m_rx->cx.tr_data_rx.size()
@@ -221,6 +255,10 @@ void DataFilter::do_start(const data_t & /*cfg*/) {
   m_rx->prefetch_window = 4;
 
   m_rx->start();
+
+  if (m_opmgr) {
+    m_opmgr->start_monitoring();
+  }
 }
 
 void DataFilter::do_stop(const data_t & /*cfg*/) {

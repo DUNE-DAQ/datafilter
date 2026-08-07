@@ -140,8 +140,8 @@
  <attr name="send_timeout_ms" type="u32" val="1000"/>
  <attr name="recv_timeout_ms" type="u32" val="1000"/>
  <attr name="adc_threshold" type="u16" val="9130"/>
- <attr name="enable_opmon_influx" type="bool" val="1"/>
- <attr name="opmon_influx_poll_interval_s" type="u32" val="5"/>
+ <attr name="enable_df_influx" type="bool" val="1"/>
+ <attr name="df_influx_poll_interval_s" type="u32" val="5"/>
  <rel name="inputs">
   <ref class="NetworkConnection" id="bookkeeping0"/>
   <ref class="NetworkConnection" id="conn_A0_G0_C0_"/>
@@ -497,6 +497,11 @@
  <rel name="associated_service" class="Service" id="local-connectivity-service-trw0"/>
 </obj>
 
+<obj class="OpMonConf" id="datafilter-opmon-conf">
+ <attr name="level" type="u32" val="4294967295"/>
+ <attr name="interval_s" type="u32" val="5"/>
+</obj>
+
 <obj class="OpMonURI" id="local-opmon-uri">
  <attr name="path" type="string" val="./info.json"/>
  <attr name="type" type="enum" val="file"/>
@@ -642,8 +647,8 @@
  <attr name="is_from_storage" type="bool" val="1"/>
  <attr name="input_h5_filename" type="string" val="np04hd_run024552_0011_dataflow0_datawriter_0_20240320T143503.hdf5"/>
  <attr name="json_file" type="string" val="hdf5_files_list.json"/>
-<attr name="generate_trigger_record" type="bool" val="0"/>
-  <attr name="generate_time_slice" type="bool" val="0"/>
+<attr name="generate_trigger_record" type="bool" val="1"/>
+  <attr name="generate_time_slice" type="bool" val="1"/>
   <attr name="parallel_send" type="bool" val="1"/>
   <attr name="number_generated_events" type="u32" val="1000"/>
   <rel name="inputs">

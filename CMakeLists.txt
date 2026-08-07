@@ -67,6 +67,6 @@ daq_add_application(datafilter2 datafilter.cxx LINK_LIBRARIES  appfwk::appfwk ok
 #daq_add_application(datafilterbuffered datafilterbuffered.cxx LINK_LIBRARIES  appfwk::appfwk okssystem::okssystem conffwk::conffwk iomanager::iomanager dfmessages::dfmessages rcif::rcif hdf5libs::hdf5libs logging::logging nlohmann_json::nlohmann_json)
 # daq_add_application(test_oks test_oks.cxx LINK_LIBRARIES appfwk::appfwk okssystem::okssystem conffwk::conffwk iomanager::iomanager dfmessages::dfmessages rcif::rcif hdf5libs::hdf5libs logging::logging nlohmann_json::nlohmann_json) 
 
-install(PROGRAMS test/apps/dfcontrol.sh test/apps/opmon_to_influx.py DESTINATION ${PROJECT_NAME}/bin)
+install(PROGRAMS test/apps/dfcontrol.sh test/apps/df_to_influx.py DESTINATION ${PROJECT_NAME}/bin)
 
 daq_install()
