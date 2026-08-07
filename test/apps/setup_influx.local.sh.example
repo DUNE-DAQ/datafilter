@@ -1,0 +1,7 @@
+# Copy this file to setup_influx.local.sh (gitignored) and fill in real values.
+# setup_influx.sh sources it automatically if present -- keeps secrets out of git.
+
+export INFLUXDB_URL="http://your-monitoring-host:8086"
+export INFLUXDB_TOKEN="your-real-influxdb-api-token"
+export INFLUXDB_ORG="your-org"
+export INFLUXDB_BUCKET="your-bucket"
