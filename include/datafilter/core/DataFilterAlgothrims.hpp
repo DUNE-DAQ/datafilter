@@ -241,6 +241,7 @@ private:
     dst.set_run_number(src.get_run_number());
     dst.set_element_id(src.get_element_id());
     dst.set_error_bits(src.get_error_bits());
+    dst.set_sequence_number(src.get_sequence_number());
   }
 
   // -- Frame-level reconstruction inside one WIBEth fragment -----------------
