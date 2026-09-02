@@ -42,6 +42,8 @@
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <deque>
+#include <algorithm>
 #include <string>
 
 using namespace dunedaq::iomanager;
@@ -85,8 +87,8 @@ public:
   std::string generate_hdf5file_pathname(std::string file_pathname_prefix,
                                          int run_number, int file_index,
                                          int trigger_number);
-  void receive_tr_single_connection(uint64_t df_cycle_id = UINT64_MAX, uint64_t trd_bk_seq = UINT64_MAX, int total_tr = 1);
-  void receive_ts_single_connection(uint64_t df_cycle_id = UINT64_MAX, uint64_t trd_bk_seq = UINT64_MAX);
+  void receive_tr_single_connection(uint64_t df_cycle_id = UINT64_MAX, uint64_t trd_bk_seq = UINT64_MAX, int total_tr = 1, int file_index = 0, int64_t expected_trigger_number = -1);
+  void receive_ts_single_connection(uint64_t df_cycle_id = UINT64_MAX, uint64_t trd_bk_seq = UINT64_MAX, int total_ts = 1, int file_index = 0, int64_t expected_ts_number = -1);
   void send_next_tr();
   void receive_attrs_test();
   void start_receive_attrs_test_thread();
@@ -139,8 +141,6 @@ private:
 
   std::string m_oksConfig = "oksconflibs:test/config/dfSession.data.xml";
   std::string m_session_name = "test-session";
-  size_t m_trigger_timestamp;
-  size_t m_trigger_number;
   std::atomic<size_t> m_run_number{0};
   std::atomic<size_t> m_num_messages{0};
   std::string m_info_file_base = "FilterResultWriter";
@@ -171,6 +171,12 @@ private:
     unsigned    run_number{0};
     int         file_index{0};
     int         total_tr{1};
+    // Set only by generated-mode dispatch (trigger_number/ts_number BK1
+    // fields); -1 means unknown (storage mode, where a cycle can cover many
+    // records and there is no single value to match on). See
+    // receive_tr_single_connection()/receive_ts_single_connection().
+    int64_t     trigger_number{-1};
+    int64_t     ts_number{-1};
   };
   std::queue<DispatchEntry> m_dispatch_queue;
   std::mutex                m_dispatch_mtx;
@@ -181,10 +187,10 @@ private:
   // Pre-subscription buffers: always-on callbacks so data/control messages are
   // never dropped between remove_callback() of cycle N and add_callback() of
   // cycle N+1 (applies to both kPubSub data and kSendRecv ctrl handshakes).
-  std::queue<timeslice_ptr_t> m_ts_prebuf;
+  std::deque<timeslice_ptr_t> m_ts_prebuf;
   std::mutex m_ts_prebuf_mtx;
   std::condition_variable m_ts_prebuf_cv;
-  std::queue<trigger_record_ptr_t> m_tr_prebuf;
+  std::deque<trigger_record_ptr_t> m_tr_prebuf;
   std::mutex m_tr_prebuf_mtx;
   std::condition_variable m_tr_prebuf_cv;
   std::shared_ptr<ReceiverConcept<timeslice_ptr_t>> m_ts_prebuf_rx;

@@ -10,6 +10,8 @@
 
 #include "TRDispatcher.hpp"
 
+#include <iomanip>
+
 namespace dunedaq::datafilter {
 
 TRDispatcher::TRDispatcher(const std::string &name)
@@ -52,6 +54,7 @@ void TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
   m_storage_pathname = mdal->get_storage_pathname();
   m_is_from_storage = mdal->get_is_from_storage();
 
+  // Startup log only: the dispatch loop overwrites this per file.
   m_input_h5_filename = mdal->get_input_h5_filename();
   if (!m_is_from_storage)
     m_input_h5_filename = m_storage_pathname + "/" + m_input_h5_filename;
@@ -68,6 +71,9 @@ void TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
   m_parallel_send = mdal->get_parallel_send();
   if (m_parallel_send)
     TLOG() << "Parallel send enabled.";
+
+  m_generated_window = mdal->get_generated_window();
+  TLOG() << "Generated-mode in-flight window: " << m_generated_window;
 
   // test events with limited number from oks
   m_number_generated_events = mdal->get_number_generated_events();
@@ -143,10 +149,53 @@ void TRDispatcher::do_conf(const data_t &) {
 void TRDispatcher::do_start(const data_t &) {
   TLOG() << "TRD do_start(): ENTER, m_start_barrier=" << m_start_barrier.load()
          << " m_keep_running=" << m_keep_running.load();
+
+  // Generated mode reuses a fixed run_number (see the class member's default)
+  // across separate test sessions. Without this, DF's bookkeeping writer
+  // would merge this session's entries with leftover bookkeeping_<run>_*.json
+  // files from an earlier session at the same run_number -- write_to_file()'s
+  // reload-existing-content logic is meant for same-session retry after an
+  // HD failure, not for a brand new session starting cold. Scoped to
+  // generated mode only: storage mode's run_number comes from each source
+  // HDF5 file's own attribute and legitimately varies, so there is no single
+  // "this session's run_number" to scope a cleanup to.
+  if (m_generate_trigger_record || m_generate_time_slice) {
+    std::ostringstream prefix_oss;
+    prefix_oss << "bookkeeping_" << std::setw(6) << std::setfill('0')
+               << run_number << "_";
+    const std::string prefix = prefix_oss.str();
+    size_t removed = 0;
+    std::error_code ec;
+    for (const auto &dirent :
+         std::filesystem::directory_iterator(".", ec)) {
+      if (ec)
+        break;
+      const std::string fname = dirent.path().filename().string();
+      if (fname.rfind(prefix, 0) == 0 &&
+          fname.size() >= 5 &&
+          fname.compare(fname.size() - 5, 5, ".json") == 0) {
+        std::filesystem::remove(dirent.path(), ec);
+        if (!ec)
+          ++removed;
+      }
+    }
+    if (removed > 0)
+      TLOG() << "TRD do_start(): removed " << removed
+             << " stale " << prefix << "*.json file(s) from a previous session";
+  }
+
   m_keep_running.store(true);
   m_events_remaining.store(m_number_generated_events);
   m_events_remaining.store(m_number_generated_events);
   m_pub_warmup_needed.store(true);
+  m_tr_pub_warmup_needed.store(true);
+  m_ts_pub_warmup_needed.store(true);
+  // Reset the generated-mode in-flight window: do_stop()'s bulk
+  // m_bk_waiters.clear() does not run the per-waiter decrement, so a run
+  // stopped mid-cycle would otherwise leave a stale non-zero count that
+  // wedges the very next run's dispatch.
+  m_tr_in_flight.store(0, std::memory_order_relaxed);
+  m_ts_in_flight.store(0, std::memory_order_relaxed);
 
   // Always-on callback on bk_inputs (bookkeeping2): routes each confirmation
   // from DF to the correct in-flight CycleWaiter by trd_bk_seq.  Registered
@@ -262,6 +311,17 @@ void TRDispatcher::do_start(const data_t &) {
         std::lock_guard<std::mutex> lk(m_bk_waiters_mtx);
         m_bk_waiters.erase(seq);
       }
+      if (!waiter->is_hdf5_mode) {
+        // Generated-mode cycle confirmed (success or failure alike): release
+        // its in-flight window slot. TR and TS are gated independently.
+        std::atomic<int> &counter =
+            waiter->is_ts_waiter ? m_ts_in_flight : m_tr_in_flight;
+        {
+          std::lock_guard<std::mutex> wlk(m_gen_window_mtx);
+          counter.fetch_sub(1, std::memory_order_acq_rel);
+        }
+        m_gen_window_cv.notify_all();
+      }
       TLOG() << "TRD always-on BK cb: completed seq=" << seq;
     });
     TLOG() << "TRD: registered always-on BK callback on "
@@ -329,6 +389,18 @@ void TRDispatcher::get_from_storage() {
          << " m_generate_time_slice=" << m_generate_time_slice;
 
   const DispatchMode mode = [&]() -> DispatchMode {
+    // is_from_storage is authoritative: when set, always dispatch real HDF5
+    // files from storage_pathname and ignore the generate_* flags. Warn
+    // loudly rather than overriding silently -- a silent override is what
+    // made this combination confusing to configure in the first place.
+    if (m_is_from_storage) {
+      if (m_generate_trigger_record || m_generate_time_slice)
+        TLOG() << "TRD: is_from_storage=1 overrides generate_trigger_record="
+               << m_generate_trigger_record
+               << " generate_time_slice=" << m_generate_time_slice
+               << " -- dispatching from storage, not generating";
+      return DispatchMode::kStorageHDF5;
+    }
     if (!m_generate_trigger_record && !m_generate_time_slice)
       return DispatchMode::kStorageHDF5;
     if (m_generate_trigger_record && m_generate_time_slice && m_parallel_send)
@@ -410,7 +482,7 @@ void TRDispatcher::get_from_storage() {
             continue;
           }
           m_backoff_files.erase(it);
-          TLOG() << "TRD: write-fail backoff expired for "
+          TLOG() << "TRD: backoff expired for "
                  << m_input_h5_filename << ", retrying";
         }
       }
@@ -441,6 +513,7 @@ void TRDispatcher::do_stop(const data_t &) {
   m_keep_running.store(false);
   m_start_barrier.store(false);
   m_req_prebuf_cv.notify_all();
+  m_gen_window_cv.notify_all();
 
   // Stop the WorkerThread (which is running get_from_storage() -> receive()).
   // This sets running_flag=false and joins the thread.
@@ -552,13 +625,44 @@ void TRDispatcher::receive(DispatchMode mode) {
   switch (mode) {
   case DispatchMode::kStorageHDF5: {
     bool tr_owns = false, ts_owns = false;
+    // Not derivable from *_owns, which is false both for a clean skip (wrong
+    // record type -- no retry wanted) and for a throw (retry wanted).
+    bool tr_threw = false, ts_threw = false;
     {
-      std::thread tr_th([&] { tr_owns = send_tr_from_hdf5file(); });
-      std::thread ts_th([&] { ts_owns = send_ts_from_hdf5file(); });
+      // An exception escaping a std::thread body terminates the process, and
+      // HDF5RawDataFile's ctor throws FileOpenFailed for a missing or
+      // unreadable path. Treat a throw as "file skipped": *_owns stays false,
+      // so the in-flight guard is released below, per the contract documented
+      // on send_tr_from_hdf5file().
+      std::thread tr_th([&] {
+        try {
+          tr_owns = send_tr_from_hdf5file();
+        } catch (const std::exception &e) {
+          tr_threw = true;
+          TLOG() << "TRD: TR dispatch failed for " << m_input_h5_filename
+                 << ": " << e.what();
+        }
+      });
+      std::thread ts_th([&] {
+        try {
+          ts_owns = send_ts_from_hdf5file();
+        } catch (const std::exception &e) {
+          ts_threw = true;
+          TLOG() << "TRD: TS dispatch failed for " << m_input_h5_filename
+                 << ": " << e.what();
+        }
+      });
       tr_th.join();
       ts_th.join();
     }
     if (!tr_owns && !ts_owns) {
+      if (tr_threw || ts_threw) {
+        // Reuse the existing retry window: without it a permanently bad path
+        // is re-dispatched every loop pass (~10 Hz) and floods the log.
+        std::lock_guard<std::mutex> blk(m_backoff_mtx);
+        m_backoff_files[m_input_h5_filename] =
+            std::chrono::steady_clock::now() + std::chrono::seconds(30);
+      }
       std::lock_guard<std::mutex> lk(m_in_flight_mtx);
       m_in_flight_files.erase(m_input_h5_filename);
     }
@@ -810,6 +914,24 @@ void TRDispatcher::send_tr() {
     }
   }
 
+  // Bounded in-flight window: block (with periodic wakeup) until fewer than
+  // m_generated_window TR cycles are dispatched-but-unconfirmed. Bounded
+  // wait, not unbounded wait(), so a stuck predicate cannot prevent
+  // do_stop()'s stop_working_thread() from joining this thread. Placed
+  // before trig_num is fetched so a blocked call never burns a sequence
+  // number.
+  {
+    std::unique_lock<std::mutex> lk(m_gen_window_mtx);
+    while (m_tr_in_flight.load(std::memory_order_acquire) >=
+               static_cast<int>(m_generated_window) &&
+           m_keep_running.load() && m_running_flag && m_running_flag->load())
+      m_gen_window_cv.wait_for(lk, std::chrono::milliseconds(500));
+    if (!m_keep_running.load() || !(m_running_flag && m_running_flag->load())) {
+      TLOG() << "send_tr: shutting down, abandoning dispatch";
+      return;
+    }
+  }
+
   std::ostringstream ss;
   auto trig_num = m_tr_seq_num.fetch_add(1);
 
@@ -836,6 +958,10 @@ void TRDispatcher::send_tr() {
     std::lock_guard<std::mutex> lk(m_bk_waiters_mtx);
     m_bk_waiters[bk_seq] = waiter;
   }
+  // Counter is incremented iff a waiter is registered, and decremented iff
+  // that same waiter is erased (always-on BK callback) -- keeps the two in
+  // lockstep across every early-return path below.
+  m_tr_in_flight.fetch_add(1, std::memory_order_acq_rel);
 
   if (!m_bk_connection_o.empty()) {
     dunedaq::datafilter::time_point_to_string tp2s(
@@ -845,9 +971,30 @@ void TRDispatcher::send_tr() {
     bk_gen.from_id = "TRDispatcher";
     bk_gen.tr_status = to_string(TRStatus::kAssignedToFilter);
     bk_gen.run_number = run_number;
+    // file_index groups generated_window consecutive TR cycles into one BK
+    // JSON file (and, downstream, one shared file_index in FRW's HDF5 output
+    // naming/metadata) instead of one per cycle -- trigger_number below
+    // remains the unique per-record id.
+    const uint64_t generated_window_size =
+        m_generated_window > 0 ? m_generated_window : 1;
     bk_gen.file_attributes_info.push_back(
-        {"file_index", std::to_string(trig_num)});
+        {"file_index", std::to_string(trig_num / generated_window_size)});
     bk_gen.file_attributes_info.push_back({"record_type", "TR"});
+    // Tells DF's bookkeeping manager how many cycles this file_index will
+    // eventually cover, so it does not finalize the batch file just because
+    // it happens to see zero cycles open at some intermediate moment -- new
+    // cycles for the same file_index keep arriving until this many have been
+    // minted (dispatch is sequential and paced by this same window, not
+    // all-at-once).
+    bk_gen.file_attributes_info.push_back(
+        {"batch_size", std::to_string(generated_window_size)});
+    // Marks this cycle as generated-mode dispatch so DF's bookkeeping
+    // manager can disambiguate the filename from an independent TS-sequence
+    // cycle that happens to share the same file_index (m_tr_seq_num and
+    // m_ts_seq_num are independent counters). Storage mode never sets this.
+    bk_gen.file_attributes_info.push_back({"dispatch_mode", "generated"});
+    bk_gen.file_attributes_info.push_back(
+        {"trigger_number", std::to_string(trig_num)});
     bk_gen.file_attributes_info.push_back(
         {"trd_bk_seq", std::to_string(bk_seq)});
     bk_gen.file_attributes_info.push_back({"total_tr", "1"});
@@ -889,6 +1036,16 @@ void TRDispatcher::send_tr() {
             std::chrono::duration_cast<std::chrono::milliseconds>(
                 after_sender - before_sender);
       });
+
+  // On the first TR dispatch after each start/restart, wait for FRW's ZMQ
+  // SUB socket to reconnect before publishing -- otherwise the very first
+  // publish can be dropped (ZMQ "slow joiner"). One-time cost; cleared
+  // immediately. Separate from m_pub_warmup_needed (storage mode) since TR
+  // and TS use independent connections here.
+  if (m_tr_pub_warmup_needed.exchange(false)) {
+    TLOG() << "TRD: kPubSub warmup wait (200 ms) for TR subscriber reconnection";
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  }
 
   TLOG_DEBUG(7) << "Starting publish threads";
   std::for_each(
@@ -950,6 +1107,21 @@ void TRDispatcher::send_ts() {
     }
   }
 
+  // Bounded in-flight window: same reasoning as send_tr(), gated
+  // independently on the TS counter. Placed before ts_num is fetched so a
+  // blocked call never burns a sequence number.
+  {
+    std::unique_lock<std::mutex> lk(m_gen_window_mtx);
+    while (m_ts_in_flight.load(std::memory_order_acquire) >=
+               static_cast<int>(m_generated_window) &&
+           m_keep_running.load() && m_running_flag && m_running_flag->load())
+      m_gen_window_cv.wait_for(lk, std::chrono::milliseconds(500));
+    if (!m_keep_running.load() || !(m_running_flag && m_running_flag->load())) {
+      TLOG() << "send_ts: shutting down, abandoning dispatch";
+      return;
+    }
+  }
+
   if (m_cx.ts_data_tx.empty()) {
     TLOG() << "No ts_data_tx discovered; skipping TS send.";
     return;
@@ -962,10 +1134,12 @@ void TRDispatcher::send_ts() {
   // Send initial BK so DF opens FRW's dispatch gate before TS data arrives.
   const uint64_t ts_bk_seq = m_bk_seq.fetch_add(1);
   auto ts_waiter = std::make_shared<CycleWaiter>();
+  ts_waiter->is_ts_waiter = true;
   {
     std::lock_guard<std::mutex> lk(m_bk_waiters_mtx);
     m_bk_waiters[ts_bk_seq] = ts_waiter;
   }
+  m_ts_in_flight.fetch_add(1, std::memory_order_acq_rel);
 
   if (!m_bk_connection_o.empty()) {
     dunedaq::datafilter::time_point_to_string tp2s(
@@ -975,9 +1149,21 @@ void TRDispatcher::send_ts() {
     bk_gen.from_id = "TRDispatcher";
     bk_gen.tr_status = to_string(TRStatus::kAssignedToFilter);
     bk_gen.run_number = run_number;
+    // file_index groups generated_window consecutive TS cycles into one BK
+    // JSON file -- mirrors send_tr(); ts_number below remains the unique
+    // per-record id.
+    const uint64_t generated_window_size =
+        m_generated_window > 0 ? m_generated_window : 1;
     bk_gen.file_attributes_info.push_back(
-        {"file_index", std::to_string(ts_num)});
+        {"file_index", std::to_string(ts_num / generated_window_size)});
     bk_gen.file_attributes_info.push_back({"record_type", "TS"});
+    bk_gen.file_attributes_info.push_back({"dispatch_mode", "generated"});
+    // See send_tr()'s batch_size comment.
+    bk_gen.file_attributes_info.push_back(
+        {"batch_size", std::to_string(generated_window_size)});
+    bk_gen.file_attributes_info.push_back({"total_tr", "1"});
+    bk_gen.file_attributes_info.push_back(
+        {"ts_number", std::to_string(ts_num)});
     bk_gen.file_attributes_info.push_back(
         {"trd_bk_seq", std::to_string(ts_bk_seq)});
     bk_gen.tr_header_info.push_back({"record size", "1"});
@@ -1005,6 +1191,12 @@ void TRDispatcher::send_ts() {
     } catch (const std::exception &e) {
       TLOG() << "send_ts (generated): next_ts handshake failed: " << e.what();
     }
+  }
+
+  // See send_tr()'s equivalent comment; TS uses its own connection and flag.
+  if (m_ts_pub_warmup_needed.exchange(false)) {
+    TLOG() << "TRD: kPubSub warmup wait (200 ms) for TS subscriber reconnection";
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
   }
 
   TLOG() << "Sending generated TimeSlice " << ts_num;
@@ -1154,14 +1346,18 @@ bool TRDispatcher::send_tr_from_hdf5file() {
   }
 
   TLOG_DEBUG(7) << "Starting publish threads";
+  // Set by any send thread that could not read the file. Atomic because
+  // trdispatchers may hold several senders; read only after all joins.
+  std::atomic<bool> h5_send_failed{false};
   std::for_each(
       std::execution::par_unseq, std::begin(trdispatchers),
       std::end(trdispatchers),
-      [=, &bk_info, &h5_file, &completed_receiver_tracking,
-       &tracking_mutex](std::shared_ptr<TRDispatcherInfo> info) {
+      [=, &bk_info, &h5_file, &completed_receiver_tracking, &tracking_mutex,
+       &h5_send_failed](std::shared_ptr<TRDispatcherInfo> info) {
         info->send_thread.reset(new std::thread([=, &bk_info, &h5_file,
                                                  &completed_receiver_tracking,
-                                                 &tracking_mutex]() {
+                                                 &tracking_mutex,
+                                                 &h5_send_failed]() {
           bool complete_received = false;
           bool all_sends_ok = true;
 
@@ -1169,7 +1365,15 @@ bool TRDispatcher::send_tr_from_hdf5file() {
           while (!complete_received) {
             TLOG() << "Sender message: trigger record";
 
-            auto records = h5_file.get_all_trigger_record_ids();
+            HDF5RawDataFile::record_id_set records;
+            try {
+              records = h5_file.get_all_trigger_record_ids();
+            } catch (const std::exception &e) {
+              TLOG() << "TRD: get_all_trigger_record_ids failed for "
+                     << m_input_h5_filename << ": " << e.what();
+              h5_send_failed.store(true);
+              break;
+            }
             oss << "\nNumber of TriggerRecords: " << records.size();
             if (records.empty()) {
               oss << "\n\nNO TRIGGER RECORDS FOUND";
@@ -1256,6 +1460,20 @@ bool TRDispatcher::send_tr_from_hdf5file() {
     sender->send_thread->join();
     sender->send_thread.reset(nullptr);
   }
+
+  if (h5_send_failed.load()) {
+    // No TR was sent, so FRW will never confirm and the always-on BK callback
+    // would never reap this waiter or release the in-flight guard. Drop the
+    // waiter and report failure, letting the caller release the guard and
+    // apply the retry backoff.
+    {
+      std::lock_guard<std::mutex> lk(m_bk_waiters_mtx);
+      m_bk_waiters.erase(h5_bk_seq);
+    }
+    TLOG() << "send_tr_from_hdf5file: read failed for " << m_input_h5_filename
+           << ", dropped BK waiter (seq=" << h5_bk_seq << ")";
+    return false;
+  }
   return true;
 }
 
@@ -1313,6 +1531,8 @@ bool TRDispatcher::send_ts_from_hdf5file() {
     init_bk.file_attributes_info.push_back(
         {"file_index", std::to_string(ts_file_index)});
     init_bk.file_attributes_info.push_back({"record_type", "TS"});
+    init_bk.file_attributes_info.push_back(
+        {"total_tr", std::to_string(ts_records.size())});
     init_bk.file_attributes_info.push_back(
         {"trd_bk_seq", std::to_string(ts_h5_bk_seq)});
     init_bk.tr_header_info.push_back(

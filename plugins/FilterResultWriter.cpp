@@ -104,8 +104,12 @@ void FilterResultWriter::do_conf(const data_t &) {
         dunedaq::get_iom_receiver<timeslice_ptr_t>(m_cx.ts_data_rx.front());
     m_ts_prebuf_rx->add_callback([this](timeslice_ptr_t &ts) {
       std::lock_guard<std::mutex> lk(m_ts_prebuf_mtx);
-      m_ts_prebuf.push(std::move(ts));
-      m_ts_prebuf_cv.notify_one();
+      m_ts_prebuf.push_back(std::move(ts));
+      // notify_all: several cycle threads may be waiting here, each for its
+      // own ts_number (see receive_ts_single_connection()) -- notify_one()
+      // could repeatedly wake a thread whose item never arrives while the
+      // one that should consume this push stays parked until its deadline.
+      m_ts_prebuf_cv.notify_all();
     });
     TLOG() << "FRW: registered TS kPubSub callback on "
            << m_cx.ts_data_rx.front();
@@ -116,8 +120,9 @@ void FilterResultWriter::do_conf(const data_t &) {
         m_cx.tr_data_rx.front());
     m_tr_prebuf_rx->add_callback([this](trigger_record_ptr_t &tr) {
       std::lock_guard<std::mutex> lk(m_tr_prebuf_mtx);
-      m_tr_prebuf.push(std::move(tr));
-      m_tr_prebuf_cv.notify_one();
+      m_tr_prebuf.push_back(std::move(tr));
+      // notify_all: see the identical reasoning on the TS callback above.
+      m_tr_prebuf_cv.notify_all();
     });
     TLOG() << "FRW: registered TR kPubSub callback on "
            << m_cx.tr_data_rx.front();
@@ -229,15 +234,19 @@ void FilterResultWriter::do_start(const data_t &) {
 
     if (entry.record_type == "TS" && !m_cx.ts_data_rx.empty()) {
       active_threads.emplace_back(
-          [this, cid = entry.df_cycle_id, seq = entry.trd_bk_seq] {
-            receive_ts_single_connection(cid, seq);
+          [this, cid = entry.df_cycle_id, seq = entry.trd_bk_seq,
+           tot = entry.total_tr, fidx = entry.file_index,
+           tsn = entry.ts_number] {
+            receive_ts_single_connection(cid, seq, tot, fidx, tsn);
           });
     } else if (!m_cx.tr_data_rx.empty()) {
       // Default to TR path for "TR", empty string, or any unrecognised type.
       active_threads.emplace_back([this, cid = entry.df_cycle_id,
                                    seq = entry.trd_bk_seq,
-                                   tot = entry.total_tr] {
-        receive_tr_single_connection(cid, seq, tot);
+                                   tot = entry.total_tr,
+                                   fidx = entry.file_index,
+                                   trn = entry.trigger_number] {
+        receive_tr_single_connection(cid, seq, tot, fidx, trn);
       });
     }
   }
@@ -259,12 +268,12 @@ void FilterResultWriter::do_stop(const data_t &) {
   {
     std::lock_guard<std::mutex> lk(m_ts_prebuf_mtx);
     while (!m_ts_prebuf.empty())
-      m_ts_prebuf.pop();
+      m_ts_prebuf.pop_front();
   }
   {
     std::lock_guard<std::mutex> lk(m_tr_prebuf_mtx);
     while (!m_tr_prebuf.empty())
-      m_tr_prebuf.pop();
+      m_tr_prebuf.pop_front();
   }
   {
     std::lock_guard<std::mutex> lk(m_write_tr_prebuf_mtx);
@@ -371,6 +380,16 @@ void FilterResultWriter::receive_attrs(std::atomic<bool> &running) {
               entry.total_tr = std::stoi(kv.second);
             } catch (...) {
             }
+          } else if (kv.first == "trigger_number") {
+            try {
+              entry.trigger_number = std::stoll(kv.second);
+            } catch (...) {
+            }
+          } else if (kv.first == "ts_number") {
+            try {
+              entry.ts_number = std::stoll(kv.second);
+            } catch (...) {
+            }
           }
         }
 
@@ -405,7 +424,9 @@ void FilterResultWriter::receive_attrs(std::atomic<bool> &running) {
 
 void FilterResultWriter::receive_tr_single_connection(uint64_t df_cycle_id,
                                                        uint64_t trd_bk_seq,
-                                                       int total_tr) {
+                                                       int total_tr,
+                                                       int file_index,
+                                                       int64_t expected_trigger_number) {
   const int bk_total_tr = total_tr;  // save BK dispatch count (file record count)
 
   // Each write_tr ctrl carries total_tr=batch_size for kept TRs or 0 for
@@ -494,12 +515,38 @@ std::atomic<size_t> total_msgs_received{0};
 
     trigger_record_ptr_t tr;
     {
+      // Several cycle threads share m_tr_prebuf (do_start() runs one thread
+      // per dispatch entry, unjoined). Pick out the TR that is actually this
+      // cycle's own rather than whichever one is at the front -- otherwise a
+      // faster-arriving TR meant for a different cycle gets stolen and this
+      // cycle's own TR is later stolen by someone else in turn. When
+      // expected_trigger_number is unknown (storage mode never runs cycles
+      // concurrently -- see get_from_storage()'s in-flight-file guard),
+      // begin() acts as plain FIFO, matching the old behaviour exactly.
+      auto find_mine = [expected_trigger_number](
+                            std::deque<trigger_record_ptr_t> &q) {
+        if (expected_trigger_number < 0)
+          return q.begin();
+        return std::find_if(
+            q.begin(), q.end(), [&](const trigger_record_ptr_t &cand) {
+              return !cand->get_fragments_ref().empty() &&
+                     static_cast<int64_t>(cand->get_fragments_ref()
+                                              .at(0)
+                                              ->get_trigger_number()) ==
+                         expected_trigger_number;
+            });
+      };
+
       std::unique_lock<std::mutex> lk(m_tr_prebuf_mtx);
-      bool got = m_tr_prebuf_cv.wait_for(lk, std::chrono::milliseconds(200),
-          [this] { return !m_tr_prebuf.empty() || !m_running.load(); });
+      m_tr_prebuf_cv.wait_for(lk, std::chrono::milliseconds(200),
+          [this, &find_mine] {
+            return !m_running.load() ||
+                   find_mine(m_tr_prebuf) != m_tr_prebuf.end();
+          });
       if (!m_running.load())
         break;
-      if (m_tr_prebuf.empty()) {
+      auto it = find_mine(m_tr_prebuf);
+      if (it == m_tr_prebuf.end()) {
         if (std::chrono::steady_clock::now() >= tr_watchdog) {
           TLOG() << "FRW: idle watchdog fired (" << kWatchdogSec
                  << "s) after " << total_msgs_received.load()
@@ -508,23 +555,23 @@ std::atomic<size_t> total_msgs_received{0};
         }
         continue;
       }
-      tr = std::move(m_tr_prebuf.front());
-      m_tr_prebuf.pop();
+      tr = std::move(*it);
+      m_tr_prebuf.erase(it);
       tr_watchdog = std::chrono::steady_clock::now() +
                     std::chrono::seconds(kWatchdogSec);
     }
 
-    m_trigger_timestamp =
+    const size_t trigger_timestamp =
         tr->get_fragments_ref().at(0)->get_trigger_timestamp();
-    m_trigger_number = tr->get_fragments_ref().at(0)->get_trigger_number();
+    const size_t trigger_number =
+        tr->get_fragments_ref().at(0)->get_trigger_number();
     m_run_number.store(tr->get_fragments_ref().at(0)->get_run_number());
-    size_t file_index = get_file_index();
 
     size_t current_total = ++total_msgs_received;
 
     TLOG() << "Received TR " << current_total << "/" << total_expected
            << " - run: " << m_run_number.load()
-           << ", trigger: " << m_trigger_number
+           << ", trigger: " << trigger_number
            << ", file_index: " << file_index;
 
     // Write each TR to its own file
@@ -532,7 +579,7 @@ std::atomic<size_t> total_msgs_received{0};
     std::string file_pathname_prefix = m_odir + "/" + m_output_h5_filename;
     std::string file_base =
         generate_hdf5file_pathname(file_pathname_prefix, m_run_number.load(),
-                                   file_index, m_trigger_number);
+                                   file_index, trigger_number);
     std::string writing_pathname = file_base + ".filtered.writing";
     std::string final_pathname = file_base + ".filtered.hdf5";
 
@@ -555,7 +602,7 @@ std::atomic<size_t> total_msgs_received{0};
 
     try {
       std::unique_ptr<HDF5RawDataFile> h5file_ptr(new HDF5RawDataFile(
-          writing_pathname, m_run_number.load(), m_file_index, app_name,
+          writing_pathname, m_run_number.load(), file_index, app_name,
           fl_pars, srcid_geoid_map, compression_level, ""));
 
       size_t tr_bytes = 0;
@@ -580,13 +627,13 @@ std::atomic<size_t> total_msgs_received{0};
 
       std::filesystem::rename(writing_pathname, final_pathname);
       TLOG() << "Successfully wrote TR " << current_total
-             << " with trigger_number " << m_trigger_number << " -> "
+             << " with trigger_number " << trigger_number << " -> "
              << final_pathname;
 
       {
         std::lock_guard<std::mutex> lock(pathnames_mutex);
-        written_trs.push_back({final_pathname, m_trigger_number,
-                               m_trigger_timestamp, file_index});
+        written_trs.push_back({final_pathname, trigger_number,
+                               trigger_timestamp, file_index});
       }
 
     } catch (const std::exception &e) {
@@ -640,9 +687,14 @@ std::atomic<size_t> total_msgs_received{0};
     if (tr_write_errors > 0)
       TLOG() << "FRW: " << tr_write_errors
              << " TR(s) failed to write (content errors, not retried).";
+    // actually_received==0 is only a legitimate success when nothing was
+    // ever expected (DF filtered every TR, total_expected==0 from the
+    // start). If total_expected>0 but nothing was received, this thread's
+    // specific expected_trigger_number never showed up in m_tr_prebuf
+    // before the watchdog fired -- an orphaned record, not a success.
+    const bool orphaned = (actually_received == 0 && total_expected > 0);
     final_bk_info.tr_status =
-        (actually_processed >= actually_received &&
-         (actually_written > 0 || actually_received == 0))
+        (!orphaned && actually_processed >= actually_received)
             ? to_string(TRStatus::kFileCompleted)
             : to_string(TRStatus::kWriteFailed);
     final_bk_info.run_number = m_run_number.load();
@@ -686,13 +738,20 @@ std::atomic<size_t> total_msgs_received{0};
 }
 
 void FilterResultWriter::receive_ts_single_connection(uint64_t df_cycle_id,
-                                                      uint64_t trd_bk_seq) {
+                                                      uint64_t trd_bk_seq,
+                                                      int total_ts,
+                                                      int file_index,
+                                                      int64_t expected_ts_number) {
   if (m_cx.ts_data_rx.empty()) {
     TLOG_DEBUG(7) << "FRW: no TS data inputs configured; skipping TS receive";
     return;
   }
 
-  std::atomic<size_t> ts_expected{0};
+  // Seeded from the dispatch entry, as the TR path does. The write_ts ctrl
+  // below only refines it: several TS threads share one ctrl queue, so a
+  // thread that loses that race must not fall back to expecting zero.
+  std::atomic<size_t> ts_expected{
+      static_cast<size_t>(total_ts < 0 ? 0 : total_ts)};
 
   // Use always-on prebuf for write_ts ctrl (registered in do_start()).
   if (!m_cx.tswriter_ctrl.empty()) {
@@ -728,7 +787,12 @@ void FilterResultWriter::receive_ts_single_connection(uint64_t df_cycle_id,
 
   std::atomic<size_t> ts_received{0};
   std::atomic<size_t> ts_written{0};
-  std::vector<std::string> written_ts_pathnames;
+  size_t ts_write_errors = 0;
+  struct TSWriteRecord {
+    std::string pathname;
+    size_t ts_number;
+  };
+  std::vector<TSWriteRecord> written_ts_records;
 
   dunedaq::datafilter::time_point_to_string time_point_to_string(
       dunedaq::datafilter::Precision::NANOSECONDS);
@@ -738,14 +802,34 @@ void FilterResultWriter::receive_ts_single_connection(uint64_t df_cycle_id,
   while (m_running.load()) {
     timeslice_ptr_t ts;
     {
+      // Same reasoning as the TR consumer above: several cycle threads share
+      // m_ts_prebuf, so pick out this cycle's own TimeSlice by ts_number
+      // rather than taking whichever one is at the front. Unknown
+      // expected_ts_number (storage mode) falls back to plain FIFO via
+      // begin().
+      auto find_mine = [expected_ts_number](std::deque<timeslice_ptr_t> &q) {
+        if (expected_ts_number < 0)
+          return q.begin();
+        return std::find_if(
+            q.begin(), q.end(), [&](const timeslice_ptr_t &cand) {
+              return static_cast<int64_t>(
+                         cand->get_header().timeslice_number) ==
+                     expected_ts_number;
+            });
+      };
+
       std::unique_lock<std::mutex> lk(m_ts_prebuf_mtx);
-      bool got = m_ts_prebuf_cv.wait_until(lk, deadline, [this] {
-        return !m_ts_prebuf.empty() || !m_running.load();
+      m_ts_prebuf_cv.wait_until(lk, deadline, [this, &find_mine] {
+        return !m_running.load() ||
+               find_mine(m_ts_prebuf) != m_ts_prebuf.end();
       });
-      if (!m_running.load() || m_ts_prebuf.empty())
+      if (!m_running.load())
         break;
-      ts = std::move(m_ts_prebuf.front());
-      m_ts_prebuf.pop();
+      auto it = find_mine(m_ts_prebuf);
+      if (it == m_ts_prebuf.end())
+        break;
+      ts = std::move(*it);
+      m_ts_prebuf.erase(it);
     }
 
     ++ts_received;
@@ -758,7 +842,7 @@ void FilterResultWriter::receive_ts_single_connection(uint64_t df_cycle_id,
     std::string file_pathname_prefix =
         m_odir + "/" + m_output_h5_filename + "_ts";
     std::string file_base = generate_hdf5file_pathname(
-        file_pathname_prefix, m_run_number.load(), get_file_index(), ts_number);
+        file_pathname_prefix, m_run_number.load(), file_index, ts_number);
     std::string writing_pathname = file_base + ".filtered.writing";
     std::string final_pathname = file_base + ".filtered.hdf5";
 
@@ -768,7 +852,7 @@ void FilterResultWriter::receive_ts_single_connection(uint64_t df_cycle_id,
       unsigned compression_level = 0;
       try {
         std::unique_ptr<HDF5RawDataFile> h5file_ptr(new HDF5RawDataFile(
-            writing_pathname, m_run_number.load(), get_file_index(), "test",
+            writing_pathname, m_run_number.load(), file_index, "test",
             ts_fl_pars, srcid_geoid_map, compression_level, ""));
         size_t ts_bytes = 0;
         for (const auto &frag : ts->get_fragments_ref())
@@ -792,24 +876,47 @@ void FilterResultWriter::receive_ts_single_connection(uint64_t df_cycle_id,
 
         std::filesystem::rename(writing_pathname, final_pathname);
         ++ts_written;
-        written_ts_pathnames.push_back(final_pathname);
+        written_ts_records.push_back({final_pathname, ts_number});
         TLOG() << "Successfully wrote TS " << current
                << " ts_number=" << ts_number << " -> " << final_pathname;
       } catch (const std::exception &e) {
+        ++ts_write_errors;
         TLOG() << "ERROR writing TS: " << e.what();
       }
     }
 
     if (ts_expected.load() > 0 && current >= ts_expected.load()) {
-      TLOG() << "All " << ts_expected.load() << " TSs received and written";
-      break;
+      // Reaching the count is not enough to leave: these threads are one-shot
+      // (one per dispatch cycle) and do_stop() discards whatever is still
+      // queued, so a TS left behind here is lost for good. Keep draining while
+      // a backlog exists. Deliberately NOT bounded by the deadline: DF paces
+      // sends 100 ms apart over a window longer than any single thread's
+      // nominal lifetime, so capping the drain here strands every TS that
+      // arrives after the last cycle's deadline. The loop still exits on
+      // !m_running, and an empty queue re-arms the deadline in wait_until().
+      bool backlog;
+      {
+        std::lock_guard<std::mutex> lk(m_ts_prebuf_mtx);
+        backlog = !m_ts_prebuf.empty();
+      }
+      if (!backlog) {
+        TLOG() << "All " << ts_expected.load() << " TSs received and written";
+        break;
+      }
     }
   }
 
   // Notify DF of TS batch completion
   if (!m_cx.bk_outputs.empty()) {
-    const bool all_written =
-        (ts_expected.load() > 0) && (ts_written.load() >= ts_expected.load());
+    // Mirror the TR path (see the kFileCompleted decision above). Now that
+    // find_mine() matches this thread's own expected_ts_number, ts_received
+    // reflects whether THIS cycle's TimeSlice actually showed up -- so
+    // receiving none while one was expected (ts_expected>0) means the
+    // record was orphaned (never arrived in m_ts_prebuf before wait_until's
+    // deadline), not a vacuous success.
+    const bool orphaned = (ts_expected.load() > 0 && ts_received.load() == 0);
+    const bool all_written = !orphaned && (ts_write_errors == 0) &&
+                             (ts_written.load() == ts_received.load());
     const auto ts_status = all_written ? to_string(TRStatus::kFileCompleted)
                                        : to_string(TRStatus::kWriteFailed);
     dunedaq::datafilter::BookKeeping ts_bk(m_cx.bk_outputs.front());
@@ -828,8 +935,10 @@ void FilterResultWriter::receive_ts_single_connection(uint64_t df_cycle_id,
     ts_bk.tr_header_info.push_back(
         {"expected_ts", std::to_string(ts_expected.load())});
     // int fi = get_file_index();
-    for (size_t i = 0; i < written_ts_pathnames.size(); ++i) {
-      ts_bk.tr_header_info.push_back({"ts_file", written_ts_pathnames[i]});
+    for (size_t i = 0; i < written_ts_records.size(); ++i) {
+      ts_bk.tr_header_info.push_back({"ts_file", written_ts_records[i].pathname});
+      ts_bk.tr_header_info.push_back(
+          {"ts_number", std::to_string(written_ts_records[i].ts_number)});
       // ++fi;
     }
     try {

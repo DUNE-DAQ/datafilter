@@ -127,8 +127,9 @@ private:
   std::mutex m_in_flight_mtx;
   std::condition_variable m_in_flight_cv;
 
-  // Per-file write-fail backoff: after kWriteFailed the file is held here
-  // until the retry window expires (30 s) before being re-dispatched.
+  // Per-file dispatch backoff: after kWriteFailed, or after a dispatch threw
+  // (e.g. HDF5 open failure), the file is held here until the retry window
+  // expires (30 s) before being re-dispatched.
   std::unordered_map<std::string,
                      std::chrono::steady_clock::time_point> m_backoff_files;
   mutable std::mutex m_backoff_mtx;
@@ -186,6 +187,10 @@ private:
     std::string storage_pathname;
     std::string json_file;
     std::vector<std::string> file_send_list;
+    // Set true only by send_ts(); selects which in-flight counter the
+    // always-on BK callback releases on completion. Meaningless when
+    // is_hdf5_mode is true.
+    bool is_ts_waiter{false};
   };
   std::unordered_map<uint64_t, std::shared_ptr<CycleWaiter>> m_bk_waiters;
   std::mutex m_bk_waiters_mtx;
@@ -208,8 +213,15 @@ private:
   std::atomic<bool> m_worker_ready{false};
   // Set true in do_start(); cleared on first TR dispatch.  Gives ZMQ time to
   // reconnect DF's SUB socket after a TRD restart before the first kPubSub
-  // publish.
+  // publish. Storage mode only (send_tr_from_hdf5file()'s single publish
+  // connection).
   std::atomic<bool> m_pub_warmup_needed{false};
+  // Same idea as m_pub_warmup_needed, but generated mode's TR and TS use
+  // separate kPubSub connections and so each needs its own one-shot warmup
+  // wait -- sharing one flag would let whichever type loses the atomic
+  // exchange race publish with no warmup at all.
+  std::atomic<bool> m_tr_pub_warmup_needed{false};
+  std::atomic<bool> m_ts_pub_warmup_needed{false};
   // Pointer to the WorkerThread's running_flag; valid only during do_work().
   // Used as the primary loop condition so the loop cannot exit before the
   // framework calls stop_working_thread().  m_keep_running remains the
@@ -249,6 +261,17 @@ private:
   std::atomic<int> m_amount_since_last_call{0};
   std::atomic<uint64_t> m_tr_seq_num{0}; // counter for generated TR numbers
   std::atomic<uint64_t> m_ts_seq_num{0}; // counter for generated TS numbers
+
+  // Generated-mode bounded in-flight window: caps the number of
+  // dispatched-but-unconfirmed cycles per record type so generated dispatch
+  // cannot race arbitrarily far ahead of DF/FRW. Mirrors m_in_flight_files'
+  // role for storage mode, but keyed per record type with a configurable
+  // window instead of hard single-flight. TR and TS are gated independently.
+  std::atomic<int> m_tr_in_flight{0};
+  std::atomic<int> m_ts_in_flight{0};
+  std::mutex m_gen_window_mtx;
+  std::condition_variable m_gen_window_cv;
+  uint32_t m_generated_window{4};
 };
 
 } // namespace dunedaq::datafilter

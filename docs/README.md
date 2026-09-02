@@ -31,7 +31,7 @@ cd test/apps   # in each terminal
 # to the installed copy at install/datafilter/bin/dfcontrol.sh; before that, or if
 # it's not on PATH, run it via ./dfcontrol.sh from test/apps/)
 
-dfcontrol.sh build
+dbt-build or dfcontrol.sh build
 
 # to start all the four apps
 
@@ -83,17 +83,57 @@ All configuration lives in `test/config/dfSession.data.xml`.
 | Attribute | Type | Current value | Description |
 |---|---|---|---|
 | `storage_pathname` | string | `/lcg/storage19/test-area/dune/trigger_records/sourcehdf5` | Directory containing source HDF5 files |
-| `is_from_storage` | bool | `1` | `1` = read from HDF5 files; `0` = generate synthetic TRs |
-| `input_h5_filename` | string | `np04hd_run024552_0011_...hdf5` | Single file to process; leave empty to cycle through all files in `json_file` |
+| `is_from_storage` | bool | `0` | `1` = read real HDF5 files from `storage_pathname`. **Takes precedence** — the `generate_*` flags below are ignored (and a warning logged) when this is `1` |
+| `input_h5_filename` | string | `np04hd_run024552_0011_...hdf5` | **Not used for dispatch.** Files are discovered by scanning `storage_pathname`; `json_file` decides which are new |
 | `json_file` | string | `hdf5_files_list.json` | JSON file tracking which source files have already been processed |
-| `generate_trigger_record` | bool | `0` | `1` = generate synthetic TRs (ignores `is_from_storage` and HDF5 input) |
-| `generate_time_slice` | bool | `0` | `1` = generate synthetic TSs (ignores `is_from_storage` and HDF5 input) |
+| `generate_trigger_record` | bool | `1` | `1` = generate synthetic TRs. Only effective when `is_from_storage=0` |
+| `generate_time_slice` | bool | `1` | `1` = generate synthetic TSs. Only effective when `is_from_storage=0` |
+| `parallel_send` | bool | `1` | Generated mode only: `1` dispatches a TR and a TS together on separate threads per request (`kGeneratedParallel`); `0` dispatches them sequentially (`kGeneratedSerial`) |
+| `number_generated_events` | u32 | `1000` | Generated mode only: max total generated sends. **Shared** between TR and TS (one counter decremented by both). `0` = unlimited |
+| `generated_window` | u32 | `20` | Generated mode only: max number of dispatched TR/TS. Also the batch size used to group bookkeeping JSON output (see below). Ignored in storage mode |
 | `send_timeout_ms` | u32 | `1000` | Send timeout in ms |
 | `recv_timeout_ms` | u32 | `1000` | Receive timeout in ms |
+
+**Dispatch mode selection:** `is_from_storage` is checked first and wins outright. If it
+is `1`, TRD always reads from `storage_pathname` and logs a warning if either `generate_*`
+flag was also set. Only when `is_from_storage=0` do the generate flags choose a mode:
+both set (with `parallel_send=1`) gives parallel TR+TS generation, otherwise serial;
+neither set falls back to reading from storage.
+
+In storage mode TRD always scans `storage_pathname` and dispatches every `*.hdf5` file
+there that is not already listed in `json_file`, regardless of `input_h5_filename`. Files
+still being written (`*.writing`) and already-filtered output (`*.filtered.*`) are
+skipped, as is any file modified within the last hour.
 
 **Note on `hdf5_files_list.json`:** TRD skips any file already listed in this file.
 Remove an entry before re-running to reprocess that file. The entry is re-added
 automatically after a successful run. You can also add new HDF5 files, it will process automatically.
+
+**Generated-mode dispatch pacing (`generated_window`):** unlike storage mode (which
+dispatches one HDF5 file at a time and waits for it to complete before scanning for the
+next), generated mode has no natural "one file in flight" limit. `generated_window`
+bounds how many TR (and, independently, how many TS) cycles can be dispatched but not
+yet confirmed written at once — TRDispatcher blocks further dispatch of a type once its
+window is full, and a slot frees up as each cycle's completion is confirmed. Raise it for
+more throughput at the cost of more concurrent in-flight state; the schema default is
+`4`, currently configured here as `20`.
+
+**Generated-mode bookkeeping JSON files:** `generated_window` also sets how many cycles'
+worth of bookkeeping is grouped into one file. Instead of one `bookkeeping_*.json` per
+TR/TS (which would produce thousands of tiny files over a long run), TR and TS each get
+their own file per batch — `bookkeeping_<run>_<batch>_TR.json` /
+`_TS.json` — each holding `generated_window` dispatch entries, a single aggregate
+completion entry (summed counts plus every written file's `trigger_number`/`ts_number`),
+and `generated_window` write-confirmation entries. TR and TS are kept in separate files
+because their sequence counters are independent and can otherwise land on the same batch
+number by coincidence. A batch's completion entry shows `write_failed` instead of
+`file_completed` if any record in it was dropped or never arrived in time — this is a
+real signal of lost/orphaned data, not a formatting issue, so check
+`total_trs_written`/`total_ts_written` against `trs_dispatched_by_trd`/`expected_ts` in
+that entry when you see it. On each `do_start()`, TRDispatcher deletes any leftover
+`bookkeeping_<run>_*.json` files for its (generated-mode) run number before dispatching,
+so re-running with the same `run_number` never merges stale data from a previous session
+into the new run's files.
 
 ---
 
@@ -101,9 +141,11 @@ automatically after a successful run. You can also add new HDF5 files, it will p
 
 | Attribute | Type | Current value | Description |
 |---|---|---|---|
-| `adc_threshold` | u16 | `9145` | ADC threshold for TR filtering |
-| `enable_df_influx` | bool | `false` | If `true`, `dfcontrol.sh` launches `df_to_influx.py` alongside DataFilter to forward its accept/reject ADC histograms to InfluxDB |
+| `adc_threshold` | u16 | `9130` | ADC threshold for TR filtering |
+| `enable_df_influx` | bool | `true` | If `true`, `dfcontrol.sh` launches `df_to_influx.py` alongside DataFilter to forward its accept/reject ADC histograms to InfluxDB |
 | `df_influx_poll_interval_s` | u32 | `5` | Seconds between DataFilter's histogram-file writes / `df_to_influx.py`'s polls |
+| `enable_frame_filter` | bool | `false` | Filtering granularity — `false` = whole fragments, `true` = rebuild fragments from surviving frames (see below) |
+| `prefetch_window` | u32 | `8` | How many `next_tr`/`next_ts` requests DataFilterReceiver pre-issues to FilterOrchestrator, refilled one-for-one as each TR/TS is ingested. Bounds how far TRDispatcher can run ahead of DataFilter |
 
 **ADC threshold semantics:** A trigger record is kept if any channel/sample in any WIBEth
 fragment has a 14-bit ADC value `>= adc_threshold`. A TR is dropped only when **all** its
@@ -119,10 +161,29 @@ WIBEth fragments fail the threshold.
 For fully saturated ADC data (e.g. `swtest_run001039`), max ADC = 16383; use a threshold
 `> 16383` to drop all, or any value `≤ 16383` to keep all.
 
+**Filtering granularity (`enable_frame_filter`):** a WIBEth fragment is a sequence of
+7200-byte `WIBEthFrame`s (64 channels x 64 time samples each).
+
+| | `false` (default) | `true` |
+|---|---|---|
+| Filter unit | whole fragment | individual frame |
+| Kept if | any sample in the *fragment* `>= adc_threshold` | any sample in *that frame* `>= adc_threshold` |
+| Output fragment | unchanged | rebuilt with only surviving frames (smaller) |
+| Histogram entries | one per fragment (its overall max ADC) | one per **frame** |
+
+Frame mode gives real data reduction inside a fragment and far richer histogram
+statistics — a ~840 KB fragment holds ~117 frames, so it contributes ~117 histogram
+entries instead of 1. Expect a correspondingly larger InfluxDB write volume. A fragment
+whose frames all fail is dropped entirely; if every WIBEth fragment in a TR is dropped,
+the whole TR is dropped (same rule as fragment mode). Payload bytes beyond the last whole
+frame are not carried into a rebuilt fragment.
+
 **Forwarding accept/reject ADC histograms to InfluxDB (`df_to_influx.py`):**
-DataFilter accumulates two histograms of `max_adc` per WIBEth fragment (one for accepted,
-one for rejected fragments), written to its own `datafilter_adc_histogram.json` file every
-`df_influx_poll_interval_s`. This bypasses the normal opmon pipeline entirely —
+DataFilter accumulates two histograms of `max_adc` (one for accepted, one for rejected),
+written to its own `datafilter_adc_histogram.json` file every
+`df_influx_poll_interval_s`. The entry granularity follows `enable_frame_filter` — one
+entry per WIBEth **fragment** when `false`, one per **frame** when `true` (see
+"Filtering granularity" above). This bypasses the normal opmon pipeline entirely —
 opmonlib's `OpMonValue` only supports scalar field types, so a `repeated` field would be
 silently dropped by the reflection-based conversion to `OpMonEntry`. This is opt-in and
 off by default (`enable_df_influx=false`), since computing it disables the early-exit

@@ -163,8 +163,10 @@ void DataFilter::do_conf(const data_t &cfg) {
   const uint16_t adc_threshold =
       static_cast<uint16_t>(mdal->get_adc_threshold());
   const bool enable_df_influx = mdal->get_enable_df_influx();
+  const bool enable_frame_filter = mdal->get_enable_frame_filter();
   TLOG() << "DataFilter: adc_threshold=" << adc_threshold
-         << " enable_df_influx=" << enable_df_influx;
+         << " enable_df_influx=" << enable_df_influx
+         << " enable_frame_filter=" << enable_frame_filter;
 
   // bookkeeping first
   m_bk = std::make_shared<dunedaq::datafilter::BookkeepingReceiver>(
@@ -199,6 +201,8 @@ void DataFilter::do_conf(const data_t &cfg) {
                                            /* attach_tracking_inputs */ true);
   m_rx->m_alg.adc_threshold = adc_threshold;
   m_rx->m_alg.enable_histogram = enable_df_influx;
+  m_rx->m_alg.frame_level_filter = enable_frame_filter;
+  m_rx->prefetch_window = mdal->get_prefetch_window();
 
   TLOG() << "DF Connections summary: "
          << "TR data inputs=" << m_rx->cx.tr_data_rx.size()
@@ -252,7 +256,7 @@ void DataFilter::do_start(const data_t & /*cfg*/) {
   // pull mode
   m_rx->queue_only = false;
   m_rx->pull_mode = true;
-  m_rx->prefetch_window = 4;
+  // prefetch_window is set from OKS config in do_conf().
 
   m_rx->start();
 

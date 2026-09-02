@@ -95,6 +95,8 @@
   <attribute name="adc_threshold" description="ADC threshold for WIBEth fragment filtering. Fragment kept if any channel/sample ADC &gt;= this value. Set 0 for pass-through (keep all). WIBEth ADC is 14-bit (max 16383); set &gt;= 16384 to reject all WIBEth fragments." type="u16" init-value="0" is-not-null="yes"/>
   <attribute name="enable_df_influx" description="If true, dfcontrol.sh launches df_to_influx.py alongside this app to forward its accept/reject ADC histograms to InfluxDB. Connection details (URL/org/bucket/token) are df_to_influx.py's own concern, not DataFilter's." type="bool" init-value="false" is-not-null="yes"/>
   <attribute name="df_influx_poll_interval_s" description="Seconds between DataFilter's own histogram-file writes / df_to_influx.py's polls." type="u32" init-value="5" is-not-null="yes"/>
+  <attribute name="enable_frame_filter" description="Filtering granularity. false (default): keep or drop whole WIBEth fragments, and the ADC histogram gets one entry per fragment. true: rebuild each fragment from only the frames whose max ADC &gt;= adc_threshold, and the histogram gets one entry per frame (much richer statistics, and output fragments shrink)." type="bool" init-value="false" is-not-null="yes"/>
+  <attribute name="prefetch_window" description="How many next_tr/next_ts requests DataFilterReceiver pre-issues to FilterOrchestrator, refilled one-for-one as each TR/TS is ingested. Bounds how far TRDispatcher can run ahead of DataFilter." type="u32" init-value="4" is-not-null="yes"/>
  </class>
 
  <class name="DataFilterBuffered">
@@ -141,13 +143,14 @@
   <attribute name="send_timeout_ms" type="u32" init-value="1000" is-not-null="yes"/>
   <attribute name="recv_timeout_ms" type="u32" init-value="1000" is-not-null="yes"/>
   <attribute name="storage_pathname" description="This is the path where are the hdf5 files stored." type="string" is-not-null="yes"/>
-  <attribute name="is_from_storage" description="This flag allows to force looking hdf5 files from the storage m_storage_pathname." type="bool" init-value="false" is-not-null="yes"/>
-  <attribute name="input_h5_filename" description="This is an input hdf5 file prefix. The extension will be hardcoded to hdf5." type="string" is-not-null="yes"/>
+  <attribute name="is_from_storage" description="Force dispatching real HDF5 files found in storage_pathname. This flag takes precedence: when true, generate_trigger_record and generate_time_slice are ignored (an override is logged) and no synthetic data is produced. Set it false to allow the generate_* flags to select a generated mode." type="bool" init-value="false" is-not-null="yes"/>
+  <attribute name="input_h5_filename" description="Not used for storage dispatch. TRDispatcher discovers files by scanning storage_pathname, using json_file to skip those already delivered; this attribute only appears in the startup log." type="string" is-not-null="yes"/>
   <attribute name="json_file" description="Store a list of hdf5 files that already delivered to the Data Filter. " type="string" is-not-null="yes"/>
   <attribute name="generate_trigger_record" description="Generate a trigger record for testing only.&#xA;This should be false by default." type="bool" init-value="false" is-not-null="yes"/>
   <attribute name="generate_time_slice" description="Generate a TimeSlice for testing only.&#xA;This should be false by default." type="bool" init-value="false" is-not-null="yes"/>
   <attribute name="parallel_send" description="Send TR and TS in parallel threads vs sequentially." type="bool" init-value="false" is-not-null="yes"/>
   <attribute name="number_generated_events" description="Max number of generated events. 0 = unlimited." type="u32" init-value="0" is-not-null="yes"/>
+  <attribute name="generated_window" description="Generated-mode only: max number of dispatched-but-unconfirmed cycles per record type (TR, TS gated independently) before TRDispatcher blocks further dispatch of that type. Ignored in storage mode." type="u32" init-value="4" is-not-null="yes"/>
  </class>
 
 </oks-schema>
