@@ -259,6 +259,15 @@ start_df_influx() {
     mkdir -p "$LOG_DIR" "$PID_DIR"
     rotate_log "dfinflux"
     local logfile="$LOG_DIR/dfinflux.log"
+    # df_to_influx.py reads INFLUXDB_URL/TOKEN/ORG/BUCKET from the environment
+    # and exits immediately if any are unset -- load them here so df-influx
+    # works without the caller having sourced setup_influx.sh by hand first.
+    # Already-exported values win (setup_influx.sh only fills in what's unset).
+    local influx_setup="$SCRIPT_DIR/setup_influx.sh"
+    if [ -f "$influx_setup" ]; then
+        # shellcheck disable=SC1090
+        source "$influx_setup"
+    fi
     python3 "$SCRIPT_DIR/df_to_influx.py" \
         --oks-config "$OKS_DATA_XML" --app-id "$DF_INFLUX_APP_ID" \
         --file "$INVOKE_DIR/datafilter_adc_histogram.json" \

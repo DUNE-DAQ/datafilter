@@ -30,7 +30,11 @@ void FilterOrchestrator::init(
   try {
     m_confdb = std::make_shared<dunedaq::conffwk::Configuration>(m_oksConfig);
   } catch (conffwk::Generic &exc) {
-    std::cout << "Failed to load OKS database: " << exc << std::endl;
+    // Logging and continuing would leave m_confdb null for the get<>() calls
+    // just below, turning a config error into a segfault.
+    throw appfwk::CommandFailed(ERS_HERE, get_name(), "init",
+                                std::string("Failed to load OKS database: ") +
+                                    exc.what());
   }
 
   m_confdb->get<dunedaq::confmodel::Queue>(m_queues);
@@ -85,13 +89,19 @@ void FilterOrchestrator::do_start(const data_t &) {
            << m_cx.trdispatcher_req_rx.front();
   }
 
+  m_stopping.store(false);
   m_thread.start_working_thread();
   TLOG() << get_name() << ": worker thread started";
 }
 
 void FilterOrchestrator::do_stop(const data_t &) {
   TLOG() << get_name() << ": do_stop()";
-  m_thread.stop_working_thread();
+  // Order matters: stop_working_thread() clears the worker flag and blocks in
+  // join(), so the wait must already have been released before it is called.
+  m_stopping.store(true);
+  m_req_cv.notify_all();
+  if (m_thread.thread_running())
+    m_thread.stop_working_thread();
   if (m_req_rx) {
     m_req_rx->remove_callback();
     m_req_rx.reset();
@@ -111,21 +121,45 @@ void FilterOrchestrator::do_work(std::atomic<bool> &running_flag) {
 }
 
 void FilterOrchestrator::receive() {
-  TLOG() << get_name() << ": receive() - Waiting for message from Data Filter";
+  TLOG_DEBUG(5) << get_name() << ": receive() - waiting for a Data Filter request";
+  std::string msg_id;
   {
     std::unique_lock<std::mutex> lk(m_req_mtx);
     m_req_cv.wait(lk, [this] {
-      return !m_req_q.empty() || !m_running_flag->load();
+      return !m_req_q.empty() || m_stopping.load() || !m_running_flag->load();
     });
-    if (!m_running_flag->load()) {
+    if (m_stopping.load() || !m_running_flag->load()) {
       TLOG() << get_name() << ": receive() - stop requested, returning";
       return;
     }
-    TLOG() << get_name() << ": received " << m_req_q.front().msg_id
-           << " instruction from Data Filter";
+    // Copy before pop(): front() is dangling once the queue entry is gone, and
+    // the relay below runs outside this lock.
+    msg_id = m_req_q.front().msg_id;
     m_req_q.pop();
   }
-  request_next_tr();
+  TLOG() << get_name() << ": received " << msg_id
+         << " instruction from Data Filter";
+  relay_request(msg_id);
+}
+
+// Relay the request type that actually arrived. Forwarding a "next_ts" as
+// "next_tr" would leave the TimeSlice side of the dispatcher without credit.
+void FilterOrchestrator::relay_request(const std::string &msg_id) {
+  if (m_cx.trdispatcher_req_tx.empty()) {
+    TLOG() << "trdispatcher_req_tx endpoints is empty";
+    return;
+  }
+  for (const auto &uid : m_cx.trdispatcher_req_tx) {
+    try {
+      auto s = dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(uid);
+      dunedaq::datafilter::Handshake req(msg_id);
+      s->send(std::move(req), std::chrono::milliseconds(500));
+      TLOG() << "Relayed " << msg_id << " to TRDispatcher - Success to " << uid;
+    } catch (const std::exception &e) {
+      TLOG() << "Relayed " << msg_id
+             << " to TRDispatcher - Failed: " << e.what();
+    }
+  }
 }
 
 void FilterOrchestrator::request_next_tr() {

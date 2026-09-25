@@ -42,6 +42,7 @@ public:
   void init(std::shared_ptr<appfwk::ConfigurationManager>) override;
   void send();
   void request_next_tr();
+  void relay_request(const std::string &msg_id);
   void receive();
 
   FilterOrchestrator(const FilterOrchestrator &) = delete;
@@ -56,14 +57,6 @@ protected:
 
 private:
   // Commands FilterOrchestrator can receive
-
-  // TO dfbackend DEVELOPERS: PLEASE DELETE THIS FOLLOWING COMMENT AFTER READING
-  // IT For any run control command it is possible for a DAQModule to register
-  // an action that will be executed upon reception of the command. do_conf is a
-  // very common example of this; in FilterOrchestrator.cpp you would implement
-  // do_conf so that members of FilterOrchestrator get assigned values from a
-  // configuration passed as an argument and originating from the CCM system.
-
   void do_conf(const data_t &);
   void do_start(const data_t &);
   void do_stop(const data_t &);
@@ -85,15 +78,7 @@ private:
   // Configuration
   std::shared_ptr<appfwk::ConfigurationManager> m_mcfg;
 
-  // TO dfbackend DEVELOPERS: PLEASE DELETE THIS FOLLOWING COMMENT AFTER READING
-  // IT m_total_amount and m_amount_since_last_get_info_call are examples of
-  // variables whose values get reported to OpMon
-  // (https://github.com/mozilla/opmon) each time get_info() is
-  // called. "amount" represents a (discrete) value which changes as
-  // FilterOrchestrator runs and whose value we'd like to keep track of during
-  // running; obviously you'd want to replace this "in real life"
-
-  std::atomic<bool> *m_running_flag;
+  std::atomic<bool> *m_running_flag{nullptr};
   std::string m_init_connection;
   std::string m_filter_orchestrator_id;
   std::chrono::milliseconds m_send_timeout_ms{100};
@@ -106,6 +91,12 @@ private:
   std::mutex m_req_mtx;
   std::condition_variable m_req_cv;
   std::shared_ptr<ReceiverConcept<dunedaq::datafilter::Handshake>> m_req_rx;
+
+  // Own stop flag rather than reusing WorkerThread's running_flag: that flag is
+  // cleared by stop_working_thread(), which also blocks in join() -- so there
+  // is no point at which do_stop() could notify m_req_cv and still have the
+  // waiter re-evaluate. This flag is set and notified before the join.
+  std::atomic<bool> m_stopping{false};
 };
 
 } // namespace dunedaq::datafilter

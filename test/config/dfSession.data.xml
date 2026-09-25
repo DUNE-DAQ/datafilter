@@ -142,7 +142,7 @@
  <attr name="adc_threshold" type="u16" val="9130"/>
  <attr name="enable_df_influx" type="bool" val="1"/>
  <attr name="df_influx_poll_interval_s" type="u32" val="5"/>
- <attr name="enable_frame_filter" type="bool" val="0"/>
+ <attr name="enable_frame_filter" type="bool" val="1"/>
  <attr name="prefetch_window" type="u32" val="8"/>
  <rel name="inputs">
   <ref class="NetworkConnection" id="bookkeeping0"/>

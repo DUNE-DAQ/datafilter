@@ -30,7 +30,11 @@ void TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
   try {
     m_confdb = std::make_shared<dunedaq::conffwk::Configuration>(m_oksConfig);
   } catch (conffwk::Generic &exc) {
-    std::cout << "Failed to load OKS database: " << exc << std::endl;
+    // Logging and continuing would leave m_confdb null for the get<>() calls
+    // just below, turning a config error into a segfault.
+    throw appfwk::CommandFailed(ERS_HERE, get_name(), "init",
+                                std::string("Failed to load OKS database: ") +
+                                    exc.what());
   }
 
   m_confdb->get<dunedaq::confmodel::Queue>(m_queues);
@@ -430,6 +434,7 @@ void TRDispatcher::get_from_storage() {
 
   // kStorageHDF5: poll filesystem, dispatch one file per handshake
   size_t idle_cnt = 0;
+  size_t stuck_cnt = 0;
 
   while (m_running_flag && m_running_flag->load()) {
     // Serialize: wait for the current in-flight file to complete before scanning
@@ -439,8 +444,16 @@ void TRDispatcher::get_from_storage() {
       std::unique_lock<std::mutex> lk(m_in_flight_mtx);
       if (!m_in_flight_files.empty()) {
         m_in_flight_cv.wait_for(lk, std::chrono::milliseconds(500));
+        // The set is released only by the BK callback or by receive()'s
+        // failure paths.  If neither ever runs (a lost BK, or a throw on a
+        // dispatch path) this loop spins silently forever, so say so.
+        if (++stuck_cnt % 120 == 0)
+          TLOG() << "TRD: still waiting on " << m_in_flight_files.size()
+                 << " in-flight file(s) after " << stuck_cnt
+                 << " poll iterations; first=" << *m_in_flight_files.begin();
         continue;
       }
+      stuck_cnt = 0;
     }
 
     auto files = get_hdf5files_from_storage();
@@ -539,6 +552,23 @@ void TRDispatcher::do_stop(const data_t &) {
     std::lock_guard<std::mutex> lk(m_bk_waiters_mtx);
     m_bk_waiters.clear();
   }
+
+  // Without this, a file left in flight by this run blocks get_from_storage()'s
+  // serialization wait for the whole of the next run -- it is only ever erased
+  // by a BK reply that is no longer coming.
+  {
+    std::lock_guard<std::mutex> lk(m_in_flight_mtx);
+    m_in_flight_files.clear();
+  }
+  m_in_flight_cv.notify_all();
+  {
+    std::lock_guard<std::mutex> lk(m_backoff_mtx);
+    m_backoff_files.clear();
+  }
+
+  // Cleared so do_start()'s barrier actually waits for the next worker thread
+  // instead of being satisfied by this run's value.
+  m_worker_ready.store(false);
 }
 
 void TRDispatcher::do_work(std::atomic<bool> &running_flag) {
@@ -905,12 +935,20 @@ timeslice_ptr_t TRDispatcher::create_time_slice(uint64_t ts_num) {
 // send trigger records from self generated TR
 void TRDispatcher::send_tr() {
   if (m_number_generated_events > 0) {
-    auto prev = m_events_remaining.fetch_sub(1);
-    if (prev == 0) {
-      m_events_remaining.fetch_add(1);
-      TLOG() << "send_tr: event limit (" << m_number_generated_events
-             << ") reached, skipping";
-      return;
+    // Atomic check-and-decrement: fetch_sub()+fetch_add() left a window where
+    // a concurrent send_ts() (parallel_send) could slip a second decrement
+    // through between this thread's fetch_sub() and its "put it back", so
+    // the shared budget could escape past 0 and never re-arm the guard.
+    uint32_t cur = m_events_remaining.load(std::memory_order_relaxed);
+    for (;;) {
+      if (cur == 0) {
+        TLOG() << "send_tr: event limit (" << m_number_generated_events
+               << ") reached, skipping";
+        return;
+      }
+      if (m_events_remaining.compare_exchange_weak(
+              cur, cur - 1, std::memory_order_acq_rel, std::memory_order_relaxed))
+        break;
     }
   }
 
@@ -1015,7 +1053,13 @@ void TRDispatcher::send_tr() {
 
   dunedaq::datafilter::Handshake sent_t1("next_tr");
   sent_t1.total_tr = 1;
-  init_sender->send(std::move(sent_t1), Sender::s_block);
+  // Bounded: s_block here would hang the thread that do_stop() joins if the
+  // peer never drains.
+  try {
+    init_sender->send(std::move(sent_t1), std::chrono::milliseconds(5000));
+  } catch (const std::exception &e) {
+    TLOG() << "TRD: next_tr tracking send failed: " << e.what();
+  }
 
   std::unordered_map<int, std::set<size_t>> completed_receiver_tracking;
   std::mutex tracking_mutex;
@@ -1098,12 +1142,17 @@ void TRDispatcher::send_tr() {
 // Send a generated TimeSlice (no HDF5 source).
 void TRDispatcher::send_ts() {
   if (m_number_generated_events > 0) {
-    auto prev = m_events_remaining.fetch_sub(1);
-    if (prev == 0) {
-      m_events_remaining.fetch_add(1);
-      TLOG() << "send_ts: event limit (" << m_number_generated_events
-             << ") reached, skipping";
-      return;
+    // See send_tr(): atomic check-and-decrement, same shared m_events_remaining.
+    uint32_t cur = m_events_remaining.load(std::memory_order_relaxed);
+    for (;;) {
+      if (cur == 0) {
+        TLOG() << "send_ts: event limit (" << m_number_generated_events
+               << ") reached, skipping";
+        return;
+      }
+      if (m_events_remaining.compare_exchange_weak(
+              cur, cur - 1, std::memory_order_acq_rel, std::memory_order_relaxed))
+        break;
     }
   }
 
@@ -1310,7 +1359,12 @@ bool TRDispatcher::send_tr_from_hdf5file() {
   // FilterResultWriter
   sent_t1.total_tr = int(records_size);
 
-  init_sender->send(std::move(sent_t1), Sender::s_block);
+  // Bounded: see the generated-mode send above.
+  try {
+    init_sender->send(std::move(sent_t1), std::chrono::milliseconds(5000));
+  } catch (const std::exception &e) {
+    TLOG() << "TRD: next_tr tracking send failed: " << e.what();
+  }
 
   std::unordered_map<int, std::set<size_t>> completed_receiver_tracking;
   std::mutex tracking_mutex;
@@ -1568,17 +1622,38 @@ bool TRDispatcher::send_ts_from_hdf5file() {
 
   auto ts_sender = dunedaq::get_iom_sender<timeslice_ptr_t>(m_tsdispatcher_id);
 
+  // Mirrors the TR path's h5_send_failed handling: an escaping exception would
+  // leave ts_h5_waiter in m_bk_waiters forever, and with it the in-flight guard
+  // that get_from_storage() waits on.
+  bool ts_send_failed = false;
   for (const auto &rid : ts_records) {
-    auto ts = h5_file.get_timeslice(rid);
-    TLOG() << "TimeSlice number " << rid.first << " sequence " << rid.second;
+    try {
+      auto ts = h5_file.get_timeslice(rid);
+      TLOG() << "TimeSlice number " << rid.first << " sequence " << rid.second;
 
-    auto bytes =
-        dunedaq::serialization::serialize(ts, dunedaq::serialization::kMsgPack);
-    auto deserialized =
-        dunedaq::serialization::deserialize<timeslice_ptr_t>(bytes);
+      auto bytes = dunedaq::serialization::serialize(
+          ts, dunedaq::serialization::kMsgPack);
+      auto deserialized =
+          dunedaq::serialization::deserialize<timeslice_ptr_t>(bytes);
 
-    ts_sender->try_send(std::move(deserialized),
-                        std::chrono::milliseconds(m_send_timeout_ms));
+      if (!ts_sender->try_send(std::move(deserialized),
+                               std::chrono::milliseconds(m_send_timeout_ms))) {
+        TLOG() << "TRD: TS send timed out for record " << rid.first;
+        ts_send_failed = true;
+      }
+    } catch (const std::exception &e) {
+      TLOG() << "TRD: TS read/send failed for record " << rid.first << " : "
+             << e.what();
+      ts_send_failed = true;
+    }
+  }
+
+  if (ts_send_failed) {
+    std::lock_guard<std::mutex> lk(m_bk_waiters_mtx);
+    m_bk_waiters.erase(ts_h5_bk_seq);
+    TLOG() << "TRD: TS HDF5 send failed for " << m_input_h5_filename
+           << "; waiter " << ts_h5_bk_seq << " released";
+    return false;
   }
 
   TLOG() << "TimeSlice send done for " << m_input_h5_filename;

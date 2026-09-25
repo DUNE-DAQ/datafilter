@@ -100,28 +100,27 @@ public:
   FilterResultWriter(FilterResultWriter &&) = delete;
   FilterResultWriter &operator=(FilterResultWriter &&) = delete;
 
-  ~FilterResultWriter() = default;
+  ~FilterResultWriter();
 
 protected:
   void generate_opmon_data() override;
 
 private:
   // Commands FilterResultWriter can receive
-
-  // TO dfbackend DEVELOPERS: PLEASE DELETE THIS FOLLOWING COMMENT AFTER READING
-  // IT For any run control command it is possible for a DAQModule to register
-  // an action that will be executed upon reception of the command. do_conf is a
-  // very common example of this; in FilterResultWriter.cpp you would implement
-  // do_conf so that members of FilterResultWriter get assigned values from a
-  // configuration passed as an argument and originating from the CCM system.
-
   void do_conf(const data_t &);
   void do_start(const data_t &);
   void do_stop(const data_t &);
   void receive_attrs(std::atomic<bool> &running);
 
+  // Drains m_dispatch_queue and spawns one worker per BK1.  Runs on
+  // m_dispatch_thread rather than inline in do_start(): execute_command() is
+  // synchronous, so a loop in do_start() would own the caller's thread and the
+  // app could never deliver the "stop" command that ends it.
+  void dispatch_loop(std::atomic<bool> &running);
+
   // Threading
   dunedaq::utilities::WorkerThread m_bk_thread;
+  dunedaq::utilities::WorkerThread m_dispatch_thread;
 
   std::shared_ptr<dunedaq::conffwk::Configuration> m_confdb;
   std::vector<const dunedaq::confmodel::Queue *> m_queues;

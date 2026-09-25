@@ -36,7 +36,9 @@ namespace dunedaq::datafilter {
 FilterResultWriter::FilterResultWriter(const std::string &name)
     : dunedaq::appfwk::DAQModule(name),
       m_bk_thread(std::bind(&FilterResultWriter::receive_attrs, this,
-                            std::placeholders::_1)) {
+                            std::placeholders::_1)),
+      m_dispatch_thread(std::bind(&FilterResultWriter::dispatch_loop, this,
+                                  std::placeholders::_1)) {
   register_command("conf", &FilterResultWriter::do_conf);
   register_command("start", &FilterResultWriter::do_start);
   register_command("stop", &FilterResultWriter::do_stop);
@@ -210,11 +212,57 @@ void FilterResultWriter::do_start(const data_t &) {
         });
   }
 
+  m_dispatch_thread.start_working_thread();
+}
+
+void FilterResultWriter::dispatch_loop(std::atomic<bool> &running) {
   // Each BK1 from DF produces one DispatchEntry.  Threads are spawned without
-  // inline join so TR and TS threads for the same TRD cycle run concurrently
-  // All active threads are joined when the dispatch loop exits.
-  std::vector<std::thread> active_threads;
-  while (m_running.load()) {
+  // inline join so TR and TS threads for the same TRD cycle run concurrently.
+  //
+  // active_threads is capped rather than left to grow for the run's whole
+  // lifetime.  Before this cap, one thread was pushed per dispatch cycle and
+  // the vector was only drained when this loop exited at do_stop() -- over a
+  // long run (this crashed after 32,297 cycles, ~4 hours) that exhausted the
+  // process's thread/mmap budget and std::thread's constructor threw
+  // std::system_error uncaught, taking the whole module down.  Joining the
+  // oldest thread when the cap is hit both reclaims finished workers (join()
+  // on an already-finished thread returns immediately) and bounds worst-case
+  // usage under a slow consumer.  kMaxInFlight sits well above legitimate
+  // concurrency: prefetch_window is 8 in the session config, and the
+  // credit-window can transiently run higher than that (see code review
+  // finding B13).
+  constexpr size_t kMaxInFlight = 32;
+  std::deque<std::thread> active_threads;
+
+  // Cap+spawn one worker; on repeated construction failure, join everything
+  // and retry once more before giving up for this call.  Returns false only
+  // if std::thread construction still fails after that -- the caller must not
+  // drop the entry in that case, since a dropped cycle never gets its
+  // completion BK sent and strands the upstream TRDispatcher's in-flight file.
+  auto spawn = [&](std::function<void()> work) -> bool {
+    while (active_threads.size() >= kMaxInFlight) {
+      TLOG() << "FRW: dispatch_loop backpressure: " << active_threads.size()
+             << " workers in flight, joining oldest";
+      active_threads.front().join();
+      active_threads.pop_front();
+    }
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      try {
+        active_threads.emplace_back(std::move(work));
+        return true;
+      } catch (const std::exception &e) {
+        TLOG() << "FRW: failed to spawn dispatch worker (attempt "
+               << (attempt + 1) << "): " << e.what();
+        while (!active_threads.empty()) {
+          active_threads.front().join();
+          active_threads.pop_front();
+        }
+      }
+    }
+    return false;
+  };
+
+  while (running.load() && m_running.load()) {
     DispatchEntry entry;
     {
       std::unique_lock<std::mutex> lk(m_dispatch_mtx);
@@ -232,8 +280,9 @@ void FilterResultWriter::do_start(const data_t &) {
     TLOG() << "FRW: dispatching record_type=" << entry.record_type
            << " cycle=" << entry.df_cycle_id;
 
+    bool spawned = true;
     if (entry.record_type == "TS" && !m_cx.ts_data_rx.empty()) {
-      active_threads.emplace_back(
+      spawned = spawn(
           [this, cid = entry.df_cycle_id, seq = entry.trd_bk_seq,
            tot = entry.total_tr, fidx = entry.file_index,
            tsn = entry.ts_number] {
@@ -241,16 +290,26 @@ void FilterResultWriter::do_start(const data_t &) {
           });
     } else if (!m_cx.tr_data_rx.empty()) {
       // Default to TR path for "TR", empty string, or any unrecognised type.
-      active_threads.emplace_back([this, cid = entry.df_cycle_id,
-                                   seq = entry.trd_bk_seq,
-                                   tot = entry.total_tr,
-                                   fidx = entry.file_index,
-                                   trn = entry.trigger_number] {
+      spawned = spawn([this, cid = entry.df_cycle_id,
+                       seq = entry.trd_bk_seq,
+                       tot = entry.total_tr,
+                       fidx = entry.file_index,
+                       trn = entry.trigger_number] {
         receive_tr_single_connection(cid, seq, tot, fidx, trn);
       });
     }
+
+    if (!spawned) {
+      // Could not create a worker even after joining everything and retrying.
+      // Re-queue rather than drop, so the cycle is retried instead of
+      // stranding the upstream TRDispatcher's in-flight file.
+      TLOG() << "FRW: could not spawn dispatch worker for cycle="
+             << entry.df_cycle_id << "; re-queuing";
+      std::lock_guard<std::mutex> lk(m_dispatch_mtx);
+      m_dispatch_queue.push(std::move(entry));
+    }
   }
-  TLOG() << "FRW: do_start() dispatch loop exiting, joining "
+  TLOG() << "FRW: dispatch loop exiting, joining "
          << active_threads.size() << " threads";
   for (auto &t : active_threads)
     if (t.joinable())
@@ -265,6 +324,15 @@ void FilterResultWriter::do_stop(const data_t &) {
   m_ts_prebuf_cv.notify_all();
   m_tr_prebuf_cv.notify_all();
   m_write_tr_prebuf_cv.notify_all();
+  m_write_ts_prebuf_cv.notify_all();
+
+  // Stop the dispatch thread before draining anything: it joins the per-cycle
+  // worker threads on its way out, and those workers still pop from the
+  // prebufs.  Guarded because stop_working_thread() throws if do_start() never
+  // ran or already failed.
+  if (m_dispatch_thread.thread_running())
+    m_dispatch_thread.stop_working_thread();
+
   {
     std::lock_guard<std::mutex> lk(m_ts_prebuf_mtx);
     while (!m_ts_prebuf.empty())
@@ -285,7 +353,6 @@ void FilterResultWriter::do_stop(const data_t &) {
     m_write_tr_ctrl_rx.reset();
   }
 
-  m_write_ts_prebuf_cv.notify_all();
   {
     std::lock_guard<std::mutex> lk(m_write_ts_prebuf_mtx);
     while (!m_write_ts_prebuf.empty())
@@ -296,7 +363,47 @@ void FilterResultWriter::do_stop(const data_t &) {
     m_write_ts_ctrl_rx.reset();
   }
 
-  m_bk_thread.stop_working_thread();
+  // Entries queued during this run must not be dispatched at the top of the
+  // next one.
+  {
+    std::lock_guard<std::mutex> lk(m_dispatch_mtx);
+    while (!m_dispatch_queue.empty())
+      m_dispatch_queue.pop();
+  }
+
+  if (m_bk_thread.thread_running())
+    m_bk_thread.stop_working_thread();
+
+  // Run-scoped state: without this the next run inherits this run's numbers and
+  // builds output filenames from them.
+  m_run_number.store(0);
+  m_file_index.store(0);
+  m_num_messages.store(0);
+  m_tr_write_rate.last_mbps.store(0.0);
+  m_tr_write_rate.ewma_mbps.store(0.0);
+  m_ts_write_rate.last_mbps.store(0.0);
+  m_ts_write_rate.ewma_mbps.store(0.0);
+}
+
+// The TR/TS data callbacks registered in do_conf() are deliberately kept across
+// runs (see do_conf) but their lambdas capture `this`, and the receivers they
+// live on outlive this module in the IOManager singleton.  Removing them here
+// is what keeps the event-loop threads from calling into a destroyed object.
+FilterResultWriter::~FilterResultWriter() {
+  if (m_tr_prebuf_rx) {
+    try {
+      m_tr_prebuf_rx->remove_callback();
+    } catch (const std::exception &e) {
+      TLOG() << "~FilterResultWriter: TR callback removal failed: " << e.what();
+    }
+  }
+  if (m_ts_prebuf_rx) {
+    try {
+      m_ts_prebuf_rx->remove_callback();
+    } catch (const std::exception &e) {
+      TLOG() << "~FilterResultWriter: TS callback removal failed: " << e.what();
+    }
+  }
 }
 
 std::string
@@ -561,6 +668,18 @@ std::atomic<size_t> total_msgs_received{0};
                     std::chrono::seconds(kWatchdogSec);
     }
 
+    // find_mine() only checks for fragments when matching on a trigger number,
+    // so in storage mode a zero-fragment TR reaches here.  at(0) would throw
+    // out of this bare worker thread, i.e. std::terminate.
+    if (!tr || tr->get_fragments_ref().empty()) {
+      TLOG() << "FRW: TR with no fragments, skipping";
+      ++tr_write_errors;
+      ++total_msgs_received;
+      if (total_msgs_received.load() >= total_expected)
+        break;
+      continue;
+    }
+
     const size_t trigger_timestamp =
         tr->get_fragments_ref().at(0)->get_trigger_timestamp();
     const size_t trigger_number =
@@ -586,16 +705,22 @@ std::atomic<size_t> total_msgs_received{0};
     TLOG() << "Writing TR " << current_total << "/" << total_expected << " to "
            << writing_pathname;
 
+    // Returning here would skip the final bookkeeping block below, which is
+    // what releases the upstream cycle -- TRDispatcher would keep the file
+    // in flight forever.  Count it as a write error instead, as the TS path
+    // does, so the cycle reports write_failed and completes.
     if (!has_enough_space(m_odir, m_min_free_bytes)) {
       TLOG() << "Skipping TR write — insufficient storage in " << m_odir;
-      return;
-    }
+      ++tr_write_errors;
+    } else {
 
     // Remove any stale .writing file from a previous failed attempt so that
-    // HDF5RawDataFile always starts with a fresh file.
-    if (std::filesystem::exists(writing_pathname)) {
+    // HDF5RawDataFile always starts with a fresh file.  error_code overloads:
+    // a throw here is outside the try below and would terminate the process.
+    std::error_code rm_ec;
+    if (std::filesystem::exists(writing_pathname, rm_ec)) {
       TLOG() << "FRW: removing stale writing file: " << writing_pathname;
-      std::filesystem::remove(writing_pathname);
+      std::filesystem::remove(writing_pathname, rm_ec);
     }
 
     unsigned compression_level = 0;
@@ -640,6 +765,8 @@ std::atomic<size_t> total_msgs_received{0};
       TLOG() << "ERROR writing TR " << current_total << ": " << e.what();
       ++tr_write_errors;
     }
+
+    } // end of the has_enough_space() else
 
     // Check if all expected messages received
     if (current_total >= total_expected) {

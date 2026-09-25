@@ -6,6 +6,7 @@
 #include <cctype> // std::tolower
 #include <condition_variable>
 #include <execution>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <mutex>
@@ -187,8 +188,15 @@ struct BookkeepingReceiver {
   // were ever merged for fname (e.g. storage mode, which never merges).
   nlohmann::json take_completion_json(const std::string &fname) {
     auto it = m_completion_accum.find(fname);
-    if (it == m_completion_accum.end() || !it->second.any)
+    if (it == m_completion_accum.end())
       return nlohmann::json{};
+    // Erase even when nothing was merged: stop() drains with
+    // while (!m_completion_accum.empty()), so returning without erasing is an
+    // infinite loop.
+    if (!it->second.any) {
+      m_completion_accum.erase(it);
+      return nlohmann::json{};
+    }
     CompletionAccum acc = std::move(it->second);
     m_completion_accum.erase(it);
 
@@ -317,13 +325,19 @@ struct BookkeepingReceiver {
     callback_registered.store(false, std::memory_order_relaxed);
     queue_cv.notify_all();
 
-    if (receiver_thread && receiver_thread->joinable())
-      receiver_thread->join();
-    receiver_thread.reset();
-
-    if (writer_thread && writer_thread->joinable())
-      writer_thread->join();
-    writer_thread.reset();
+    // start() writes these handles under queue_mutex; move them out under the
+    // same lock, then join outside it (joining while holding queue_mutex would
+    // deadlock against the threads' own queue_mutex waits).
+    std::unique_ptr<std::thread> rx_thread, wr_thread;
+    {
+      std::lock_guard<std::mutex> lk(queue_mutex);
+      rx_thread = std::move(receiver_thread);
+      wr_thread = std::move(writer_thread);
+    }
+    if (rx_thread && rx_thread->joinable())
+      rx_thread->join();
+    if (wr_thread && wr_thread->joinable())
+      wr_thread->join();
 
     TLOG() << "Bookkeeping receiver fully stopped";
   }
@@ -640,9 +654,11 @@ private:
           // otherwise this is just a transient gap while dispatch is still
           // working through the batch (see m_file_batch_target's comment).
           auto tgt_it = m_file_batch_target.find(fname);
+          auto minted_it = m_file_minted_count.find(fname);
+          const uint64_t minted =
+              minted_it == m_file_minted_count.end() ? 0 : minted_it->second;
           const bool batch_still_filling =
-              tgt_it != m_file_batch_target.end() &&
-              m_file_minted_count[fname] < tgt_it->second;
+              tgt_it != m_file_batch_target.end() && minted < tgt_it->second;
           if (!batch_still_filling) {
             m_file_open_count.erase(cnt_it);
             m_file_batch_target.erase(fname);
@@ -708,7 +724,10 @@ private:
         const int prev =
             m_active_cycles.fetch_sub(1, std::memory_order_acq_rel);
         if (prev == 1) {
-          // Last active cycle just completed.
+          // Last active cycle just completed.  Take m_all_done_mtx: notifying
+          // without it can slip between stop()'s predicate check and its wait,
+          // and the only backstop there is a 10 minute timeout.
+          std::lock_guard<std::mutex> lk(m_all_done_mtx);
           m_all_done_cv.notify_all();
         }
         TLOG() << "Cycle " << cycle_id << " complete (active=" << (prev - 1)
@@ -816,18 +835,37 @@ private:
         // Maintain entries sorted by entry_id using a multimap.
         // nlohmann::json array iterators and std::sort interact
         // unpredictably, so we rebuild the array from a sorted container.
+        // entry_id may be absent in pre-existing on-disk content: the load
+        // path validates only is_array(), and an uncaught type_error here
+        // would escape the writer thread and terminate the process.  Sort such
+        // entries first under an empty key rather than dropping them.
         std::multimap<std::string, nlohmann::json> sorted;
-        for (auto &elem : arr)
-          sorted.emplace(elem["entry_id"].get<std::string>(), std::move(elem));
+        for (auto &elem : arr) {
+          std::string key;
+          if (elem.is_object() && elem.contains("entry_id") &&
+              elem["entry_id"].is_string())
+            key = elem["entry_id"].get<std::string>();
+          sorted.emplace(std::move(key), std::move(elem));
+        }
         arr = nlohmann::json::array();
         for (auto &[_, elem] : sorted)
           arr.push_back(std::move(elem));
 
-        std::ofstream f(fname);
-        if (f.is_open())
+        // Write-then-rename: a truncating in-place write that is interrupted
+        // leaves a partial array that the load path can no longer parse.
+        const std::string tmp = fname + ".tmp";
+        std::ofstream f(tmp);
+        if (f.is_open()) {
           f << arr.dump(4);
-        else
-          TLOG() << "write_to_file: failed to open '" << fname << "'";
+          f.close();
+          std::error_code rn_ec;
+          std::filesystem::rename(tmp, fname, rn_ec);
+          if (rn_ec)
+            TLOG() << "write_to_file: rename '" << tmp << "' -> '" << fname
+                   << "' failed: " << rn_ec.message();
+        } else {
+          TLOG() << "write_to_file: failed to open '" << tmp << "'";
+        }
       }
 
       // Retire completed files so they are never rewritten by later batches.

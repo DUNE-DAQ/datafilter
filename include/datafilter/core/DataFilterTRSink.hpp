@@ -4,6 +4,7 @@
 #include "daqdataformats/TimeSlice.hpp"
 #include "daqdataformats/TriggerRecord.hpp"
 #include <memory>
+#include <stdexcept>
 #include <thread>
 
 #include "iomanager/IOManager.hpp"
@@ -69,9 +70,6 @@ struct TRRewriterSink : DataFilterTRSink {
     const auto bytes = tr ? tr->get_total_size_bytes() : 0;
     TLOG() << "TR total size in bytes " << bytes;
 
-    const std::string &tx_uid = cx.tr_data_tx.front();
-    TLOG() << "tx_uid " << tx_uid;
-
     // Always send write_tr ctrl (even for filtered/null TRs) so FRW receives
     // the post-filter count immediately and does not wait for data that will
     // never arrive.  m_tr_prebuf_rx is registered at do_conf() so no sleep is
@@ -81,6 +79,8 @@ struct TRRewriterSink : DataFilterTRSink {
       try {
         dunedaq::datafilter::Handshake h("write_tr");
         h.total_tr = total_tr;
+        if (!m_ctrl_sender)
+          throw std::runtime_error("ctrl sender not bound; init() not called");
         m_ctrl_sender->send(std::move(h), std::chrono::milliseconds(1000));
         TLOG() << "TRRewriterSink: wrote ctrl 'write_tr' to " << ctrl_uid
                << " total_tr=" << total_tr;
@@ -96,13 +96,17 @@ struct TRRewriterSink : DataFilterTRSink {
       return;
     }
 
-    TLOG() << "TR rewriter send TR to FilterResultWriter";
-
-    // Send the TR
-    if (cx.tr_data_tx.empty()) {
+    // Checked before front() below, and before the TR is handed to the sender:
+    // front() on an empty vector is UB, and the old ordering also destroyed the
+    // TR on the way out.  The write_tr ctrl above has already gone out, so FRW
+    // is not left waiting.
+    if (cx.tr_data_tx.empty() || !m_tr_sender) {
       TLOG() << "TRRewriterSink: No tr_data_tx outputs configured; dropping TR";
       return;
     }
+    const std::string &tx_uid = cx.tr_data_tx.front();
+
+    TLOG() << "TR rewriter send TR to FilterResultWriter on " << tx_uid;
 
     // this is not enable yet.
     // const std::string &tx_uid = pick_tx_uid(tr);
@@ -215,7 +219,9 @@ struct TSRewriterSink : DataFilterTSSink {
 
     // Send "write_ts" ctrl exactly once per TS cycle (first TS triggers it).
     // Uses a 15s timeout so the ctrl can survive FRW's 10s receive_tr wait.
-    if (!m_ts_ctrl_sent.exchange(true) && !cx.tswriter_ctrl.empty()) {
+    // empty() first: exchange() short-circuits away when there is no ctrl
+    // endpoint, consuming the once-per-cycle flag without ever sending.
+    if (!cx.tswriter_ctrl.empty() && !m_ts_ctrl_sent.exchange(true)) {
       try {
         dunedaq::datafilter::Handshake h("write_ts");
         h.total_tr = static_cast<int>(total_ts);
@@ -232,8 +238,9 @@ struct TSRewriterSink : DataFilterTSSink {
     }
 
     try {
-      m_ts_sender->send(std::move(ts_out),
-                        dunedaq::iomanager::Sender::s_block);
+      // Bounded, like the TR path: an unbounded block here holds the receiver
+      // callback thread and with it every later TS.
+      m_ts_sender->send(std::move(ts_out), std::chrono::milliseconds(5000));
       TLOG_DEBUG(5) << "TSRewriterSink: TS sent on " << m_data_uid;
     } catch (const std::exception &e) {
       TLOG() << "TSRewriterSink: ERROR sending TS on " << m_data_uid << " : "
