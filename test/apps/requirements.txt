@@ -1,0 +1,11 @@
+# External Python packages.
+# Install with: pip install -r requirements.txt
+
+click>=8.1          # scan_np04hd.py: CLI argument parsing
+h5py>=3.12          # scan_np04hd.py, view_adc.py: HDF5 file access
+numpy>=2.1          # scan_np04hd.py, view_adc.py: vectorized ADC unpacking and array ops
+matplotlib>=3.9     # view_adc.py: heatmap/waveform/histogram plotting
+
+# Only needed if DataFilter.enable_opmon_influx is set to true (see docs/README.md):
+influxdb-client>=1.45   # df_to_influx.py: forwards ADC accept/reject histograms to InfluxDB 2.x/3.x
+
