@@ -89,6 +89,156 @@ declare -A CONN_ID=( [frw]=trwriter0 [fo]=FO_ctrl0 [trd]=trdispatcher0 [df]=conn
 # PATH -- WORK_DIR resolves identically either way.
 OKS_DATA_XML="${DATAFILTER_OKS_DATA_XML:-$WORK_DIR/sourcecode/datafilter/test/config/dfSession.data.xml}"
 
+# --- Resolve APP/SESSION/OUTPUT_DIR/host from OKS, one Python pass ---
+# BIN/APP/CONN_ID above are the defaults; this overrides APP[key], SESSION,
+# OUTPUT_DIR and each app's resolved host only when dfSession.data.xml gives
+# an unambiguous answer. Anything ambiguous or unresolvable prints one notice
+# on stderr and leaves the corresponding hardcoded default untouched -- a
+# renamed or restructured OKS file degrades to today's behavior rather than
+# breaking the script.
+#
+# Host rule: an app's host is the address of a connection it BINDS, not just
+# uses -- for kSendRecv the receiver binds (so look in that app's `inputs`),
+# for kPubSub the publisher binds (so look in that app's `outputs`). A
+# connection claimed as bind-eligible by more than one app (e.g. TR_tracking0,
+# which is a kSendRecv input shared by TRD/FO/FRW here) can't tell you
+# anything about any of them and is excluded for all of them.
+_oks_eval="$(OKS_DATA_XML="$OKS_DATA_XML" python3 - <<'PYEOF'
+import os, re, shlex, sys
+import xml.etree.ElementTree as ET
+
+oks_data_xml = os.environ.get("OKS_DATA_XML", "")
+
+DAL_CLASS = {
+    "frw": "FilterResultWriter",
+    "fo": "FilterOrchestrator",
+    "trd": "TRDispatcher",
+    "df": "DataFilter",
+}
+
+def emit(key, val):
+    print("{}={}".format(key, shlex.quote(val)))
+
+def warn(msg):
+    print("dfcontrol.sh: OKS lookup: " + msg, file=sys.stderr)
+
+try:
+    root = ET.parse(oks_data_xml).getroot()
+except Exception as e:
+    warn("could not parse {!r} ({}); keeping every hardcoded default".format(oks_data_xml, e))
+    sys.exit(0)
+
+def find_single(cls):
+    matches = root.findall("obj[@class='{}']".format(cls))
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        warn("no <obj class='{}'> found; keeping hardcoded default".format(cls))
+    else:
+        warn("{} <obj class='{}'> found, not exactly one; keeping hardcoded default".format(len(matches), cls))
+    return None
+
+app_obj = {}
+for key, cls in DAL_CLASS.items():
+    obj = find_single(cls)
+    if obj is not None:
+        app_obj[key] = obj
+        emit("_OKS_APP_{}".format(key), obj.get("id"))
+
+session_obj = find_single("Session")
+if session_obj is not None:
+    emit("_OKS_SESSION", session_obj.get("id"))
+
+frw_obj = app_obj.get("frw")
+if frw_obj is not None:
+    odir = frw_obj.find("attr[@name='odir']")
+    if odir is not None and odir.get("val"):
+        emit("_OKS_OUTPUT_DIR", odir.get("val"))
+    else:
+        warn("FilterResultWriter instance has no 'odir' attribute; keeping hardcoded OUTPUT_DIR")
+
+conn_type = {}
+conn_addr = {}
+for obj in root.findall("obj[@class='NetworkConnection']"):
+    cid = obj.get("id")
+    ct = obj.find("attr[@name='connection_type']")
+    addr = obj.find("attr[@name='address']")
+    conn_type[cid] = ct.get("val") if ct is not None else None
+    conn_addr[cid] = addr.get("val") if addr is not None else None
+
+def ordered_bind_candidates(obj):
+    # Document order: kSendRecv inputs (receiver binds), then kPubSub outputs
+    # (publisher binds), de-duplicated while preserving that order. Must not
+    # go through a bare set() for the ordering itself -- Python set iteration
+    # order is not guaranteed stable across runs, which would make "first
+    # candidate" flip between invocations.
+    seen = set()
+    result = []
+    inp = obj.find("rel[@name='inputs']")
+    if inp is not None:
+        for ref in inp.findall("ref"):
+            cid = ref.get("id")
+            if conn_type.get(cid) == "kSendRecv" and cid not in seen:
+                seen.add(cid)
+                result.append(cid)
+    outp = obj.find("rel[@name='outputs']")
+    if outp is not None:
+        for ref in outp.findall("ref"):
+            cid = ref.get("id")
+            if conn_type.get(cid) == "kPubSub" and cid not in seen:
+                seen.add(cid)
+                result.append(cid)
+    return result
+
+candidates = {key: ordered_bind_candidates(obj) for key, obj in app_obj.items()}
+
+claim_count = {}
+for key, cands in candidates.items():
+    for c in cands:
+        claim_count[c] = claim_count.get(c, 0) + 1
+ambiguous = {c for c, n in claim_count.items() if n > 1}
+
+def host_of(cid):
+    addr = conn_addr.get(cid) or ""
+    m = re.match(r"tcp://([^:]+):", addr)
+    return m.group(1) if m else None
+
+for key, cands in candidates.items():
+    unique_cands = [c for c in cands if c not in ambiguous]
+    if not unique_cands:
+        warn("{}: no uniquely bind-eligible connection (every candidate is shared with another app); keeping hardcoded CONN_ID host".format(key))
+        continue
+    resolved = [(c, host_of(c)) for c in unique_cands]
+    hosts_only = [h for _, h in resolved if h]
+    if not hosts_only:
+        warn("{}: bind-eligible connections have no tcp:// address; keeping hardcoded CONN_ID host".format(key))
+        continue
+    first_host = hosts_only[0]
+    if any(h and h != first_host for _, h in resolved):
+        warn("{}: bind-eligible connections disagree on host ({}); keeping hardcoded CONN_ID host".format(key, resolved))
+        continue
+    emit("_OKS_HOST_{}".format(key), first_host)
+PYEOF
+)"
+eval "$_oks_eval"
+unset _oks_eval
+
+for _k in frw fo trd df; do
+    _v="_OKS_APP_$_k"
+    [ -n "${!_v:-}" ] && APP[$_k]="${!_v}"
+done
+[ -n "${_OKS_SESSION:-}" ] && SESSION="$_OKS_SESSION"
+# DATAFILTER_OUTPUT_DIR still wins over both the OKS value and the hardcoded
+# default -- only fill in from OKS when the user didn't override it.
+[ -n "${_OKS_OUTPUT_DIR:-}" ] && [ -z "${DATAFILTER_OUTPUT_DIR:-}" ] && OUTPUT_DIR="$_OKS_OUTPUT_DIR"
+declare -A OKS_HOST=()
+for _k in frw fo trd df; do
+    _v="_OKS_HOST_$_k"
+    [ -n "${!_v:-}" ] && OKS_HOST[$_k]="${!_v}"
+done
+unset _k _v _OKS_APP_frw _OKS_APP_fo _OKS_APP_trd _OKS_APP_df _OKS_SESSION _OKS_OUTPUT_DIR \
+      _OKS_HOST_frw _OKS_HOST_fo _OKS_HOST_trd _OKS_HOST_df
+
 # Use supervisord if both supervisord and supervisorctl are available
 USE_SUPERVISORD=0
 if command -v supervisord &>/dev/null && command -v supervisorctl &>/dev/null; then
@@ -107,15 +257,19 @@ SETUP_SCRIPT="${SETUP_SCRIPT:-$WORK_DIR/env.sh}"
 _SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ControlMaster=no -o GSSAPIAuthentication=no -o HostbasedAuthentication=no -o BatchMode=yes"
 [ -n "$SSH_KEY" ] && _SSH_OPTS="$_SSH_OPTS -o IdentitiesOnly=yes -i $SSH_KEY"
 
-# Map user-friendly name (trdispatcher, df, datafilter, ...) to internal key
+# Map user-friendly name (trdispatcher, df, datafilter, ...) to internal key.
+# Checks the live BIN/LABEL/APP values rather than literal strings, so it
+# still recognizes the OKS instance name even when APP[key] was resolved from
+# OKS above to something other than its hardcoded default (dfcontrol.sh:78).
 resolve_key() {
-    case "$1" in
-        frw|filterresultwriter|FilterResultWriter_0) echo frw ;;
-        fo|filterorchestrator|FilterOrchestrator_0)  echo fo  ;;
-        trd|trdispatcher|TRDispatcher_0)             echo trd ;;
-        df|datafilter|datafilter2|DataFilter_0)      echo df  ;;
-        *) echo ""; return 1 ;;
-    esac
+    local k
+    for k in frw fo trd df; do
+        case "$1" in
+            "$k"|"${LABEL[$k]}"|"${BIN[$k]}"|"${APP[$k]}") echo "$k"; return 0 ;;
+        esac
+    done
+    echo ""
+    return 1
 }
 
 pid_file()  { echo "$PID_DIR/${1}.pid"; }
@@ -138,9 +292,16 @@ _remote_alive() {
     fi
 }
 
-# Extract host from tcp://HOST:PORT address of the app's canonical NetworkConnection.
+# Return the app's host: OKS_HOST[key] if the startup lookup resolved it
+# unambiguously (see the OKS-resolution block above); otherwise fall back to
+# resolving CONN_ID[key]'s single hardcoded connection address directly, same
+# as before this function started preferring OKS_HOST.
 get_app_host() {
     local key="$1"
+    if [ -n "${OKS_HOST[$key]:-}" ]; then
+        echo "${OKS_HOST[$key]}"
+        return
+    fi
     python3 -c "
 import xml.etree.ElementTree as ET, re, sys
 root = ET.parse('$OKS_DATA_XML').getroot()
@@ -234,7 +395,10 @@ df_influx_pid_file() { echo "$PID_DIR/dfinflux.pid"; }
 # in the OKS config below -- DataFilter writes datafilter_adc_histogram.json
 # directly (bypassing opmon entirely, see DataFilter::generate_opmon_data()),
 # so unlike a real opmon file sink there's no app-name-derived filename here.
-DF_INFLUX_APP_ID="DataFilter_0"
+# Same instance id as APP[df] -- read from there instead of hardcoding it a
+# second time, so both stay in sync with whatever OKS resolved (or its
+# fallback).
+DF_INFLUX_APP_ID="${APP[df]}"
 
 _df_influx_enabled() {
     if [ ! -f "$OKS_DATA_XML" ]; then
