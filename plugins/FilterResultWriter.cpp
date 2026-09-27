@@ -219,18 +219,14 @@ void FilterResultWriter::dispatch_loop(std::atomic<bool> &running) {
   // Each BK1 from DF produces one DispatchEntry.  Threads are spawned without
   // inline join so TR and TS threads for the same TRD cycle run concurrently.
   //
-  // active_threads is capped rather than left to grow for the run's whole
-  // lifetime.  Before this cap, one thread was pushed per dispatch cycle and
-  // the vector was only drained when this loop exited at do_stop() -- over a
-  // long run (this crashed after 32,297 cycles, ~4 hours) that exhausted the
-  // process's thread/mmap budget and std::thread's constructor threw
-  // std::system_error uncaught, taking the whole module down.  Joining the
-  // oldest thread when the cap is hit both reclaims finished workers (join()
-  // on an already-finished thread returns immediately) and bounds worst-case
-  // usage under a slow consumer.  kMaxInFlight sits well above legitimate
-  // concurrency: prefetch_window is 8 in the session config, and the
-  // credit-window can transiently run higher than that (see code review
-  // finding B13).
+  // active_threads is capped instead of left to grow for the run's whole
+  // lifetime -- an uncapped version of this once ran 32,297 threads over
+  // ~4 hours and crashed via thread/mmap exhaustion.  Joining the oldest
+  // thread when the cap is hit both reclaims finished workers (join() on an
+  // already-finished thread returns immediately) and bounds worst-case
+  // growth under a slow consumer.  kMaxInFlight is set well above the
+  // configured prefetch_window (8), since the credit window can transiently
+  // run higher than that.
   constexpr size_t kMaxInFlight = 32;
   std::deque<std::thread> active_threads;
 

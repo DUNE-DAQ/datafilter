@@ -10,6 +10,8 @@
 
 #include "DataFilter.hpp"
 
+#include <algorithm>
+
 #include <fstream>
 
 namespace dunedaq::datafilter {
@@ -88,19 +90,28 @@ void DataFilter::generate_opmon_data() {
   info.set_total_amount(m_total_amount.load());
   info.set_amount_since_last_call(m_amount_since_last_call.exchange(0));
   publish(std::move(info));
-
-  generate_influx_data();
 }
 
 void DataFilter::generate_influx_data() {
   // Accept/reject ADC histograms bypass opmon entirely: OpMonValue only
-  // supports scalars, so a repeated field here would be silently dropped
-  // (see datafilter_info.proto). Written directly to our own file instead,
-  // on the same cadence as the opmon publish above. Bare relative filename
-  // -> lands in the process's cwd, i.e. dfcontrol.sh's "running directory"
-  // (INVOKE_DIR), same convention as the bookkeeping_*.json files.
+  // supports scalar fields, not arrays. Written directly to our own file
+  // instead. Bare relative filename -> lands in the process's cwd, i.e.
+  // dfcontrol.sh's "running directory" (INVOKE_DIR), same convention as
+  // bookkeeping_*.json.
   if (m_rx && m_rx->m_alg.enable_histogram) {
     auto [accepted, rejected] = m_rx->m_alg.take_histograms();
+    // Write the idle (all-zero) snapshot once on the active-to-idle
+    // transition, then skip further writes while nothing changes -- keeps
+    // the file's mtime meaningful as "last real activity" instead of
+    // rewriting a stale snapshot with a fresh timestamp every interval.
+    const bool any_activity =
+        std::ranges::any_of(accepted, [](auto c) { return c != 0; }) ||
+        std::ranges::any_of(rejected, [](auto c) { return c != 0; });
+    if (!any_activity && m_hist_idle) {
+      return;
+    }
+    m_hist_idle = !any_activity;
+
     nlohmann::json j;
     j["session"] = m_session_name;
     j["app"] = get_name();
@@ -119,25 +130,13 @@ void DataFilter::generate_influx_data() {
 void DataFilter::do_conf(const data_t &cfg) {
   TLOG() << get_name() << " do_conf()";
 
-  // Real opmon manager -- this app's main() bypasses appfwk::Application, so
-  // there is no framework-provided OpMonManager/register_node/start_monitoring
-  // wiring anywhere else. Build it here so generate_opmon_data() actually
-  // fires. m_mcfg->session() works without initialize() (DataFilter_0 isn't
-  // an Application-typed OKS object); get_dal<T>(name) is a generic by-name
-  // fetch, so the OpMonConf lookup below doesn't need one either.
-  const std::string opmon_uri =
-      m_mcfg->session()->get_opmon_uri()->get_URI(get_name());
-  m_opmgr = std::make_shared<dunedaq::opmonlib::OpMonManager>(
-      m_session_name, get_name(), opmon_uri);
-  auto opmon_conf = m_mcfg->get_dal<dunedaq::confmodel::OpMonConf>(
-      "datafilter-opmon-conf");
-  m_opmgr->set_opmon_conf(opmon_conf);
-  m_opmgr->register_node(get_name(), shared_from_this());
-
+  // Stack-local, same as TRDispatcher/FilterOrchestrator/FilterResultWriter:
+  // only here to satisfy configure()'s mandatory OpMonManager& parameter.
+  dunedaq::opmonlib::TestOpMonManager opmgr;
   try {
     TLOG() << "Configure IOManager...";
     get_iomanager()->configure(m_session_name, m_queues, m_networkconnections,
-                               nullptr, *m_opmgr);
+                               nullptr, opmgr);
   } catch (const std::exception &e) {
     TLOG() << "Failed to configure IOManager. " << e.what();
     throw;
@@ -164,9 +163,11 @@ void DataFilter::do_conf(const data_t &cfg) {
       static_cast<uint16_t>(mdal->get_adc_threshold());
   const bool enable_df_influx = mdal->get_enable_df_influx();
   const bool enable_frame_filter = mdal->get_enable_frame_filter();
+  m_hist_interval_s = mdal->get_df_influx_poll_interval_s();
   TLOG() << "DataFilter: adc_threshold=" << adc_threshold
          << " enable_df_influx=" << enable_df_influx
-         << " enable_frame_filter=" << enable_frame_filter;
+         << " enable_frame_filter=" << enable_frame_filter
+         << " df_influx_poll_interval_s=" << m_hist_interval_s;
 
   // bookkeeping first
   m_bk = std::make_shared<dunedaq::datafilter::BookkeepingReceiver>(
@@ -179,7 +180,6 @@ void DataFilter::do_conf(const data_t &cfg) {
       m_connections.bk_outputs.size() > 1 ? m_connections.bk_outputs.at(1)
                                           : ""); // bookkeeping2 -> TRD
 
-  m_bk->start();
   // Wire sink -> organiser -> receiver
   m_sink = std::make_shared<dunedaq::datafilter::TRRewriterSink>(
       m_connections, dunedaq::datafilter::SendPolicy::First);
@@ -214,12 +214,14 @@ void DataFilter::do_conf(const data_t &cfg) {
 
   // Pre-warm PULL sockets so they exist before TRD/FRW send tracking/BK
   // messages. IOManager creates sockets lazily; without this, cold-start sends
-  // are dropped.
-  if (!m_connections.tr_tracking_rx.empty()) {
-    dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
-        m_connections.tr_tracking_rx.front());
-    TLOG() << "DF: pre-warmed tr_tracking_rx PULL on "
-           << m_connections.tr_tracking_rx.front();
+  // are dropped. All tracking uids, not just the first: DataFilterReceiver::
+  // start() (do_start()) registers every entry in tr_tracking_rx, and by then
+  // m_bk->start() has already spawned threads touching IOManager's receiver
+  // map under a different Datatype's lock -- any uid left cold here would
+  // still race with those threads instead of being a no-op cache hit.
+  for (const auto &tuid : m_connections.tr_tracking_rx) {
+    dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(tuid);
+    TLOG() << "DF: pre-warmed tr_tracking_rx PULL on " << tuid;
   }
   if (!m_connections.bk_inputs.empty()) {
     dunedaq::get_iom_receiver<dunedaq::datafilter::BookKeeping>(
@@ -249,6 +251,14 @@ void DataFilter::do_conf(const data_t &cfg) {
     m_ts_sink->init(ts_data_uid, ts_ctrl_uid);
     TLOG() << "DF: pre-created TS sender on " << ts_data_uid;
   }
+
+  // Started last: its receiver/writer threads call get_iom_receiver()/
+  // get_iom_sender() on their own (bookkeeping_manager.hpp), which race with
+  // the prewarm/precreate calls above on IOManager's shared connection maps
+  // (each Datatype's lookup is guarded by its own static mutex, not a single
+  // lock over the whole map) -- this crashed once as a null receiver in
+  // DataFilterReceiver::start()'s tracking-attach loop.
+  m_bk->start();
 }
 
 void DataFilter::do_start(const data_t & /*cfg*/) {
@@ -260,14 +270,28 @@ void DataFilter::do_start(const data_t & /*cfg*/) {
 
   m_rx->start();
 
-  if (m_opmgr) {
-    m_opmgr->start_monitoring();
+  if (m_rx->m_alg.enable_histogram) {
+    m_hist_thread = std::jthread(
+        [this, dt = std::chrono::seconds(std::max(1u, m_hist_interval_s))]
+        (std::stop_token st) {
+          std::mutex mx;
+          std::condition_variable_any cv;
+          std::unique_lock lk(mx);
+          while (!cv.wait_for(lk, st, dt, [&st] { return st.stop_requested(); }))
+            generate_influx_data();
+        });
   }
 }
 
 void DataFilter::do_stop(const data_t & /*cfg*/) {
 
   TLOG() << get_name() << " do_stop()";
+
+  if (m_hist_thread.joinable()) {
+    m_hist_thread.request_stop();
+    m_hist_thread.join();
+    generate_influx_data(); // flush the final partial interval
+  }
 
   // Wait for all bookkeeping entries (TRD initial, FRW completion, TRD final)
   // before letting the framework tear down IOM connections.  Without this

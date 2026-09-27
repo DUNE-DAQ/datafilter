@@ -13,9 +13,7 @@
 #define DATAFILTER_PLUGINS_DATAFILTER_HPP_
 
 #include "appfwk/DAQModule.hpp"
-#include "confmodel/OpMonConf.hpp"
-#include "confmodel/OpMonURI.hpp"
-#include "opmonlib/OpMonManager.hpp"
+#include "opmonlib/TestOpMonManager.hpp"
 #include "utilities/WorkerThread.hpp"
 
 #include "iomanager/IOManager.hpp"
@@ -31,7 +29,10 @@
 #include "datafilter/dal/DataFilter.hpp"
 #include "datafilter/opmon/datafilter_info.pb.h"
 
+#include <condition_variable>
 #include <memory>
+#include <mutex>
+#include <thread>
 
 namespace dunedaq::datafilter {
 
@@ -42,6 +43,13 @@ public:
   void init(std::shared_ptr<appfwk::ConfigurationManager>) override;
 
   ~DataFilter() {
+    // Guard against a destructor path that skips do_stop() (e.g. an
+    // exception during startup): stop the histogram thread before any
+    // member its loop touches goes away.
+    if (m_hist_thread.joinable()) {
+      m_hist_thread.request_stop();
+      m_hist_thread.join();
+    }
     if (m_bk) {
       m_bk->stop();
     }
@@ -58,8 +66,8 @@ private:
   void do_work(std::atomic<bool> &running_flag);
 
   // Writes datafilter_adc_histogram.json for df_to_influx.py -- bypasses
-  // opmon entirely (OpMonValue can't carry arrays), called from within
-  // generate_opmon_data() but kept separate since it isn't opmon data.
+  // opmon entirely (OpMonValue can't carry arrays); runs on its own timer
+  // (m_hist_thread), not opmon's.
   void generate_influx_data();
 
   void print_attrs();
@@ -74,13 +82,6 @@ private:
   std::shared_ptr<DataFilterOrganiser> m_organiser;
   std::unique_ptr<DataFilterReceiver> m_rx;
   std::shared_ptr<dunedaq::datafilter::BookkeepingReceiver> m_bk;
-
-  // Real opmon manager -- owns a std::jthread, so it must live as long as
-  // the module does. Registered via register_node()/start_monitoring() in
-  // do_conf()/do_start() so generate_opmon_data() actually gets called
-  // periodically (the framework's own Application/DAQModuleManager wiring
-  // that would normally do this doesn't run in this app's bespoke main()).
-  std::shared_ptr<dunedaq::opmonlib::OpMonManager> m_opmgr;
 
   std::vector<const dunedaq::confmodel::Queue *> m_queues;
   std::vector<const confmodel::NetworkConnection *> m_networkconnections;
@@ -109,6 +110,16 @@ private:
 
   std::atomic<int64_t> m_total_amount{0};
   std::atomic<int> m_amount_since_last_call{0};
+
+  // Gates generate_influx_data()'s idle-snapshot write; histogram thread only.
+  bool m_hist_idle{false};
+
+  // Drives generate_influx_data() on its own timer, independent of opmon.
+  // m_hist_thread must stay the LAST member declared: members are destroyed
+  // in reverse declaration order, and its loop reaches m_session_name and
+  // m_hist_idle above, so it has to be stopped before either can go away.
+  uint32_t m_hist_interval_s{5};
+  std::jthread m_hist_thread;
 };
 
 } // namespace dunedaq::datafilter
