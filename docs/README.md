@@ -1,4 +1,4 @@
-# DataFilter V5 — Integration Test Guide
+# DataFilter V5 -- Integration Test Guide
 
 * For old V4:
   * https://github.com/DUNE-DAQ/datafilter/tree/dunedaq-v4.1.1/
@@ -27,11 +27,9 @@ export DATAFILTER_WORK_DIR=/your/installation/path
 
 cd test/apps   # in each terminal
 
-# to build DF (after dbt-build + dbt-workarea-env, dfcontrol.sh resolves via PATH
-# to the installed copy at install/datafilter/bin/dfcontrol.sh; before that, or if
-# it's not on PATH, run it via ./dfcontrol.sh from test/apps/)
+# to build DF 
 
-dbt-build or dfcontrol.sh build
+dbt-build or ./dfcontrol.sh build # from test/apps
 
 # to start all the four apps
 
