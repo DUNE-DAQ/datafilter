@@ -427,10 +427,17 @@ start_df_influx() {
     # and exits immediately if any are unset -- load them here so df-influx
     # works without the caller having sourced setup_influx.sh by hand first.
     # Already-exported values win (setup_influx.sh only fills in what's unset).
-    local influx_setup="$SCRIPT_DIR/setup_influx.sh"
+    # WORK_DIR-relative, not SCRIPT_DIR-relative: like dfSession.data.xml,
+    # setup_influx.sh only ever lives in the sourcecode tree (it's not part
+    # of daq_install()'s install rule), but SCRIPT_DIR is install/.../bin
+    # when this dfcontrol.sh copy is the installed one on PATH.
+    local influx_setup="$WORK_DIR/sourcecode/datafilter/test/apps/setup_influx.sh"
     if [ -f "$influx_setup" ]; then
         # shellcheck disable=SC1090
         source "$influx_setup"
+    else
+        echo "  df-influx: setup_influx.sh not found at $influx_setup" \
+             "(INFLUXDB_* must already be exported, or df-influx will fail)"
     fi
     python3 "$SCRIPT_DIR/df_to_influx.py" \
         --oks-config "$OKS_DATA_XML" --app-id "$DF_INFLUX_APP_ID" \
