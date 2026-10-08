@@ -32,7 +32,10 @@ void DataFilter::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
   try {
     m_confdb = std::make_shared<dunedaq::conffwk::Configuration>(m_oksConfig);
   } catch (conffwk::Generic &exc) {
-    std::cout << "Failed to load OKS database: " << exc << std::endl;
+    // throw a segfault intead of logging.
+    throw appfwk::CommandFailed(ERS_HERE, get_name(), "init",
+                                std::string("Failed to load OKS database: ") +
+                                    exc.what());
   }
 
   m_confdb->get<dunedaq::confmodel::Queue>(m_queues);
@@ -212,13 +215,14 @@ void DataFilter::do_conf(const data_t &cfg) {
     TLOG() << "TR data uid: " << uid;
   }
 
-  // Pre-warm PULL sockets so they exist before TRD/FRW send tracking/BK
-  // messages. IOManager creates sockets lazily; without this, cold-start sends
-  // are dropped. All tracking uids, not just the first: DataFilterReceiver::
-  // start() (do_start()) registers every entry in tr_tracking_rx, and by then
-  // m_bk->start() has already spawned threads touching IOManager's receiver
-  // map under a different Datatype's lock -- any uid left cold here would
-  // still race with those threads instead of being a no-op cache hit.
+  // Pre-warm every connection DataFilter will ever register a receiver/
+  // sender for, not just tr_tracking_rx/bk_inputs. IOManager creates sockets
+  // lazily, caching each in a Datatype-templated map guarded by that
+  // Datatype's own static mutex -- m_bk->start() below spawns threads that
+  // touch this same shared map under BookKeeping's lock, so any uid left
+  // cold here would still have its first-use registration race against
+  // those threads instead of being a no-op cache hit (this is exactly what
+  // crashed before tr_tracking_rx/bk_inputs were added here).
   for (const auto &tuid : m_connections.tr_tracking_rx) {
     dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(tuid);
     TLOG() << "DF: pre-warmed tr_tracking_rx PULL on " << tuid;
@@ -228,6 +232,29 @@ void DataFilter::do_conf(const data_t &cfg) {
         m_connections.bk_inputs.front());
     TLOG() << "DF: pre-warmed bk_inputs PULL on "
            << m_connections.bk_inputs.front();
+  }
+  // trdispatcher_req_tx: resolved fresh by DataFilterOrganiser on every
+  // request_next_tr()/request_next_ts() call for the whole run otherwise.
+  for (const auto &uid : m_connections.trdispatcher_req_tx) {
+    dunedaq::get_iom_sender<dunedaq::datafilter::Handshake>(uid);
+    TLOG() << "DF: pre-warmed trdispatcher_req_tx PUSH on " << uid;
+  }
+  // bk_outputs: resolved lazily by BookkeepingReceiver's send_bk()/
+  // send_completion_to_trd() the first time a file completes.
+  for (const auto &uid : m_connections.bk_outputs) {
+    dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(uid);
+    TLOG() << "DF: pre-warmed bk_outputs PUSH on " << uid;
+  }
+  // tr_data_rx/ts_data_rx: otherwise first registered inside
+  // DataFilterReceiver::start(), i.e. in do_start(), after m_bk->start()
+  // below has already spawned threads touching the same shared map.
+  for (const auto &uid : m_connections.tr_data_rx) {
+    dunedaq::get_iom_receiver<trigger_record_ptr_t>(uid);
+    TLOG() << "DF: pre-warmed tr_data_rx PULL on " << uid;
+  }
+  for (const auto &uid : m_connections.ts_data_rx) {
+    dunedaq::get_iom_receiver<timeslice_ptr_t>(uid);
+    TLOG() << "DF: pre-warmed ts_data_rx PULL on " << uid;
   }
 
   // Pre-create PUB/PUSH sender sockets in do_conf() so ZMQ connections
@@ -271,15 +298,15 @@ void DataFilter::do_start(const data_t & /*cfg*/) {
   m_rx->start();
 
   if (m_rx->m_alg.enable_histogram) {
-    m_hist_thread = std::jthread(
-        [this, dt = std::chrono::seconds(std::max(1u, m_hist_interval_s))]
-        (std::stop_token st) {
-          std::mutex mx;
-          std::condition_variable_any cv;
-          std::unique_lock lk(mx);
-          while (!cv.wait_for(lk, st, dt, [&st] { return st.stop_requested(); }))
-            generate_influx_data();
-        });
+    m_hist_thread = std::jthread([this, dt = std::chrono::seconds(
+                                            std::max(1u, m_hist_interval_s))](
+                                     std::stop_token st) {
+      std::mutex mx;
+      std::condition_variable_any cv;
+      std::unique_lock lk(mx);
+      while (!cv.wait_for(lk, st, dt, [&st] { return st.stop_requested(); }))
+        generate_influx_data();
+    });
   }
 }
 

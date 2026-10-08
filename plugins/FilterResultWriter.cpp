@@ -52,7 +52,11 @@ void FilterResultWriter::FilterResultWriter::init(
   try {
     m_confdb = std::make_shared<dunedaq::conffwk::Configuration>(m_oksConfig);
   } catch (conffwk::Generic &exc) {
-    std::cout << "Failed to load OKS database: " << exc << std::endl;
+    // Logging and continuing would leave m_confdb null for the get<>() calls
+    // just below, turning a config error into a segfault.
+    throw appfwk::CommandFailed(ERS_HERE, get_name(), "init",
+                                std::string("Failed to load OKS database: ") +
+                                    exc.what());
   }
 
   m_confdb->get<dunedaq::confmodel::Queue>(m_queues);
