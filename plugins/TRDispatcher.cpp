@@ -30,8 +30,7 @@ void TRDispatcher::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
   try {
     m_confdb = std::make_shared<dunedaq::conffwk::Configuration>(m_oksConfig);
   } catch (conffwk::Generic &exc) {
-    // Logging and continuing would leave m_confdb null for the get<>() calls
-    // just below, turning a config error into a segfault.
+    // Throw instead of logging and continuing with a null m_confdb.
     throw appfwk::CommandFailed(ERS_HERE, get_name(), "init",
                                 std::string("Failed to load OKS database: ") +
                                     exc.what());
@@ -154,15 +153,9 @@ void TRDispatcher::do_start(const data_t &) {
   TLOG() << "TRD do_start(): ENTER, m_start_barrier=" << m_start_barrier.load()
          << " m_keep_running=" << m_keep_running.load();
 
-  // Generated mode reuses a fixed run_number (see the class member's default)
-  // across separate test sessions. Without this, DF's bookkeeping writer
-  // would merge this session's entries with leftover bookkeeping_<run>_*.json
-  // files from an earlier session at the same run_number -- write_to_file()'s
-  // reload-existing-content logic is meant for same-session retry after an
-  // HD failure, not for a brand new session starting cold. Scoped to
-  // generated mode only: storage mode's run_number comes from each source
-  // HDF5 file's own attribute and legitimately varies, so there is no single
-  // "this session's run_number" to scope a cleanup to.
+  // Generated mode reuses a fixed run_number across sessions -- without this,
+  // DF's bookkeeping writer would merge this session's entries with a prior
+  // session's leftover bookkeeping_<run>_*.json. Storage mode is exempt.
   if (m_generate_trigger_record || m_generate_time_slice) {
     std::ostringstream prefix_oss;
     prefix_oss << "bookkeeping_" << std::setw(6) << std::setfill('0')
@@ -195,15 +188,13 @@ void TRDispatcher::do_start(const data_t &) {
   m_tr_pub_warmup_needed.store(true);
   m_ts_pub_warmup_needed.store(true);
   // Reset the generated-mode in-flight window: do_stop()'s bulk
-  // m_bk_waiters.clear() does not run the per-waiter decrement, so a run
-  // stopped mid-cycle would otherwise leave a stale non-zero count that
-  // wedges the very next run's dispatch.
+  // m_bk_waiters.clear() skips the per-waiter decrement, so a stale non-zero
+  // count would otherwise wedge the very next run's dispatch.
   m_tr_in_flight.store(0, std::memory_order_relaxed);
   m_ts_in_flight.store(0, std::memory_order_relaxed);
 
-  // Always-on callback on bk_inputs (bookkeeping2): routes each confirmation
-  // from DF to the correct in-flight CycleWaiter by trd_bk_seq.  Registered
-  // before get_from_storage() so no confirmation can arrive before the
+  // Always-on callback on bk_inputs (bookkeeping2); registered before
+  // get_from_storage() so no confirmation from DF can arrive before the
   // callback is active.
   if (!m_cx.bk_inputs.empty()) {
     m_bk_always_on_rx =
@@ -246,8 +237,8 @@ void TRDispatcher::do_start(const data_t &) {
         dunedaq::datafilter::time_point_to_string tp2s(
             dunedaq::datafilter::Precision::NANOSECONDS);
         dunedaq::datafilter::BookKeeping final_bk(m_bk_connection_o);
-        // Use FRW's completion timestamp when available (propagated by DF relay);
-        // fall back to now() only if relay did not set it.
+        // Use FRW's completion timestamp when available (propagated by DF
+        // relay); fall back to now() only if relay did not set it.
         final_bk.entry_id = bk.entry_id.empty()
                                 ? tp2s(std::chrono::system_clock::now())
                                 : bk.entry_id;
@@ -276,10 +267,9 @@ void TRDispatcher::do_start(const data_t &) {
         }
       }
 
-      // Deferred WriteJSON for HDF5 mode.
-      // WriteJSON is called BEFORE releasing the in-flight guard to
-      // eliminate the TOCTOU window where the file is neither in-flight
-      // nor in the JSON (which lets the 100ms polling loop re-dispatch it).
+      // WriteJSON is called BEFORE releasing the in-flight guard -- otherwise
+      // a TOCTOU window exists where the file is neither in-flight nor in the
+      // JSON, letting the polling loop re-dispatch it.
       if (waiter->is_hdf5_mode && waiter->got_reply.load()) {
         if (bk.tr_status == to_string(TRStatus::kFileCompleted) ||
             bk.tr_status == to_string(TRStatus::kReRecorded)) {
@@ -349,18 +339,15 @@ void TRDispatcher::do_start(const data_t &) {
            << m_cx.trdispatcher_req_rx.front();
   }
 
-  // Start the WorkerThread so get_from_storage() runs off the command thread.
-  // If we call get_from_storage() directly here, the framework's sequential
-  // command dispatch blocks: DF/FRW never get do_start() and never send
-  // "next_tr", so we deadlock.
+  // Start the WorkerThread so get_from_storage() runs off the command
+  // thread -- calling it directly here would block the framework's
+  // sequential command dispatch and deadlock the whole pipeline.
   TLOG() << "TRD do_start: starting WorkerThread";
   m_thread.start_working_thread();
 
-  // Two-phase barrier: wait for WorkerThread to be ready, then set barrier.
-  // In multi-module mode (do_start async), this ensures the barrier is set
-  // before do_work() waits.  In standalone mode, the fallback timeout in
-  // do_work() handles the case where do_start() blocks on
-  // start_working_thread().
+  // Two-phase barrier: wait for WorkerThread to be ready, then set the
+  // barrier, so it's set before do_work() waits on it. Standalone mode
+  // falls back to do_work()'s own timeout instead.
   TLOG() << "TRD do_start: waiting for m_worker_ready...";
   {
     std::unique_lock<std::mutex> lk(m_req_prebuf_mtx);
@@ -394,9 +381,8 @@ void TRDispatcher::get_from_storage() {
 
   const DispatchMode mode = [&]() -> DispatchMode {
     // is_from_storage is authoritative: when set, always dispatch real HDF5
-    // files from storage_pathname and ignore the generate_* flags. Warn
-    // loudly rather than overriding silently -- a silent override is what
-    // made this combination confusing to configure in the first place.
+    // files and ignore the generate_* flags -- warn loudly here rather than
+    // overriding silently, since a silent override made this confusing before.
     if (m_is_from_storage) {
       if (m_generate_trigger_record || m_generate_time_slice)
         TLOG() << "TRD: is_from_storage=1 overrides generate_trigger_record="
@@ -419,10 +405,9 @@ void TRDispatcher::get_from_storage() {
   // kGeneratedSerial / kGeneratedParallel: no filesystem polling
   if (mode != DispatchMode::kStorageHDF5) {
     TLOG() << "get_from_storage: entering generated while loop";
-    // Loop on both keep_running and running_flag:
-    // - keep_running=false: do_stop() called and returned, exit immediately
-    // - running_flag=false: stop_working_thread() called, framework wants us to
-    // stop The CV wait inside receive() unblocks when either condition changes.
+    // Loop on both keep_running (do_stop() returned) and running_flag
+    // (framework's stop_working_thread() called) -- receive()'s CV wait
+    // unblocks when either condition changes.
     while (m_keep_running.load() && m_running_flag && m_running_flag->load())
       receive(mode);
     TLOG() << "get_from_storage: exited generated while loop (keep_running="
@@ -437,9 +422,9 @@ void TRDispatcher::get_from_storage() {
   size_t stuck_cnt = 0;
 
   while (m_running_flag && m_running_flag->load()) {
-    // Serialize: wait for the current in-flight file to complete before scanning
-    // for the next. Prevents TRs from multiple source files from interleaving
-    // in FRW's prebuf and corrupting per-source-file bookkeeping.
+    // Serialize: wait for the current in-flight file to complete before
+    // scanning for the next. Prevents TRs from multiple source files from
+    // interleaving in FRW's prebuf and corrupting per-source-file bookkeeping.
     {
       std::unique_lock<std::mutex> lk(m_in_flight_mtx);
       if (!m_in_flight_files.empty()) {
@@ -576,13 +561,9 @@ void TRDispatcher::do_work(std::atomic<bool> &running_flag) {
          << " addr=" << &running_flag;
   m_running_flag = &running_flag;
 
-  // Two-phase barrier to prevent lost wakeup between WorkerThread and
-  // do_start(). Phase 1: WorkerThread signals m_worker_ready before waiting.
-  // Phase 2: do_start() waits for m_worker_ready, then sets m_start_barrier,
-  //          then notifies the CV.  This guarantees the notification is not
-  //          lost.
-  // In standalone mode (no downstream), do_start() won't set m_start_barrier,
-  // so we use a timeout and check m_keep_running.
+  // Two-phase barrier to prevent a lost wakeup: WorkerThread sets
+  // m_worker_ready before waiting; do_start() waits for it, then sets
+  // m_start_barrier and notifies. Standalone mode falls back to a timeout.
   TLOG()
       << "TRD do_work: signaling m_worker_ready=true, then waiting on barrier";
   {
@@ -659,11 +640,9 @@ void TRDispatcher::receive(DispatchMode mode) {
     // record type -- no retry wanted) and for a throw (retry wanted).
     bool tr_threw = false, ts_threw = false;
     {
-      // An exception escaping a std::thread body terminates the process, and
-      // HDF5RawDataFile's ctor throws FileOpenFailed for a missing or
-      // unreadable path. Treat a throw as "file skipped": *_owns stays false,
-      // so the in-flight guard is released below, per the contract documented
-      // on send_tr_from_hdf5file().
+      // An exception escaping a std::thread body terminates the process --
+      // treat a throw (e.g. a missing/unreadable file) as "file skipped" so
+      // *_owns stays false and the in-flight guard is released below.
       std::thread tr_th([&] {
         try {
           tr_owns = send_tr_from_hdf5file();
@@ -935,10 +914,9 @@ timeslice_ptr_t TRDispatcher::create_time_slice(uint64_t ts_num) {
 // send trigger records from self generated TR
 void TRDispatcher::send_tr() {
   if (m_number_generated_events > 0) {
-    // Atomic check-and-decrement: fetch_sub()+fetch_add() left a window where
-    // a concurrent send_ts() (parallel_send) could slip a second decrement
-    // through between this thread's fetch_sub() and its "put it back", so
-    // the shared budget could escape past 0 and never re-arm the guard.
+    // Atomic check-and-decrement, not fetch_sub()+fetch_add(): the latter left
+    // a window where a concurrent send_ts() could slip a second decrement
+    // through, letting the shared budget escape past 0.
     uint32_t cur = m_events_remaining.load(std::memory_order_relaxed);
     for (;;) {
       if (cur == 0) {
@@ -952,12 +930,9 @@ void TRDispatcher::send_tr() {
     }
   }
 
-  // Bounded in-flight window: block (with periodic wakeup) until fewer than
-  // m_generated_window TR cycles are dispatched-but-unconfirmed. Bounded
-  // wait, not unbounded wait(), so a stuck predicate cannot prevent
-  // do_stop()'s stop_working_thread() from joining this thread. Placed
-  // before trig_num is fetched so a blocked call never burns a sequence
-  // number.
+  // Bounded wait, not unbounded wait(), so a stuck predicate can't block
+  // do_stop()'s join of this thread. Placed before trig_num is fetched so a
+  // blocked call never burns a sequence number.
   {
     std::unique_lock<std::mutex> lk(m_gen_window_mtx);
     while (m_tr_in_flight.load(std::memory_order_acquire) >=
@@ -987,9 +962,8 @@ void TRDispatcher::send_tr() {
   }
 
   // Send initial BK (kAssignedToFilter) before TR data so DF can open FRW's
-  // dispatch gate. In HDF5 mode this happens in send_tr_from_hdf5file();
-  // generated mode must replicate it, otherwise FRW never registers its
-  // trwriter0 / TR-data callbacks and the ctrl send times out.
+  // dispatch gate -- generated mode must replicate HDF5 mode's behavior here
+  // or FRW's ctrl send times out waiting on callbacks that never register.
   const uint64_t bk_seq = m_bk_seq.fetch_add(1);
   auto waiter = std::make_shared<CycleWaiter>();
   {
@@ -1010,26 +984,21 @@ void TRDispatcher::send_tr() {
     bk_gen.tr_status = to_string(TRStatus::kAssignedToFilter);
     bk_gen.run_number = run_number;
     // file_index groups generated_window consecutive TR cycles into one BK
-    // JSON file (and, downstream, one shared file_index in FRW's HDF5 output
-    // naming/metadata) instead of one per cycle -- trigger_number below
-    // remains the unique per-record id.
+    // JSON file instead of one per cycle -- trigger_number below remains the
+    // unique per-record id.
     const uint64_t generated_window_size =
         m_generated_window > 0 ? m_generated_window : 1;
     bk_gen.file_attributes_info.push_back(
         {"file_index", std::to_string(trig_num / generated_window_size)});
     bk_gen.file_attributes_info.push_back({"record_type", "TR"});
     // Tells DF's bookkeeping manager how many cycles this file_index will
-    // eventually cover, so it does not finalize the batch file just because
-    // it happens to see zero cycles open at some intermediate moment -- new
-    // cycles for the same file_index keep arriving until this many have been
-    // minted (dispatch is sequential and paced by this same window, not
-    // all-at-once).
+    // eventually cover, so it doesn't finalize the batch file just because it
+    // sees zero cycles open at some intermediate moment.
     bk_gen.file_attributes_info.push_back(
         {"batch_size", std::to_string(generated_window_size)});
-    // Marks this cycle as generated-mode dispatch so DF's bookkeeping
-    // manager can disambiguate the filename from an independent TS-sequence
-    // cycle that happens to share the same file_index (m_tr_seq_num and
-    // m_ts_seq_num are independent counters). Storage mode never sets this.
+    // Marks this cycle as generated-mode dispatch so DF's bookkeeping manager
+    // can disambiguate the filename from an independent TS-sequence cycle
+    // sharing the same file_index. Storage mode never sets this.
     bk_gen.file_attributes_info.push_back({"dispatch_mode", "generated"});
     bk_gen.file_attributes_info.push_back(
         {"trigger_number", std::to_string(trig_num)});
@@ -1081,11 +1050,9 @@ void TRDispatcher::send_tr() {
                 after_sender - before_sender);
       });
 
-  // On the first TR dispatch after each start/restart, wait for FRW's ZMQ
-  // SUB socket to reconnect before publishing -- otherwise the very first
-  // publish can be dropped (ZMQ "slow joiner"). One-time cost; cleared
-  // immediately. Separate from m_pub_warmup_needed (storage mode) since TR
-  // and TS use independent connections here.
+  // On the first TR dispatch after each start/restart, wait for FRW's ZMQ SUB
+  // socket to reconnect before publishing -- otherwise the first publish can
+  // be dropped (ZMQ "slow joiner"). One-time cost, cleared immediately.
   if (m_tr_pub_warmup_needed.exchange(false)) {
     TLOG() << "TRD: kPubSub warmup wait (200 ms) for TR subscriber reconnection";
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -1142,7 +1109,8 @@ void TRDispatcher::send_tr() {
 // Send a generated TimeSlice (no HDF5 source).
 void TRDispatcher::send_ts() {
   if (m_number_generated_events > 0) {
-    // See send_tr(): atomic check-and-decrement, same shared m_events_remaining.
+    // See send_tr(): atomic check-and-decrement, same shared
+    // m_events_remaining.
     uint32_t cur = m_events_remaining.load(std::memory_order_relaxed);
     for (;;) {
       if (cur == 0) {
@@ -1254,10 +1222,9 @@ void TRDispatcher::send_ts() {
   TLOG() << "TS send done.";
 }
 
-// Send trigger records from generated hdf5 files.
 // Returns true if a BK waiter was registered (guard ownership transferred to
-// the always-on BK callback); false if the file was skipped or config is bad
-// (caller is responsible for releasing the in-flight guard).
+// the always-on BK callback); false if skipped/bad config, in which case the
+// caller must release the in-flight guard itself.
 bool TRDispatcher::send_tr_from_hdf5file() {
   // Previous threads were already joined at end of last call; clear the
   // vector so this call spawns exactly ONE send thread instead of N on the
@@ -1335,15 +1302,27 @@ bool TRDispatcher::send_tr_from_hdf5file() {
     m_bk_waiters[h5_bk_seq] = h5_waiter;
   }
 
-  if (m_bk_connection_o.empty()) {
-    throw std::runtime_error(
-        "No bookkeeping TX connection discovered (bk_outputs is empty)");
-  }
-  auto bookkeeping_sender =
-      dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
-          m_bk_connection_o);
+  // Mirrors the TS path's ts_send_failed handling: an escaping exception
+  // here would leave h5_waiter in m_bk_waiters forever, and with it the
+  // in-flight guard that get_from_storage() waits on.
+  try {
+    if (m_bk_connection_o.empty()) {
+      throw std::runtime_error(
+          "No bookkeeping TX connection discovered (bk_outputs is empty)");
+    }
+    auto bookkeeping_sender =
+        dunedaq::get_iom_sender<dunedaq::datafilter::BookKeeping>(
+            m_bk_connection_o);
 
-  bookkeeping_sender->send(std::move(bk_info), std::chrono::milliseconds(2000));
+    bookkeeping_sender->send(std::move(bk_info),
+                             std::chrono::milliseconds(2000));
+  } catch (const std::exception &e) {
+    std::lock_guard<std::mutex> lk(m_bk_waiters_mtx);
+    m_bk_waiters.erase(h5_bk_seq);
+    TLOG() << "TRD: initial BK send failed for " << m_input_h5_filename
+           << ": " << e.what() << "; waiter " << h5_bk_seq << " released";
+    return false;
+  }
 
   if (m_cx.tr_tracking_tx.empty()) {
     TLOG() << "TR_tracking2 to DF is empty.";
@@ -1516,10 +1495,9 @@ bool TRDispatcher::send_tr_from_hdf5file() {
   }
 
   if (h5_send_failed.load()) {
-    // No TR was sent, so FRW will never confirm and the always-on BK callback
-    // would never reap this waiter or release the in-flight guard. Drop the
-    // waiter and report failure, letting the caller release the guard and
-    // apply the retry backoff.
+    // No TR was sent, so FRW will never confirm and the BK callback would
+    // never reap this waiter -- drop it and report failure so the caller can
+    // release the guard and apply the retry backoff.
     {
       std::lock_guard<std::mutex> lk(m_bk_waiters_mtx);
       m_bk_waiters.erase(h5_bk_seq);

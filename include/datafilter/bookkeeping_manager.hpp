@@ -84,35 +84,19 @@ struct BookkeepingReceiver {
     uint64_t trigger_number = 0;
   };
   std::unordered_map<uint64_t, CycleState> m_cycles;
-  // How many currently-open cycles share a given bk_filename (storage mode:
-  // TR+TS from one HDF5 file; generated mode: generated_window cycles of one
-  // record type batched into one file). Guarded by m_cycles_mtx. A filename
-  // is retired only once its count reaches zero -- see the mint block and
-  // the completion block in receive_bk() below.
+  // Open cycles sharing a bk_filename; guarded by m_cycles_mtx. A filename
+  // is retired only once its count reaches zero.
   std::unordered_map<std::string, int> m_file_open_count;
 
-  // Generated-mode only: how many cycles are ultimately expected to share a
-  // given bk_filename (== the dispatch BK1's "batch_size" attribute, the
-  // generated_window value at dispatch time) and how many have been minted
-  // so far. Needed because m_file_open_count can transiently reach zero
-  // before every cycle of the batch has even been minted yet -- dispatch is
-  // sequential and paced by this same window, not all-at-once, so a batch
-  // can empty out and refill several times while it is still being
-  // dispatched. Only once minted_count reaches the target is a
-  // zero-open-count treated as "the whole batch is done." Storage mode never
-  // sets a target (no "batch_size" attribute), so it keeps the simple
-  // open-count-only behavior. Guarded by m_cycles_mtx.
+  // Generated-mode only: a transient zero in m_file_open_count isn't "batch
+  // done" until m_file_minted_count reaches m_file_batch_target. Storage mode
+  // never sets a target, so it uses the simple open-count-only check.
   std::unordered_map<std::string, uint64_t> m_file_batch_target;
   std::unordered_map<std::string, uint64_t> m_file_minted_count;
 
-  // Accumulates generated-mode FRW completions for one batch (bk_filename)
-  // into a single aggregate entry, mirroring storage mode's one
-  // file_completed entry covering every record in the source file, instead
-  // of one JSON object per cycle. Counters that FRW reports per-cycle (e.g.
-  // total_trs_written, always 0 or 1 in generated mode) are summed; per-file
-  // values (file/trigger_number/trigger_timestamp, ts_file/ts_number,
-  // filtered_trigger_number, df_cycle_id/trd_bk_seq) are appended in arrival
-  // order. Guarded by m_cycles_mtx.
+  // Accumulates generated-mode completions into one aggregate entry per batch
+  // (mirrors storage mode's single file_completed entry). Counters are summed;
+  // per-file values are appended in arrival order. Guarded by m_cycles_mtx.
   struct CompletionAccum {
     bool any = false;
     std::string entry_id, conn_id, from_id, datafilter_id, tr_status;
@@ -275,6 +259,18 @@ struct BookkeepingReceiver {
       TLOG() << "Receiver already running";
       return;
     }
+    // Reset cross-run state: BookkeepingReceiver outlives conf/start/stop
+    // cycles, so a cycle orphaned in a prior run (its TRD echo never arrived)
+    // would otherwise poison this run's stop() wait and reused filenames.
+    {
+      std::lock_guard<std::mutex> lk(m_cycles_mtx);
+      m_cycles.clear();
+      m_file_open_count.clear();
+      m_file_batch_target.clear();
+      m_file_minted_count.clear();
+    }
+    m_next_cycle_id.store(0, std::memory_order_relaxed);
+    m_active_cycles.store(0, std::memory_order_relaxed);
     stop_flag.store(false);
     writer_thread = std::make_unique<std::thread>([this]() {
       TLOG() << "Starting writer thread (ID: " << std::this_thread::get_id()
@@ -302,10 +298,9 @@ struct BookkeepingReceiver {
       else
         TLOG() << "stop(): all cycles complete, draining queue";
     }
-    // Flush any generated-mode batch still short of its batch_size (e.g. the
-    // run's last, partial batch, or the event limit was hit mid-batch) --
-    // by this point every cycle that will ever be minted already has been,
-    // so it is safe to finalize regardless of minted_count vs. target.
+    // Flush any generated-mode batch still short of its batch_size -- by this
+    // point every cycle that will ever be minted already has been, so it is
+    // safe to finalize regardless of minted_count vs. target.
     {
       std::lock_guard<std::mutex> qlk(queue_mutex);
       std::lock_guard<std::mutex> lk(m_cycles_mtx);
@@ -379,10 +374,9 @@ struct BookkeepingReceiver {
       }
 
     if (any_generated) {
-      // Generated mode may have several concurrently open cycles (TR and TS
-      // sequences interleaved). Attribute the drop only to the exact TR
-      // cycle that produced it -- has_trigger_number is set only for
-      // generated-mode TR cycles, so this never credits a TS cycle.
+      // Attribute the drop only to the exact TR cycle that produced it --
+      // has_trigger_number is set only for generated-mode TR cycles, so this
+      // never credits a TS cycle.
       for (auto &[id, cs] : m_cycles) {
         if (!cs.frw_confirmed && cs.has_trigger_number &&
             cs.trigger_number == trig_num) {
@@ -537,14 +531,9 @@ private:
         }
 
         run_info.set(bk.run_number, file_idx);
-        // Generated mode: file_index is trigger_number/ts_number divided by
-        // generated_window (see TRDispatcher's send_tr()/send_ts()), so
-        // generated_window consecutive cycles of one record_type already
-        // share the same file_idx here -- disambiguate only TR from TS
-        // (m_tr_seq_num/m_ts_seq_num are independent counters, so a TR batch
-        // and a TS batch can still land on the same file_idx). Storage mode
-        // is untouched -- TR and TS from the same HDF5 file are meant to
-        // share one filename.
+        // Generated mode: disambiguate TR from TS since both can land on the
+        // same file_idx. Storage mode is untouched -- TR and TS from the same
+        // HDF5 file are meant to share one filename.
         const bool is_generated = (dispatch_mode == "generated");
         const std::string fname =
             is_generated
@@ -580,12 +569,9 @@ private:
 
         {
           nlohmann::json entry_json = to_json(bk);
-          // Cosmetic, JSON-only: total_tr wire value must stay "1" for FRW
-          // (each generated-mode dispatch is one record, and FRW's
-          // receive_tr_single_connection()/receive_ts_single_connection()
-          // use it as their per-cycle expected count) -- send_bk() below
-          // still forwards the unmodified bk. Only the on-disk entry is
-          // corrected to show the batch total actually sent.
+          // Cosmetic, JSON-only: total_tr wire value must stay "1" for FRW's
+          // per-cycle expected count; send_bk() below still forwards the
+          // unmodified bk. Only the on-disk entry shows the batch total.
           if (is_generated && !batch_size_str.empty()) {
             for (auto &kv : entry_json["file_attributes_info"]) {
               if (kv.is_array() && kv.size() == 2 && kv[0] == "total_tr") {
@@ -637,22 +623,17 @@ private:
       const bool is_trd_final =
           is_from_trdisp && (bk.tr_status == to_string(TRStatus::kReRecorded) ||
                              bk.tr_status == to_string(TRStatus::kWriteFailed));
-      // A bk_filename can be shared by several cycles (storage mode: TR+TS
-      // from the same HDF5 file; generated mode: generated_window cycles of
-      // the same record type sharing one file_index -- see the mint block
-      // above). Only retire the file once every cycle sharing it has
-      // completed, tracked via m_file_open_count. Computed before the
-      // enqueue so the finalize sentinel can be pushed in the same lock as
-      // the final entry.
+      // A bk_filename can be shared by several cycles; only retire it once
+      // every sharing cycle has completed (tracked via m_file_open_count).
+      // Computed before enqueue so the sentinel lands in the same lock.
       bool should_finalize = false;
       if (is_trd_final && !fname.empty()) {
         std::lock_guard<std::mutex> lk(m_cycles_mtx);
         auto cnt_it = m_file_open_count.find(fname);
         if (cnt_it != m_file_open_count.end() && --cnt_it->second <= 0) {
-          // Zero open cycles is only "the whole batch is done" once every
-          // cycle that will ever share this filename has been minted --
-          // otherwise this is just a transient gap while dispatch is still
-          // working through the batch (see m_file_batch_target's comment).
+          // Zero open cycles means "batch done" only once every cycle that
+          // will ever share this filename has been minted -- otherwise it's
+          // just a transient gap while dispatch works through the batch.
           auto tgt_it = m_file_batch_target.find(fname);
           auto minted_it = m_file_minted_count.find(fname);
           const uint64_t minted =
@@ -669,11 +650,9 @@ private:
           // fname resumes counting from a known state.
         }
       }
-      // Generated-mode completions are merged into one aggregate entry per
-      // batch instead of enqueued individually -- see merge_generated_
-      // completion(). Storage mode (is_generated false) is unaffected: its
-      // completion is enqueued as a normal individual entry, exactly as
-      // before.
+      // Generated-mode completions merge into one aggregate entry per batch
+      // instead of enqueuing individually. Storage mode is unaffected: its
+      // completion still enqueues as a normal individual entry.
       bool merged_into_accum = false;
       if (is_frw_completion && cycle_id != UINT64_MAX) {
         std::lock_guard<std::mutex> lk(m_cycles_mtx);
@@ -786,10 +765,8 @@ private:
       }
       lock.unlock();
 
-      // Append to per-file accumulators.
-      // Null-JSON entries are finalize sentinels pushed by receive_bk() when
-      // a cycle's kReRecorded arrives; they trigger retirement after one final
-      // write.
+      // Null-JSON entries are finalize sentinels pushed by receive_bk() on a
+      // cycle's kReRecorded; they trigger retirement after one final write.
       std::unordered_set<std::string> pending;
       std::unordered_set<std::string> finalized;
 
@@ -832,12 +809,8 @@ private:
         if (it == file_data.end())
           continue;
         auto &arr = it->second;
-        // Maintain entries sorted by entry_id using a multimap.
-        // nlohmann::json array iterators and std::sort interact
-        // unpredictably, so we rebuild the array from a sorted container.
-        // entry_id may be absent in pre-existing on-disk content: the load
-        // path validates only is_array(), and an uncaught type_error here
-        // would escape the writer thread and terminate the process.  Sort such
+        // entry_id may be absent in pre-existing on-disk content, and an
+        // uncaught type_error here would kill the writer thread -- sort such
         // entries first under an empty key rather than dropping them.
         std::multimap<std::string, nlohmann::json> sorted;
         for (auto &elem : arr) {

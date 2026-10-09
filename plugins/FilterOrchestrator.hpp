@@ -92,10 +92,8 @@ private:
   std::condition_variable m_req_cv;
   std::shared_ptr<ReceiverConcept<dunedaq::datafilter::Handshake>> m_req_rx;
 
-  // Own stop flag rather than reusing WorkerThread's running_flag: that flag is
-  // cleared by stop_working_thread(), which also blocks in join() -- so there
-  // is no point at which do_stop() could notify m_req_cv and still have the
-  // waiter re-evaluate. This flag is set and notified before the join.
+  // Own flag, not WorkerThread's running_flag: that one is cleared inside
+  // stop_working_thread()'s blocking join(), too late to notify m_req_cv.
   std::atomic<bool> m_stopping{false};
 };
 

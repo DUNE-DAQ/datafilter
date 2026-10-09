@@ -83,26 +83,13 @@ START_ORDER=(frw fo trd df)
 
 # NetworkConnection id whose address (tcp://HOST:PORT) gives each app's host
 declare -A CONN_ID=( [frw]=trwriter0 [fo]=FO_ctrl0 [trd]=trdispatcher0 [df]=conn_A1_G0_C0_ )
-# WORK_DIR-relative, not SCRIPT_DIR-relative: dfSession.data.xml only ever lives
-# in the sourcecode tree (never installed), but SCRIPT_DIR varies depending on
-# whether this dfcontrol.sh copy is the sourcecode one or the installed one on
-# PATH -- WORK_DIR resolves identically either way.
+# WORK_DIR-relative: dfSession.data.xml only lives in the sourcecode tree
+# (never installed), while SCRIPT_DIR varies by which copy of this script runs.
 OKS_DATA_XML="${DATAFILTER_OKS_DATA_XML:-$WORK_DIR/sourcecode/datafilter/test/config/dfSession.data.xml}"
 
-# --- Resolve APP/SESSION/OUTPUT_DIR/host from OKS, one Python pass ---
-# BIN/APP/CONN_ID above are the defaults; this overrides APP[key], SESSION,
-# OUTPUT_DIR and each app's resolved host only when dfSession.data.xml gives
-# an unambiguous answer. Anything ambiguous or unresolvable prints one notice
-# on stderr and leaves the corresponding hardcoded default untouched -- a
-# renamed or restructured OKS file degrades to today's behavior rather than
-# breaking the script.
-#
-# Host rule: an app's host is the address of a connection it BINDS, not just
-# uses -- for kSendRecv the receiver binds (so look in that app's `inputs`),
-# for kPubSub the publisher binds (so look in that app's `outputs`). A
-# connection claimed as bind-eligible by more than one app (e.g. TR_tracking0,
-# which is a kSendRecv input shared by TRD/FO/FRW here) can't tell you
-# anything about any of them and is excluded for all of them.
+# Resolve APP/SESSION/OUTPUT_DIR/host from OKS; ambiguous cases warn and keep
+# the hardcoded default. Host = the connection an app BINDS (kSendRecv ->
+# inputs, kPubSub -> outputs), excluding any bind-eligible for >1 app.
 _oks_eval="$(OKS_DATA_XML="$OKS_DATA_XML" python3 - <<'PYEOF'
 import os, re, shlex, sys
 import xml.etree.ElementTree as ET
@@ -167,11 +154,8 @@ for obj in root.findall("obj[@class='NetworkConnection']"):
     conn_addr[cid] = addr.get("val") if addr is not None else None
 
 def ordered_bind_candidates(obj):
-    # Document order: kSendRecv inputs (receiver binds), then kPubSub outputs
-    # (publisher binds), de-duplicated while preserving that order. Must not
-    # go through a bare set() for the ordering itself -- Python set iteration
-    # order is not guaranteed stable across runs, which would make "first
-    # candidate" flip between invocations.
+    # Preserve document order while de-duping; a bare set() would make
+    # "first candidate" flip between runs (iteration order isn't stable).
     seen = set()
     result = []
     inp = obj.find("rel[@name='inputs']")
@@ -257,10 +241,8 @@ SETUP_SCRIPT="${SETUP_SCRIPT:-$WORK_DIR/env.sh}"
 _SSH_OPTS="-o StrictHostKeyChecking=accept-new -o ControlMaster=no -o GSSAPIAuthentication=no -o HostbasedAuthentication=no -o BatchMode=yes"
 [ -n "$SSH_KEY" ] && _SSH_OPTS="$_SSH_OPTS -o IdentitiesOnly=yes -i $SSH_KEY"
 
-# Map user-friendly name (trdispatcher, df, datafilter, ...) to internal key.
-# Checks the live BIN/LABEL/APP values rather than literal strings, so it
-# still recognizes the OKS instance name even when APP[key] was resolved from
-# OKS above to something other than its hardcoded default (dfcontrol.sh:78).
+# Map user-friendly name to internal key. Checks live BIN/LABEL/APP values,
+# not literal strings, so an OKS-resolved APP[key] is still recognized.
 resolve_key() {
     local k
     for k in frw fo trd df; do
@@ -292,10 +274,8 @@ _remote_alive() {
     fi
 }
 
-# Return the app's host: OKS_HOST[key] if the startup lookup resolved it
-# unambiguously (see the OKS-resolution block above); otherwise fall back to
-# resolving CONN_ID[key]'s single hardcoded connection address directly, same
-# as before this function started preferring OKS_HOST.
+# Prefer OKS_HOST[key] (resolved unambiguously at startup); otherwise fall
+# back to CONN_ID[key]'s hardcoded connection address.
 get_app_host() {
     local key="$1"
     if [ -n "${OKS_HOST[$key]:-}" ]; then
@@ -391,13 +371,9 @@ stop_one() {
 
 df_influx_pid_file() { echo "$PID_DIR/dfinflux.pid"; }
 
-# --app-id is used only to look up enable_df_influx/df_influx_poll_interval_s
-# in the OKS config below -- DataFilter writes datafilter_adc_histogram.json
-# directly (bypassing opmon entirely, see DataFilter::generate_opmon_data()),
-# so unlike a real opmon file sink there's no app-name-derived filename here.
-# Same instance id as APP[df] -- read from there instead of hardcoding it a
-# second time, so both stay in sync with whatever OKS resolved (or its
-# fallback).
+# --app-id only looks up enable_df_influx/df_influx_poll_interval_s in OKS.
+# Read from APP[df] rather than hardcoded, so both stay in sync with
+# whatever OKS resolved (or its fallback).
 DF_INFLUX_APP_ID="${APP[df]}"
 
 _df_influx_enabled() {
@@ -423,14 +399,9 @@ start_df_influx() {
     mkdir -p "$LOG_DIR" "$PID_DIR"
     rotate_log "dfinflux"
     local logfile="$LOG_DIR/dfinflux.log"
-    # df_to_influx.py reads INFLUXDB_URL/TOKEN/ORG/BUCKET from the environment
-    # and exits immediately if any are unset -- load them here so df-influx
-    # works without the caller having sourced setup_influx.sh by hand first.
-    # Already-exported values win (setup_influx.sh only fills in what's unset).
-    # WORK_DIR-relative, not SCRIPT_DIR-relative: like dfSession.data.xml,
-    # setup_influx.sh only ever lives in the sourcecode tree (it's not part
-    # of daq_install()'s install rule), but SCRIPT_DIR is install/.../bin
-    # when this dfcontrol.sh copy is the installed one on PATH.
+    # Load INFLUXDB_* here so df-influx works without sourcing setup_influx.sh
+    # by hand; already-exported values win. WORK_DIR-relative like
+    # dfSession.data.xml, since setup_influx.sh is never installed either.
     local influx_setup="$WORK_DIR/sourcecode/datafilter/test/apps/setup_influx.sh"
     if [ -f "$influx_setup" ]; then
         # shellcheck disable=SC1090

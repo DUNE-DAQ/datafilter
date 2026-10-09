@@ -91,13 +91,8 @@ private:
   std::string m_bk_connection_o;
 
   dunedaq::utilities::WorkerThread m_thread;
-  // TO datafilter DEVELOPERS: PLEASE DELETE THIS FOLLOWING COMMENT AFTER
-  // READING IT m_total_amount and m_amount_since_last_get_info_call are
-  // examples of variables whose values get reported to OpMon
-  // (https://github.com/mozilla/opmon) each time get_info() is
-  // called. "amount" represents a (discrete) value which changes as
-  // DataFilter runs and whose value we'd like to keep track of during
-  // running; obviously you'd want to replace this "in real life"
+  // m_total_amount and m_amount_since_last_get_info_call are reported to
+  // OpMon each time get_info() is called.
 
   std::string m_oksConfig = "oksconflibs:test/config/dfSession.data.xml";
   std::shared_ptr<appfwk::ConfigurationManager> m_mcfg;
@@ -114,10 +109,9 @@ private:
   // Gates generate_influx_data()'s idle-snapshot write; histogram thread only.
   bool m_hist_idle{false};
 
-  // Drives generate_influx_data() on its own timer, independent of opmon.
-  // m_hist_thread must stay the LAST member declared: members are destroyed
-  // in reverse declaration order, and its loop reaches m_session_name and
-  // m_hist_idle above, so it has to be stopped before either can go away.
+  // Drives generate_influx_data() on its own timer. Must stay the LAST
+  // member declared -- its loop reaches members above it, which are
+  // destroyed in reverse order, so it must stop before they go away.
   uint32_t m_hist_interval_s{5};
   std::jthread m_hist_thread;
 };

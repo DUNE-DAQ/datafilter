@@ -81,18 +81,7 @@ struct DataFilterReceiver {
       // never throw from a destructor
     }
     TLOG() << "BookkeepingReceiver destroyed";
-    // detach before bk_receiver stops
-    // if (started.load()) {
-    //   try {
-    //     stop();
-    //   } catch (...) { /* swallow */
-    //   }
-    // }
-    // try {
-    //   bk_receiver.stop();
-    // } catch (const std::exception &e) {
-    //   TLOG() << "BookkeepingReceiver.stop() failed: " << e.what();
-    // }
+    // Old alternate shutdown logic, superseded by the stop() call above, kept commented out.
   }
 
 private:
@@ -372,10 +361,8 @@ public:
       }
     }
 
-    // Now that all kPubSub callbacks are registered (ZMQ SUB sockets
-    // subscribed), it is safe to request the first TR from TRD. Data cannot
-    // arrive before this point because TRD only sends data after receiving
-    // "next_tr".
+    // Safe only once all callbacks are registered: TRD sends data only
+    // after receiving "next_tr", so nothing can arrive before this point.
     organiser->request_next_tr();
 
     if (pull_mode && prefetch_window > 0 && organiser) {
@@ -454,11 +441,7 @@ public:
     m_hb_cv.notify_all();
     if (m_heartbeat_thread.joinable())
       m_heartbeat_thread.join();
-    /*
-        m_in_tick_run = false;
-        if (m_in_tick.joinable())
-          m_in_tick.join();
-    */
+    // Removed m_in_tick join logic, kept commented out.
     // Detach TR input callbacks
     for (const auto &ruid : registered_tr_inputs) {
       try {

@@ -70,10 +70,8 @@ struct TRRewriterSink : DataFilterTRSink {
     const auto bytes = tr ? tr->get_total_size_bytes() : 0;
     TLOG() << "TR total size in bytes " << bytes;
 
-    // Always send write_tr ctrl (even for filtered/null TRs) so FRW receives
-    // the post-filter count immediately and does not wait for data that will
-    // never arrive.  m_tr_prebuf_rx is registered at do_conf() so no sleep is
-    // needed before publishing TR data.
+    // Always send write_tr ctrl, even for filtered/null TRs, so FRW gets the
+    // post-filter count immediately instead of waiting for data that never arrives.
     if (!cx.trwriter_ctrl.empty()) {
       const auto &ctrl_uid = cx.trwriter_ctrl.front();
       try {
@@ -96,10 +94,8 @@ struct TRRewriterSink : DataFilterTRSink {
       return;
     }
 
-    // Checked before front() below, and before the TR is handed to the sender:
-    // front() on an empty vector is UB, and the old ordering also destroyed the
-    // TR on the way out.  The write_tr ctrl above has already gone out, so FRW
-    // is not left waiting.
+    // Checked before front() below (UB on an empty vector) and before the TR
+    // is handed to the sender; the write_tr ctrl above already went out.
     if (cx.tr_data_tx.empty() || !m_tr_sender) {
       TLOG() << "TRRewriterSink: No tr_data_tx outputs configured; dropping TR";
       return;
@@ -217,10 +213,8 @@ struct TSRewriterSink : DataFilterTSSink {
 
     TLOG() << "TSRewriterSink: send TS to FilterResultWriter";
 
-    // Send "write_ts" ctrl exactly once per TS cycle (first TS triggers it).
-    // Uses a 15s timeout so the ctrl can survive FRW's 10s receive_tr wait.
-    // empty() first: exchange() short-circuits away when there is no ctrl
-    // endpoint, consuming the once-per-cycle flag without ever sending.
+    // Sent once per TS cycle; empty() must come first or exchange() consumes
+    // the once-per-cycle flag without sending when there's no ctrl endpoint.
     if (!cx.tswriter_ctrl.empty() && !m_ts_ctrl_sent.exchange(true)) {
       try {
         dunedaq::datafilter::Handshake h("write_ts");

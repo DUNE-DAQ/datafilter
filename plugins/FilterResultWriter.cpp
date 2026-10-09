@@ -52,8 +52,7 @@ void FilterResultWriter::FilterResultWriter::init(
   try {
     m_confdb = std::make_shared<dunedaq::conffwk::Configuration>(m_oksConfig);
   } catch (conffwk::Generic &exc) {
-    // Logging and continuing would leave m_confdb null for the get<>() calls
-    // just below, turning a config error into a segfault.
+    // Throw instead of logging and continuing with a null m_confdb.
     throw appfwk::CommandFailed(ERS_HERE, get_name(), "init",
                                 std::string("Failed to load OKS database: ") +
                                     exc.what());
@@ -102,19 +101,17 @@ void FilterResultWriter::do_conf(const data_t &) {
   }
 
   // --kPubSub data channels--
-  // Register callbacks immediately so ZMQ SUB sockets are subscribed before
-  // any other app calls do_start() and publishes data.  Callbacks deposit
-  // received data into per-type prebuf queues.
+  // Register callbacks immediately so ZMQ SUB sockets subscribe before any
+  // other app calls do_start() and publishes data.
   if (!m_cx.ts_data_rx.empty() && !m_ts_prebuf_rx) {
     m_ts_prebuf_rx =
         dunedaq::get_iom_receiver<timeslice_ptr_t>(m_cx.ts_data_rx.front());
     m_ts_prebuf_rx->add_callback([this](timeslice_ptr_t &ts) {
       std::lock_guard<std::mutex> lk(m_ts_prebuf_mtx);
       m_ts_prebuf.push_back(std::move(ts));
-      // notify_all: several cycle threads may be waiting here, each for its
-      // own ts_number (see receive_ts_single_connection()) -- notify_one()
-      // could repeatedly wake a thread whose item never arrives while the
-      // one that should consume this push stays parked until its deadline.
+      // notify_all, not notify_one: several threads wait here keyed by their
+      // own ts_number -- notify_one could repeatedly wake the wrong one
+      // while the thread that should consume this push stays parked.
       m_ts_prebuf_cv.notify_all();
     });
     TLOG() << "FRW: registered TS kPubSub callback on "
@@ -134,14 +131,9 @@ void FilterResultWriter::do_conf(const data_t &) {
            << m_cx.tr_data_rx.front();
   }
 
-  // -- kSendRecv ctrl channels (trwriter0, tswriter0)
-  // IOManager creates the ZMQ PULL socket lazily on the first
-  // get_iom_receiver() call.  If receive_tr/ts_single_connection() is the first
-  // caller (inside do_start()), the socket is created AFTER DF has already sent
-  // "write_tr"/ "write_ts" on cold start — the message may be dropped before
-  // the socket exists.  Calling get_iom_receiver() here pre-creates the sockets
-  // so the TCP connection is established during do_conf(), long before
-  // do_start().
+  // -- kSendRecv ctrl channels --
+  // IOManager creates the PULL socket lazily; pre-creating it here in
+  // do_conf() avoids dropping DF's first write_tr/write_ts on cold start.
   if (!m_cx.trwriter_ctrl.empty()) {
     dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(
         m_cx.trwriter_ctrl.front());
@@ -220,41 +212,44 @@ void FilterResultWriter::do_start(const data_t &) {
 }
 
 void FilterResultWriter::dispatch_loop(std::atomic<bool> &running) {
-  // Each BK1 from DF produces one DispatchEntry.  Threads are spawned without
-  // inline join so TR and TS threads for the same TRD cycle run concurrently.
-  //
-  // active_threads is capped instead of left to grow for the run's whole
-  // lifetime -- an uncapped version of this once ran 32,297 threads over
-  // ~4 hours and crashed via thread/mmap exhaustion.  Joining the oldest
-  // thread when the cap is hit both reclaims finished workers (join() on an
-  // already-finished thread returns immediately) and bounds worst-case
-  // growth under a slow consumer.  kMaxInFlight is set well above the
-  // configured prefetch_window (8), since the credit window can transiently
-  // run higher than that.
+  // Each BK1 produces one DispatchEntry; spawned without inline join so
+  // TR/TS for one cycle run concurrently. Capped -- an uncapped version once
+  // hit 32,297 threads and crashed; reaps first-to-finish, not oldest-started.
   constexpr size_t kMaxInFlight = 32;
-  std::deque<std::thread> active_threads;
+  struct Worker {
+    std::thread th;
+    std::shared_ptr<std::atomic<bool>> done;
+  };
+  std::deque<Worker> active_threads;
 
-  // Cap+spawn one worker; on repeated construction failure, join everything
-  // and retry once more before giving up for this call.  Returns false only
-  // if std::thread construction still fails after that -- the caller must not
-  // drop the entry in that case, since a dropped cycle never gets its
-  // completion BK sent and strands the upstream TRDispatcher's in-flight file.
+  // Cap+spawn one worker; on construction failure, drain everything and
+  // retry once. Returns false only if that also fails -- caller must not
+  // drop the entry then, or the upstream TRDispatcher file is stranded.
   auto spawn = [&](std::function<void()> work) -> bool {
     while (active_threads.size() >= kMaxInFlight) {
+      auto it = std::ranges::find_if(
+          active_threads, [](const Worker &w) { return w.done->load(); });
+      if (it == active_threads.end()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        continue;
+      }
       TLOG() << "FRW: dispatch_loop backpressure: " << active_threads.size()
-             << " workers in flight, joining oldest";
-      active_threads.front().join();
-      active_threads.pop_front();
+             << " workers in flight, reaping a finished one";
+      it->th.join();
+      active_threads.erase(it);
     }
     for (int attempt = 0; attempt < 2; ++attempt) {
       try {
-        active_threads.emplace_back(std::move(work));
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        active_threads.push_back(
+            Worker{std::thread([work, done] { work(); done->store(true); }),
+                   done});
         return true;
       } catch (const std::exception &e) {
         TLOG() << "FRW: failed to spawn dispatch worker (attempt "
                << (attempt + 1) << "): " << e.what();
         while (!active_threads.empty()) {
-          active_threads.front().join();
+          active_threads.front().th.join();
           active_threads.pop_front();
         }
       }
@@ -311,9 +306,9 @@ void FilterResultWriter::dispatch_loop(std::atomic<bool> &running) {
   }
   TLOG() << "FRW: dispatch loop exiting, joining "
          << active_threads.size() << " threads";
-  for (auto &t : active_threads)
-    if (t.joinable())
-      t.join();
+  for (auto &w : active_threads)
+    if (w.th.joinable())
+      w.th.join();
 }
 void FilterResultWriter::do_stop(const data_t &) {
   m_running.store(false);
@@ -326,10 +321,9 @@ void FilterResultWriter::do_stop(const data_t &) {
   m_write_tr_prebuf_cv.notify_all();
   m_write_ts_prebuf_cv.notify_all();
 
-  // Stop the dispatch thread before draining anything: it joins the per-cycle
-  // worker threads on its way out, and those workers still pop from the
-  // prebufs.  Guarded because stop_working_thread() throws if do_start() never
-  // ran or already failed.
+  // Stop the dispatch thread before draining anything -- it joins per-cycle
+  // workers that still pop from the prebufs. Guarded: stop_working_thread()
+  // throws if do_start() never ran or already failed.
   if (m_dispatch_thread.thread_running())
     m_dispatch_thread.stop_working_thread();
 
@@ -385,10 +379,9 @@ void FilterResultWriter::do_stop(const data_t &) {
   m_ts_write_rate.ewma_mbps.store(0.0);
 }
 
-// The TR/TS data callbacks registered in do_conf() are deliberately kept across
-// runs (see do_conf) but their lambdas capture `this`, and the receivers they
-// live on outlive this module in the IOManager singleton.  Removing them here
-// is what keeps the event-loop threads from calling into a destroyed object.
+// TR/TS callbacks capture `this`, and their receivers outlive this module in
+// the IOManager singleton -- removing them here is what stops the event-loop
+// threads from calling into a destroyed object.
 FilterResultWriter::~FilterResultWriter() {
   if (m_tr_prebuf_rx) {
     try {
@@ -536,11 +529,9 @@ void FilterResultWriter::receive_tr_single_connection(uint64_t df_cycle_id,
                                                        int64_t expected_trigger_number) {
   const int bk_total_tr = total_tr;  // save BK dispatch count (file record count)
 
-  // Each write_tr ctrl carries total_tr=batch_size for kept TRs or 0 for
-  // filtered ones. Wait up to 2s for DF to start, then drain all immediately
-  // queued ctrls. Each write_tr(0) means one TR was filtered; decrement
-  // total_tr so total_expected reflects what will actually arrive at FRW.
-  // Late-arriving write_tr(0) ctrls are drained inside the TR receive loop.
+  // Wait up to 2s for DF, then drain queued write_tr ctrls. Each write_tr(0)
+  // means one TR was filtered by DF; decrement total_tr so total_expected
+  // matches what will actually arrive (late ones drained in the loop below).
   {
     std::unique_lock<std::mutex> lk(m_write_tr_prebuf_mtx);
     m_write_tr_prebuf_cv.wait_for(lk, std::chrono::seconds(2),
@@ -559,11 +550,7 @@ void FilterResultWriter::receive_tr_single_connection(uint64_t df_cycle_id,
   HDF5FileLayoutParameters fl_pars = create_file_layout_params();
   auto srcid_geoid_map = create_srcid_geoid_map();
 
-  // Use a single connection for all TRs
-  // std::string single_connection = "conn_A1_G0_C0_";
-  // TLOG() << "Listening for ALL TRs on single connection: " <<
-  // single_connection; TLOG() << "Expecting " << m_num_messages << " TRs
-  // total";
+  // Old hardcoded-connection implementation, kept commented out.
 
   // Use a single connection for all TRs (discovered)
   if (m_cx.tr_data_rx.empty()) {
@@ -622,14 +609,9 @@ std::atomic<size_t> total_msgs_received{0};
 
     trigger_record_ptr_t tr;
     {
-      // Several cycle threads share m_tr_prebuf (do_start() runs one thread
-      // per dispatch entry, unjoined). Pick out the TR that is actually this
-      // cycle's own rather than whichever one is at the front -- otherwise a
-      // faster-arriving TR meant for a different cycle gets stolen and this
-      // cycle's own TR is later stolen by someone else in turn. When
-      // expected_trigger_number is unknown (storage mode never runs cycles
-      // concurrently -- see get_from_storage()'s in-flight-file guard),
-      // begin() acts as plain FIFO, matching the old behaviour exactly.
+      // Several cycles share m_tr_prebuf -- match by trigger_number, not
+      // FIFO, or a faster cycle's TR gets stolen by another. Unknown
+      // expected_trigger_number (storage mode, never concurrent) uses FIFO.
       auto find_mine = [expected_trigger_number](
                             std::deque<trigger_record_ptr_t> &q) {
         if (expected_trigger_number < 0)
@@ -705,10 +687,9 @@ std::atomic<size_t> total_msgs_received{0};
     TLOG() << "Writing TR " << current_total << "/" << total_expected << " to "
            << writing_pathname;
 
-    // Returning here would skip the final bookkeeping block below, which is
-    // what releases the upstream cycle -- TRDispatcher would keep the file
-    // in flight forever.  Count it as a write error instead, as the TS path
-    // does, so the cycle reports write_failed and completes.
+    // Must not return here -- it would skip the bookkeeping block that
+    // releases the upstream cycle, stranding TRDispatcher's file forever.
+    // Count as a write error instead, as the TS path does.
     if (!has_enough_space(m_odir, m_min_free_bytes)) {
       TLOG() << "Skipping TR write — insufficient storage in " << m_odir;
       ++tr_write_errors;
@@ -806,19 +787,16 @@ std::atomic<size_t> total_msgs_received{0};
         time_point_to_string(std::chrono::system_clock::now());
     final_bk_info.conn_id = single_connection;
     final_bk_info.from_id = "FilterResultWriter";
-    // kFileCompleted when all received TRs were either written or hit a
-    // per-TR content error (e.g. HDF5 path collision in source data).
-    // kWriteFailed is reserved for infrastructure failures where nothing
-    // was written -- that keeps the 30-second retry backoff in TRD active.
+    // kFileCompleted: every received TR was written or hit a per-TR content
+    // error. kWriteFailed: nothing was written (infra failure) -- keeps
+    // TRD's 30s retry backoff active.
     const size_t actually_processed = actually_written + tr_write_errors;
     if (tr_write_errors > 0)
       TLOG() << "FRW: " << tr_write_errors
              << " TR(s) failed to write (content errors, not retried).";
-    // actually_received==0 is only a legitimate success when nothing was
-    // ever expected (DF filtered every TR, total_expected==0 from the
-    // start). If total_expected>0 but nothing was received, this thread's
-    // specific expected_trigger_number never showed up in m_tr_prebuf
-    // before the watchdog fired -- an orphaned record, not a success.
+    // Zero received is only a real success if zero was expected
+    // (total_expected==0). Otherwise this cycle's trigger_number never
+    // showed up before the watchdog fired -- orphaned, not a success.
     const bool orphaned = (actually_received == 0 && total_expected > 0);
     final_bk_info.tr_status =
         (!orphaned && actually_processed >= actually_received)
@@ -929,11 +907,9 @@ void FilterResultWriter::receive_ts_single_connection(uint64_t df_cycle_id,
   while (m_running.load()) {
     timeslice_ptr_t ts;
     {
-      // Same reasoning as the TR consumer above: several cycle threads share
-      // m_ts_prebuf, so pick out this cycle's own TimeSlice by ts_number
-      // rather than taking whichever one is at the front. Unknown
-      // expected_ts_number (storage mode) falls back to plain FIFO via
-      // begin().
+      // Several cycles share m_ts_prebuf -- match by ts_number, not FIFO,
+      // same reasoning as the TR consumer above. Unknown expected_ts_number
+      // (storage mode) falls back to FIFO via begin().
       auto find_mine = [expected_ts_number](std::deque<timeslice_ptr_t> &q) {
         if (expected_ts_number < 0)
           return q.begin();
@@ -1013,14 +989,9 @@ void FilterResultWriter::receive_ts_single_connection(uint64_t df_cycle_id,
     }
 
     if (ts_expected.load() > 0 && current >= ts_expected.load()) {
-      // Reaching the count is not enough to leave: these threads are one-shot
-      // (one per dispatch cycle) and do_stop() discards whatever is still
-      // queued, so a TS left behind here is lost for good. Keep draining while
-      // a backlog exists. Deliberately NOT bounded by the deadline: DF paces
-      // sends 100 ms apart over a window longer than any single thread's
-      // nominal lifetime, so capping the drain here strands every TS that
-      // arrives after the last cycle's deadline. The loop still exits on
-      // !m_running, and an empty queue re-arms the deadline in wait_until().
+      // Reaching the count isn't enough to leave: these threads are one-shot
+      // and do_stop() discards whatever's still queued, so keep draining any
+      // backlog -- deliberately unbounded by the deadline, or late TSs are lost.
       bool backlog;
       {
         std::lock_guard<std::mutex> lk(m_ts_prebuf_mtx);
@@ -1035,12 +1006,9 @@ void FilterResultWriter::receive_ts_single_connection(uint64_t df_cycle_id,
 
   // Notify DF of TS batch completion
   if (!m_cx.bk_outputs.empty()) {
-    // Mirror the TR path (see the kFileCompleted decision above). Now that
-    // find_mine() matches this thread's own expected_ts_number, ts_received
-    // reflects whether THIS cycle's TimeSlice actually showed up -- so
-    // receiving none while one was expected (ts_expected>0) means the
-    // record was orphaned (never arrived in m_ts_prebuf before wait_until's
-    // deadline), not a vacuous success.
+    // Mirrors the TR path's orphan rule: ts_received reflects only THIS
+    // cycle's TimeSlice (via find_mine's ts_number match), so zero received
+    // while one was expected means orphaned, not a vacuous success.
     const bool orphaned = (ts_expected.load() > 0 && ts_received.load() == 0);
     const bool all_written = !orphaned && (ts_write_errors == 0) &&
                              (ts_written.load() == ts_received.load());

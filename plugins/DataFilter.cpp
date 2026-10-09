@@ -32,7 +32,7 @@ void DataFilter::init(std::shared_ptr<appfwk::ConfigurationManager> mcfg) {
   try {
     m_confdb = std::make_shared<dunedaq::conffwk::Configuration>(m_oksConfig);
   } catch (conffwk::Generic &exc) {
-    // throw a segfault intead of logging.
+    // Throw instead of logging and continuing with a null m_confdb.
     throw appfwk::CommandFailed(ERS_HERE, get_name(), "init",
                                 std::string("Failed to load OKS database: ") +
                                     exc.what());
@@ -98,15 +98,12 @@ void DataFilter::generate_opmon_data() {
 void DataFilter::generate_influx_data() {
   // Accept/reject ADC histograms bypass opmon entirely: OpMonValue only
   // supports scalar fields, not arrays. Written directly to our own file
-  // instead. Bare relative filename -> lands in the process's cwd, i.e.
-  // dfcontrol.sh's "running directory" (INVOKE_DIR), same convention as
-  // bookkeeping_*.json.
+  // instead, in dfcontrol.sh's "running directory" (INVOKE_DIR).
   if (m_rx && m_rx->m_alg.enable_histogram) {
     auto [accepted, rejected] = m_rx->m_alg.take_histograms();
     // Write the idle (all-zero) snapshot once on the active-to-idle
-    // transition, then skip further writes while nothing changes -- keeps
-    // the file's mtime meaningful as "last real activity" instead of
-    // rewriting a stale snapshot with a fresh timestamp every interval.
+    // transition, then skip further writes -- keeps mtime meaningful as
+    // "last real activity" instead of refreshing a stale snapshot forever.
     const bool any_activity =
         std::ranges::any_of(accepted, [](auto c) { return c != 0; }) ||
         std::ranges::any_of(rejected, [](auto c) { return c != 0; });
@@ -215,14 +212,9 @@ void DataFilter::do_conf(const data_t &cfg) {
     TLOG() << "TR data uid: " << uid;
   }
 
-  // Pre-warm every connection DataFilter will ever register a receiver/
-  // sender for, not just tr_tracking_rx/bk_inputs. IOManager creates sockets
-  // lazily, caching each in a Datatype-templated map guarded by that
-  // Datatype's own static mutex -- m_bk->start() below spawns threads that
-  // touch this same shared map under BookKeeping's lock, so any uid left
-  // cold here would still have its first-use registration race against
-  // those threads instead of being a no-op cache hit (this is exactly what
-  // crashed before tr_tracking_rx/bk_inputs were added here).
+  // Pre-warm every connection used below -- IOManager caches each uid under
+  // a per-Datatype static mutex guarding one shared map, so any uid left
+  // cold here races m_bk->start()'s threads instead of being a cache hit.
   for (const auto &tuid : m_connections.tr_tracking_rx) {
     dunedaq::get_iom_receiver<dunedaq::datafilter::Handshake>(tuid);
     TLOG() << "DF: pre-warmed tr_tracking_rx PULL on " << tuid;
@@ -279,12 +271,9 @@ void DataFilter::do_conf(const data_t &cfg) {
     TLOG() << "DF: pre-created TS sender on " << ts_data_uid;
   }
 
-  // Started last: its receiver/writer threads call get_iom_receiver()/
-  // get_iom_sender() on their own (bookkeeping_manager.hpp), which race with
-  // the prewarm/precreate calls above on IOManager's shared connection maps
-  // (each Datatype's lookup is guarded by its own static mutex, not a single
-  // lock over the whole map) -- this crashed once as a null receiver in
-  // DataFilterReceiver::start()'s tracking-attach loop.
+  // Started last: its threads call get_iom_receiver()/get_iom_sender() on
+  // their own, racing the prewarm calls above on IOManager's shared maps --
+  // this crashed once as a null receiver before being started last here.
   m_bk->start();
 }
 

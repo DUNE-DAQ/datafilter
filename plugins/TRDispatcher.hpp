@@ -172,10 +172,9 @@ private:
   const size_t components_per_record = element_count_tpc + element_count_pds +
                                        element_count_ta + element_count_tc;
 
-  // Always-on BK confirmation routing.  Registered in do_start() before
-  // get_from_storage(); each send_tr/ts call inserts a CycleWaiter keyed by
-  // trd_bk_seq and returns immediately.  The always-on BK callback sends
-  // the final BK and writes WriteJSON when FRW confirms.
+  // Always-on BK confirmation routing: each send_tr/ts call inserts a
+  // CycleWaiter keyed by trd_bk_seq and returns immediately; the callback
+  // sends the final BK and writes WriteJSON when FRW confirms.
   struct CycleWaiter {
     std::mutex              cv_mtx;
     std::condition_variable cv;
@@ -205,27 +204,23 @@ private:
   std::shared_ptr<ReceiverConcept<dunedaq::datafilter::Handshake>> m_req_rx;
 
   std::atomic<bool> m_keep_running{false};
-  // Two-phase barrier to solve lost-wakeup problem:
-  // 1. WorkerThread sets m_worker_ready=true BEFORE waiting on the barrier CV.
-  // 2. do_start() WAITS for m_worker_ready, then sets m_start_barrier, then NOTIFIES.
-  // This guarantees the notification is never lost.
+  // Two-phase barrier against a lost wakeup: WorkerThread sets
+  // m_worker_ready=true before waiting; do_start() waits for it, then sets
+  // m_start_barrier and notifies.
   std::atomic<bool> m_start_barrier{false};
   std::atomic<bool> m_worker_ready{false};
-  // Set true in do_start(); cleared on first TR dispatch.  Gives ZMQ time to
-  // reconnect DF's SUB socket after a TRD restart before the first kPubSub
-  // publish. Storage mode only (send_tr_from_hdf5file()'s single publish
-  // connection).
+  // Set true in do_start(), cleared on first TR dispatch -- gives ZMQ time
+  // to reconnect DF's SUB socket after a restart before the first publish.
+  // Storage mode only.
   std::atomic<bool> m_pub_warmup_needed{false};
-  // Same idea as m_pub_warmup_needed, but generated mode's TR and TS use
-  // separate kPubSub connections and so each needs its own one-shot warmup
-  // wait -- sharing one flag would let whichever type loses the atomic
-  // exchange race publish with no warmup at all.
+  // Same idea as m_pub_warmup_needed, but TR and TS use separate connections
+  // here so each needs its own flag -- sharing one would let whichever type
+  // loses the exchange race publish with no warmup at all.
   std::atomic<bool> m_tr_pub_warmup_needed{false};
   std::atomic<bool> m_ts_pub_warmup_needed{false};
   // Pointer to the WorkerThread's running_flag; valid only during do_work().
-  // Used as the primary loop condition so the loop cannot exit before the
-  // framework calls stop_working_thread().  m_keep_running remains the
-  // wake-up signal for receive()'s prebuf wait.
+  // m_keep_running remains the separate wake-up signal for receive()'s
+  // prebuf wait.
   std::atomic<bool>* m_running_flag{nullptr};
   bool m_is_from_storage = false;
   bool m_generate_trigger_record = false;
@@ -249,24 +244,17 @@ private:
       sender;
 
   std::string m_session_name = "test-session";
-  // TO dfbackend DEVELOPERS: PLEASE DELETE THIS FOLLOWING COMMENT AFTER
-  // READING IT m_total_amount and m_amount_since_last_get_info_call are
-  // examples of variables whose values get reported to OpMon
-  // (https://github.com/mozilla/opmon) each time get_info() is
-  // called. "amount" represents a (discrete) value which changes as
-  // TRDispatcher runs and whose value we'd like to keep track of during
-  // running; obviously you'd want to replace this "in real life"
+  // m_total_amount / m_amount_since_last_get_info_call: a discrete value
+  // reported to OpMon each time get_info() is called.
 
   std::atomic<int64_t> m_total_amount{0};
   std::atomic<int> m_amount_since_last_call{0};
   std::atomic<uint64_t> m_tr_seq_num{0}; // counter for generated TR numbers
   std::atomic<uint64_t> m_ts_seq_num{0}; // counter for generated TS numbers
 
-  // Generated-mode bounded in-flight window: caps the number of
-  // dispatched-but-unconfirmed cycles per record type so generated dispatch
-  // cannot race arbitrarily far ahead of DF/FRW. Mirrors m_in_flight_files'
-  // role for storage mode, but keyed per record type with a configurable
-  // window instead of hard single-flight. TR and TS are gated independently.
+  // Generated-mode bounded in-flight window: caps dispatched-but-unconfirmed
+  // cycles per record type so dispatch can't race arbitrarily far ahead of
+  // DF/FRW. TR and TS are gated independently.
   std::atomic<int> m_tr_in_flight{0};
   std::atomic<int> m_ts_in_flight{0};
   std::mutex m_gen_window_mtx;

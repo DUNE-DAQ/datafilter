@@ -112,10 +112,9 @@ private:
   void do_stop(const data_t &);
   void receive_attrs(std::atomic<bool> &running);
 
-  // Drains m_dispatch_queue and spawns one worker per BK1.  Runs on
-  // m_dispatch_thread rather than inline in do_start(): execute_command() is
-  // synchronous, so a loop in do_start() would own the caller's thread and the
-  // app could never deliver the "stop" command that ends it.
+  // Runs on its own thread, not inline in do_start(): execute_command() is
+  // synchronous, so a loop here would own the caller's thread and the app
+  // could never deliver the "stop" command that ends it.
   void dispatch_loop(std::atomic<bool> &running);
 
   // Threading
@@ -127,13 +126,8 @@ private:
   std::vector<const confmodel::NetworkConnection *> m_networkconnections;
   Connections m_cx;
 
-  // TO dfbackend DEVELOPERS: PLEASE DELETE THIS FOLLOWING COMMENT AFTER READING
-  // IT m_total_amount and m_amount_since_last_get_info_call are examples of
-  // variables whose values get reported to OpMon
-  // (https://github.com/mozilla/opmon) each time get_info() is
-  // called. "amount" represents a (discrete) value which changes as
-  // FilterResultWriter runs and whose value we'd like to keep track of during
-  // running; obviously you'd want to replace this "in real life"
+  // m_total_amount/m_amount_since_last_get_info_call: reported to OpMon
+  // each get_info() call, tracking a running "amount" value.
 
   // Configuration
   std::shared_ptr<appfwk::ConfigurationManager> m_mcfg;
@@ -170,10 +164,8 @@ private:
     unsigned    run_number{0};
     int         file_index{0};
     int         total_tr{1};
-    // Set only by generated-mode dispatch (trigger_number/ts_number BK1
-    // fields); -1 means unknown (storage mode, where a cycle can cover many
-    // records and there is no single value to match on). See
-    // receive_tr_single_connection()/receive_ts_single_connection().
+    // Set only by generated-mode dispatch; -1 means unknown (storage mode,
+    // where one cycle covers many records with no single value to match).
     int64_t     trigger_number{-1};
     int64_t     ts_number{-1};
   };

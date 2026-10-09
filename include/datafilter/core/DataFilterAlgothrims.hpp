@@ -48,27 +48,22 @@ struct DataFilterAlgothrims {
   // To influx only true
   bool enable_histogram{false};
 
-  // Frame-level mode -- configured via OKS (DataFilter.enable_frame_filter).
-  // false: keep/drop whole WIBEth fragments; histogram gets one entry per
-  //        fragment (its overall max ADC).  This is the default behaviour.
-  // true:  rebuild each WIBEth fragment from only the frames whose max ADC is
-  //        >= adc_threshold; histogram gets one entry per *frame*.
+  // false (default): keep/drop whole fragments, one histogram entry each.
+  // true: rebuild each fragment from only the passing frames, one histogram
+  // entry per frame instead.
   bool frame_level_filter{false};
 
-  // Histogram binning: fixed number of bins spanning the 14-bit ADC range
-  // [0, 16383]. N_HIST_BINS=16384 gives full resolution (1 bin per exact ADC
-  // value, since HIST_BIN_WIDTH = 16384 / N_HIST_BINS = 1) -- lower this to
-  // trade resolution for a smaller datafilter_adc_histogram.json if needed.
+  // Spans the full 14-bit ADC range [0, 16383]; lower N_HIST_BINS to trade
+  // resolution for a smaller output histogram if needed.
   static constexpr int N_HIST_BINS = 16384;
   static constexpr uint16_t MAX_ADC_14BIT = 16383;
   static constexpr int HIST_BIN_WIDTH = (MAX_ADC_14BIT + 1) / N_HIST_BINS;
 
   using histogram_t = std::array<uint32_t, N_HIST_BINS>;
 
-  // Accept/reject max_adc histograms, accumulated since the last
-  // take_histograms() call -- same reset-on-read pattern as opmon's
-  // "amount_since_last_call" counters. Written from the TR-processing
-  // thread, read from the opmon-timer thread, hence the mutex.
+  // Accept/reject histograms, reset-on-read by take_histograms(). Written
+  // from the TR-processing thread, read from the opmon-timer thread, hence
+  // the mutex.
   mutable std::mutex m_hist_mtx;
   mutable histogram_t m_accepted_hist{};
   mutable histogram_t m_rejected_hist{};
@@ -111,14 +106,9 @@ struct DataFilterAlgothrims {
       trig_ts = frags.at(0)->get_trigger_timestamp();
     }
 
-    // -- Filtering -----------------------------------------------------------
-    // Policy: if the TR contains WIBEth fragments and ALL of them are rejected,
-    // drop the entire TR (including non-WIBEth payload fragments).
-    // If there are no WIBEth fragments at all, keep the TR as-is.
-    //
-    // Two granularities, selected by frame_level_filter:
-    //   false -> whole fragment kept or dropped (original behaviour)
-    //   true  -> fragment rebuilt from only the frames that pass
+    // If the TR has WIBEth fragments and ALL are rejected, drop the whole TR
+    // (including non-WIBEth payload). frame_level_filter selects whole-
+    // fragment keep/drop (false) vs. rebuild from only passing frames (true).
     auto &mutable_frags = tr->get_fragments_ref();
 
     std::vector<std::unique_ptr<daqdataformats::Fragment>>
@@ -207,11 +197,9 @@ struct DataFilterAlgothrims {
   }
 
 private:
-  // -- Max ADC within a single frame -----------------------------------------
-  // When early_exit is true this may return as soon as adc_threshold is
-  // reached, so the value is then only guaranteed to be >= adc_threshold, not
-  // the true maximum. That is fine for a pure keep/drop decision but NOT for
-  // histogramming, so callers pass early_exit=false when binning.
+  // With early_exit=true the result is only guaranteed >= adc_threshold, not
+  // the true max -- fine for keep/drop, but callers must pass
+  // early_exit=false when histogramming.
   inline uint16_t frame_max_adc(const fddetdataformats::WIBEthFrame &frame,
                                 bool early_exit) const {
     using WIBEthFrame = fddetdataformats::WIBEthFrame;
@@ -244,15 +232,9 @@ private:
     dst.set_sequence_number(src.get_sequence_number());
   }
 
-  // -- Frame-level reconstruction inside one WIBEth fragment -----------------
-  // Rebuilds the fragment containing only the frames whose max ADC is
-  // >= adc_threshold. When enable_histogram is set, also bins one entry per
-  // *frame* into the accept/reject histograms (vs one per fragment in the
-  // fragment-level path).
-  // Returns nullptr if no frame survives, so the caller drops the fragment.
-  //
-  // Note: n_frames floors, so if the payload is not an exact multiple of
-  // sizeof(WIBEthFrame) the trailing partial bytes are not carried over.
+  // Rebuilds the fragment from only the passing frames; returns nullptr if
+  // none survive. n_frames floors, so trailing bytes past the last full
+  // WIBEthFrame are dropped.
   inline std::unique_ptr<daqdataformats::Fragment>
   rebuild_fragment_frames(const daqdataformats::Fragment &frag) const {
     using WIBEthFrame = fddetdataformats::WIBEthFrame;
