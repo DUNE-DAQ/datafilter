@@ -163,10 +163,18 @@ void DataFilter::do_conf(const data_t &cfg) {
       static_cast<uint16_t>(mdal->get_adc_threshold());
   const bool enable_df_influx = mdal->get_enable_df_influx();
   const bool enable_frame_filter = mdal->get_enable_frame_filter();
+  const bool enable_roi_filter = mdal->get_enable_roi_filter();
+  const uint16_t roi_peak_threshold =
+      static_cast<uint16_t>(mdal->get_roi_peak_threshold());
+  const uint16_t roi_channel_window =
+      static_cast<uint16_t>(mdal->get_roi_channel_window());
   m_hist_interval_s = mdal->get_df_influx_poll_interval_s();
   TLOG() << "DataFilter: adc_threshold=" << adc_threshold
          << " enable_df_influx=" << enable_df_influx
          << " enable_frame_filter=" << enable_frame_filter
+         << " enable_roi_filter=" << enable_roi_filter
+         << " roi_peak_threshold=" << roi_peak_threshold
+         << " roi_channel_window=" << roi_channel_window
          << " df_influx_poll_interval_s=" << m_hist_interval_s;
 
   // bookkeeping first
@@ -202,6 +210,9 @@ void DataFilter::do_conf(const data_t &cfg) {
   m_rx->m_alg.adc_threshold = adc_threshold;
   m_rx->m_alg.enable_histogram = enable_df_influx;
   m_rx->m_alg.frame_level_filter = enable_frame_filter;
+  m_rx->m_alg.enable_roi_filter = enable_roi_filter;
+  m_rx->m_alg.roi_filter.roi_peak_threshold = roi_peak_threshold;
+  m_rx->m_alg.roi_filter.roi_channel_window = roi_channel_window;
   m_rx->prefetch_window = mdal->get_prefetch_window();
 
   TLOG() << "DF Connections summary: "

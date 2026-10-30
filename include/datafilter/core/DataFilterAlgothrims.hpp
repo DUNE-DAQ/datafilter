@@ -28,6 +28,7 @@
 #include "daqdataformats/FragmentHeader.hpp"
 #include "daqdataformats/TriggerRecord.hpp"
 #include "daqdataformats/TriggerRecordHeader.hpp"
+#include "datafilter/core/ROIFilter.hpp"
 #include "fddetdataformats/WIBEthFrame.hpp"
 #include "logging/Logging.hpp"
 
@@ -52,6 +53,13 @@ struct DataFilterAlgothrims {
   // true: rebuild each fragment from only the passing frames, one histogram
   // entry per frame instead.
   bool frame_level_filter{false};
+
+  // If true, ROIFilter replaces the flat adc_threshold check as the
+  // keep/drop criterion. frame_level_filter then additionally selects ROI
+  // granularity: per-frame (ProcessROIFrame) if true, per-fragment
+  // (ProcessROIWide) if false.
+  bool enable_roi_filter{false};
+  ROIFilter roi_filter;
 
   // Spans the full 14-bit ADC range [0, 16383]; lower N_HIST_BINS to trade
   // resolution for a smaller output histogram if needed.
@@ -137,7 +145,31 @@ struct DataFilterAlgothrims {
 
       ++n_wibeth;
 
-      if (frame_level_filter) {
+      if (enable_roi_filter && frame_level_filter) {
+        // Frame-level ROI: per-frame median/peak-deviation decision,
+        // rebuilt from only the frames ProcessROIFrame flags.
+        auto new_frag = rebuild_fragment_frames_roi(*fptr);
+        if (new_frag) {
+          kept_wibeth.push_back(std::move(new_frag));
+        } else {
+          TLOG() << "DataFilterAlgothrims: all frames outside ROI, dropping"
+                 << " WIBEth fragment source_id=" << fptr->get_element_id()
+                 << " trigger=" << trig_num;
+        }
+      } else if (enable_roi_filter) {
+        // Fragment-level ROI: keep the fragment if ProcessROIWide flags at
+        // least one channel, instead of the flat adc_threshold check.
+        auto roi = roi_filter.ProcessROIWide(*fptr);
+        const bool any_in_roi =
+            std::ranges::any_of(roi, [](const auto &kv) { return kv.second; });
+        if (any_in_roi) {
+          kept_wibeth.push_back(std::move(mutable_frags[i]));
+        } else {
+          TLOG() << "DataFilterAlgothrims: dropping WIBEth fragment"
+                 << " source_id=" << fptr->get_element_id()
+                 << " trigger=" << trig_num << " (no channel in ROI)";
+        }
+      } else if (frame_level_filter) {
         // Frame-level: rebuild with only the surviving frames. Returns nullptr
         // when no frame passes, in which case the fragment is dropped.
         auto new_frag = rebuild_fragment_frames(*fptr);
@@ -292,6 +324,61 @@ private:
     copy_fragment_header(frag, *new_frag);
 
     TLOG_DEBUG(5) << "DataFilterAlgothrims: rebuild_fragment_frames kept "
+                  << pieces.size() << "/" << n_frames << " frames"
+                  << " source_id=" << frag.get_element_id();
+    return new_frag;
+  }
+
+  // Like rebuild_fragment_frames, but keeps a frame if ProcessROIFrame flags
+  // at least one channel in it, instead of comparing against adc_threshold.
+  // Returns nullptr if no frame survives.
+  inline std::unique_ptr<daqdataformats::Fragment>
+  rebuild_fragment_frames_roi(const daqdataformats::Fragment &frag) const {
+    using WIBEthFrame = fddetdataformats::WIBEthFrame;
+
+    const auto *payload = static_cast<const uint8_t *>(frag.get_data());
+    const std::size_t n_bytes = frag.get_data_size();
+
+    if (n_bytes < sizeof(WIBEthFrame)) {
+      // Too small to hold even one frame -- keep the payload unfiltered,
+      // matching rebuild_fragment_frames' fallback for the same case.
+      std::vector<std::pair<void *, std::size_t>> whole = {
+          {const_cast<void *>(frag.get_data()), n_bytes}};
+      auto copy = std::make_unique<daqdataformats::Fragment>(whole);
+      copy_fragment_header(frag, *copy);
+      TLOG() << "DataFilterAlgothrims: WIBEth fragment payload too small ("
+             << n_bytes << " B < " << sizeof(WIBEthFrame)
+             << " B), kept unfiltered";
+      return copy;
+    }
+
+    const std::size_t n_frames = n_bytes / sizeof(WIBEthFrame);
+
+    std::vector<std::pair<void *, std::size_t>> pieces;
+    pieces.reserve(n_frames);
+
+    for (std::size_t fi = 0; fi < n_frames; ++fi) {
+      const auto *frame = reinterpret_cast<const WIBEthFrame *>(
+          payload + fi * sizeof(WIBEthFrame));
+
+      auto roi = roi_filter.ProcessROIFrame(*frame);
+      const bool passed =
+          std::ranges::any_of(roi, [](const auto &kv) { return kv.second; });
+
+      if (passed) {
+        pieces.emplace_back(
+            const_cast<void *>(static_cast<const void *>(frame)),
+            sizeof(WIBEthFrame));
+      }
+    }
+
+    if (pieces.empty())
+      return nullptr;
+
+    auto new_frag = std::make_unique<daqdataformats::Fragment>(pieces);
+    copy_fragment_header(frag, *new_frag);
+
+    TLOG_DEBUG(5) << "DataFilterAlgothrims: rebuild_fragment_frames_roi kept "
                   << pieces.size() << "/" << n_frames << " frames"
                   << " source_id=" << frag.get_element_id();
     return new_frag;

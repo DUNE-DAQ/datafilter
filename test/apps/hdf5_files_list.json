@@ -11,6 +11,12 @@
         },
         {
             "hdf5_file": "swtest_run001039_0000_dataflow0_datawriter_0_20231103T121050.hdf5"
+        },
+        {
+            "hdf5_file": "np02vd_raw_run036690_0001_df-s02-d0_dw_0_20250527T123712.hdf5"
+        },
+        {
+            "hdf5_file": "np02vd_raw_run035365_0000_df-srv002-data0_dw_0_20250129T105141.hdf5"
         }
     ]
 }
