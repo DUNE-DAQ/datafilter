@@ -115,37 +115,6 @@ struct ROIFilter {
 
     return ret;
   }
-
-  // Ported from ROIProd::ROIFilter (ROIProd_module.cc:403-430) -- zeros the
-  // ADC samples of every channel not flagged in `ret`, in place. Named
-  // apply() rather than ROIFilter() since a method can't share its
-  // enclosing struct's exact name.
-  inline void apply(daqdataformats::Fragment &frag,
-                    const std::map<int, bool> &ret) const {
-    using WIBEthFrame = fddetdataformats::WIBEthFrame;
-
-    auto *payload = static_cast<uint8_t *>(frag.get_data());
-    const std::size_t n_bytes = frag.get_data_size();
-    if (n_bytes < sizeof(WIBEthFrame)) {
-      return;
-    }
-    const std::size_t n_frames = n_bytes / sizeof(WIBEthFrame);
-
-    for (std::size_t fi = 0; fi < n_frames; ++fi) {
-      auto *frame =
-          reinterpret_cast<WIBEthFrame *>(payload + fi * sizeof(WIBEthFrame));
-      for (int ch = 0; ch < WIBEthFrame::s_num_channels; ++ch) {
-        const auto it = ret.find(ch);
-        const bool in_roi = (it != ret.end()) && it->second;
-        if (!in_roi) {
-          for (int sample = 0; sample < WIBEthFrame::s_time_samples_per_frame;
-               ++sample) {
-            frame->set_adc(ch, sample, 0);
-          }
-        }
-      }
-    }
-  }
 };
 
 } // namespace dunedaq::datafilter
